@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings (optional)
+.vscode/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Logs / junk
+*.log
+*.tmp
+
+# Model files (optional, if you want to use Git LFS or HF Hub)
+*.pt
+*.ckpt
+*.npz
