@@ -18,6 +18,23 @@ source .venv/bin/activate
 ```
 
 ### 2. Install Requirements
+
+This project uses PyTorch with GPU acceleration.
+
+**IMPORTANT**: Do **not** blindly install `torch` from PyPI, or you may get the CPU-only version.
+
+Instead, visit https://pytorch.org/get-started/locally/  
+Select your OS, Python version, and most importantly: the correct CUDA version that matches your system.  
+(Tip: run `nvidia-smi` in your terminal to see your installed CUDA version — for example, mine shows CUDA 12.8.)
+
+Then run the install command it gives you, like:
+
+```
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+After PyTorch is installed, continue with the rest of the requirements:
+
 ```
 python -m pip install -r requirements.txt
 ```
