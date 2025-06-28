@@ -39,6 +39,11 @@ After PyTorch is installed, continue with the rest of the requirements:
 python -m pip install -r requirements.txt
 ```
 
+### 2.5 Check your GPU (from repo root)
+```
+python -m tests.env_check
+``` 
+
 ### 3. Run CLI (from repo root)
 ```
 python -m cli.play
