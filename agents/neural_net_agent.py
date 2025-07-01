@@ -9,6 +9,7 @@ from agents.base import Agent
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
+import numpy as np
 
 MODEL_DIR = "models/neural_net"
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -29,6 +30,11 @@ class NeuralNetAgent(Agent):
     def __init__(self, name="NeuralNetAgent", model_path=None):
         super().__init__(name)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            print(f"🚀 NeuralNetAgent is using GPU: {torch.cuda.get_device_name(self.device)}")
+        else:
+            print("⚠️ Using CPU — training will be slower.")
+
         self.model = SimpleNN().to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         if model_path:
@@ -36,6 +42,7 @@ class NeuralNetAgent(Agent):
         self.last_game_states = []
         self.last_moves = []
         self.last_players = []
+        self.last_rewards = []
 
     def board_to_tensor(self, board):
         mapping = {EMPTY: 0, X: 1, O: -1}
@@ -56,7 +63,7 @@ class NeuralNetAgent(Agent):
         for i in valid:
             mask[i] = logits[i]
 
-        best_move = int(torch.tensor(mask).argmax())
+        best_move = int(np.argmax(mask))
 
         # Store game state for learning later
         self.last_game_states.append(x.detach())
@@ -65,31 +72,38 @@ class NeuralNetAgent(Agent):
 
         return best_move
 
-    def learn(self, winner: int):
+    def learn(self):
+        if not self.last_game_states:
+            return
+
+        assert len(self.last_game_states) == len(self.last_moves) == len(self.last_rewards), \
+            f"Inconsistent lengths: {len(self.last_game_states)}, {len(self.last_moves)}, {len(self.last_rewards)}"
+        
         self.model.train()
-        DRAW_REWARD = 0.2  # or 0.0 if you want neutral
 
-        for state, move, player in zip(self.last_game_states, self.last_moves, self.last_players):
-            if winner == DRAW:
-                target_value = DRAW_REWARD
-            elif player == winner:
-                target_value = 1
-            else:
-                target_value = -1
+        states = torch.stack(self.last_game_states).to(self.device)
+        outputs = self.model(states)
+        targets = outputs.clone().detach()
 
-            output = self.model(state)
-            target = output.clone().detach()
-            target[move] = target_value
+        for i, (move, reward) in enumerate(zip(self.last_moves, self.last_rewards)):
+            if not (0 <= move < 81):
+                print(f"⚠️ BAD MOVE: {move} at index {i}")
+                continue
+            targets[i, move] = reward
 
-            loss = F.mse_loss(output, target)
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+        loss = F.mse_loss(outputs, targets)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
+        self.clear_history()
+
+    def clear_history(self):
+        # Clear history
         self.last_game_states.clear()
         self.last_moves.clear()
         self.last_players.clear()
-
+        self.last_rewards.clear()
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)

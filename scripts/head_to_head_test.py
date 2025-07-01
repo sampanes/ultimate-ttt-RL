@@ -1,9 +1,11 @@
-from agents import AGENT_REGISTRY
+from agents import get_agent
 from engine.constants import X, O
 from engine.game import GameState
 from engine.rules import rule_utl_valid_moves
-from collections import Counter
+from collections import defaultdict
+import random
 import time
+
 
 def run_match(agent1, agent2, verbose=True):
     gs = GameState()
@@ -29,26 +31,68 @@ def run_match(agent1, agent2, verbose=True):
         print(f"🎉 Winner: {agents[winner].name if winner else 'Draw'}")
     return winner
 
-if __name__ == "__main__":
-    N_GAMES = 10000
+
+def print_results(n_games, x_wins, o_wins, draws, elapsed):
+    print(f"\n🏁 Results after {n_games:,} games:")
+    all_names = sorted(set(x_wins) | set(o_wins))
+    total_wins = {}
+
+    for name in all_names:
+        x = x_wins[name]
+        o = o_wins[name]
+        total = x + o
+        percent = (total / n_games) * 100
+        total_wins[name] = total
+
+        print(f"  {name:<15}{' as X: ':<8}{x:>6,} wins")
+        print(f"  {name:<15}{' as O: ':<8}{o:>6,} wins")
+        print(f"  {' '*15}{' total: ':<8}{total:>6,} wins  ( {percent:.1f}% )\n")
+
+    print(f"  {'Draws':<15}{' ':<8}{draws:>6,} games ( {(draws / n_games) * 100:.1f}% )")
+
+    winner = max(total_wins, key=total_wins.get)
+    wins = total_wins[winner]
+    ties = [k for k, v in total_wins.items() if v == wins]
+
+    if len(ties) == 1:
+        print(f"\n🏆 Overall winner: {winner} with {wins:,} wins ({(wins/n_games)*100:.1f}%)")
+    else:
+        print(f"\n🤝 Tie between: {', '.join(ties)} with {wins:,} wins each")
+
+    print(f"\n⏱️ Elapsed time: {elapsed:.2f} sec ({n_games/elapsed:.2f} games/sec)")
+
+
+def agent_vs_agent(a1_string, a2_string, n_games=1000):
     start = time.time()
     winner_list = []
+    x_wins = defaultdict(int)
+    o_wins = defaultdict(int)
+    draws = 0
+    a1 = get_agent(a1_string)
+    a2 = get_agent(a2_string)
 
-    for _ in range(N_GAMES):
-        a1 = AGENT_REGISTRY["random"]
-        a2 = AGENT_REGISTRY["first"]
+    for _ in range(n_games):
+        if random.random() < 0.5:
+            a1, a2 = a2, a1
+            x_name, o_name = a2_string, a1_string
+        else:
+            x_name, o_name = a1_string, a2_string
+
         winner = run_match(a1, a2, verbose=False)
         winner_list.append(winner)
 
+        if winner == X:
+            x_wins[x_name] += 1
+        elif winner == O:
+            o_wins[o_name] += 1
+        else:
+            draws += 1
+
     end = time.time()
     elapsed = end - start
-    c = Counter(winner_list)
 
-    # Neat alignment
-    label_width = max(len(a1.name), len(a2.name), 5)
-    print(f"\n🏁 Results after {N_GAMES} games:")
-    print(f"  {a1.name:<{label_width}} wins: {c[X]}")
-    print(f"  {a2.name:<{label_width}} wins: {c[O]}")
-    print(f"  {'Draws':<{label_width}} wins: {c[None]}")
-    print(f"\n⏱️ Elapsed time: {elapsed:.2f} sec ({N_GAMES/elapsed:.2f} games/sec)")
+    print_results(n_games, x_wins, o_wins, draws, elapsed)
+
+if __name__ == "__main__":
+    agent_vs_agent("nn", "random", 1000)
 
