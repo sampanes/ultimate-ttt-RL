@@ -12,6 +12,10 @@ class GameState:
     player: int = X
     last_move: Optional[int] = None
     mini_winners: List[int] = field(default_factory=lambda: [EMPTY]*9)
+    winner: Optional[int] = None  # X, O, DRAW, or None
+
+    def is_over(self) -> bool:
+        return self.winner is not None
 
     def make_move(self, idx: int) -> bool:
         if not self.is_valid_move(idx):
@@ -25,6 +29,7 @@ class GameState:
         if is_new:
             ultimate_winner = self.check_ultimate_win()
             if ultimate_winner:
+                self.winner = ultimate_winner
                 return True, ultimate_winner
             
         self.player = O if self.player == X else X
