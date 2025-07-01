@@ -43,6 +43,10 @@ python -m pip install -r requirements.txt
 ```
 python -m tests.env_check
 ``` 
+or
+```
+python -m tests.env_check both
+``` 
 
 ### 3. Run CLI (from repo root)
 ```
