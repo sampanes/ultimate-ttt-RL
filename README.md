@@ -53,9 +53,9 @@ python -m tests.env_check both
 python -m cli.play
 ```
 
-### 4. Run Training
+### 4. Run Training (vs random is working best)
 ```
-python -m scripts.neural_net_self_train --games 100_000 --resume
+python -m scripts.neural_net_self_train --games 100_000 --resume --opponent random
 ```
 
 ### 4. Run Battles

@@ -1,88 +1,128 @@
+from agents import get_agent
 from agents.neural_net_agent import NeuralNetAgent
 from engine.game import GameState
-from engine.constants import X, O, DRAW, EMPTY
+from engine.constants import X, O, DRAW
 from collections import Counter
 import argparse, glob, re, os
-import time
-import math
+import random, time, math
+from typing import Tuple, List, Set, Any, Dict
 import heapq
+import json
 
 DEFAULT_CHECKPOINT_PREFIX = "models/neural_net/self_play_trained_"
 
 
-def parse_games(s: str) -> int:
-    # remove any underscores then cast to int
-    return int(s.replace("_", ""))
+def write_interesting_games_multiline(
+    data: Dict[str, List[List[Any]]],
+    file_path: str = 'interesting_games.json'
+) -> None:
+    with open(file_path, 'w') as f:
+        f.write('{\n')
+        for _, key in enumerate(('shortest', 'longest')):
+            f.write(f'  "{key}": [\n')
+            lst = data[key]
+            for i, sub in enumerate(lst):
+                # serialize with spaces after commas
+                line = json.dumps(sub, separators=(',', ' '))
+                # only comma-separate if not the last sublist
+                comma = ',' if i < len(lst) - 1 else ''
+                f.write(f'    {line}{comma}\n')
+            # comma-separate the two blocks, but not after 'longest'
+            block_comma = ',' if key == 'shortest' else ''
+            f.write(f'  ]{block_comma}\n')
+        f.write('}\n')
+
+
+def write_to_json(in_list: List[List[Any]], s_small_l_large: str) -> None:
+    file_path = 'interesting_games.json'
+    
+    # 1) load existing data (or init if file doesn't exist)
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {"shortest": [], "longest": []}
+    
+    # 2) pick the right list
+    if s_small_l_large == "s":
+        key = "shortest"
+    elif s_small_l_large == "l":
+        key = "longest"
+    else:
+        raise ValueError("s_small_l_large must be 's' or 'l'")
+    
+    # 3) build a set of existing sequences as tuples
+    existing_tuples = set(tuple(game) for game in data[key])
+    
+    # 4) only keep truly new ones, convert back to lists for JSON
+    to_add = []
+    for game in in_list:
+        tup = tuple(game)
+        if tup not in existing_tuples:
+            existing_tuples.add(tup)
+            to_add.append(list(game))
+    
+    # 5) extend and save
+    if to_add:
+        data[key].extend(to_add)
+        write_interesting_games_multiline(data, file_path)
+
+
+def consider_top_k_shortest(seq: Tuple[int, ...],
+                            heap: List[Tuple[int, Tuple[int, ...]]],
+                            seen: Set[Tuple[int, ...]],
+                            k: int = 5):
+    """
+    Maintains a max‐heap of size ≤ k containing the k shortest unique seqs seen so far.
+    `heap` stores entries as (-len(seq), seq) so the root is the *longest* of the shortest cluster.
+    """
+    if seq in seen:
+        return
+    length = len(seq)
+    if len(heap) < k:
+        heapq.heappush(heap, (-length, seq))
+        seen.add(seq)
+    else:
+        # heap[0] is (-max_len, seq)
+        max_len = -heap[0][0]
+        if length < max_len:
+            _, removed = heapq.heapreplace(heap, (-length, seq))
+            seen.remove(removed)
+            seen.add(seq)
+
+def consider_top_k_longest(seq: Tuple[int, ...],
+                           heap: List[Tuple[int, Tuple[int, ...]]],
+                           seen: Set[Tuple[int, ...]],
+                           k: int = 5):
+    """
+    Maintains a min‐heap of size ≤ k containing the k longest unique seqs seen so far.
+    `heap` stores entries as (len(seq), seq) so the root is the *shortest* of the longest cluster.
+    """
+    if seq in seen:
+        return
+    length = len(seq)
+    if len(heap) < k:
+        heapq.heappush(heap, (length, seq))
+        seen.add(seq)
+    else:
+        # heap[0] is (min_len, seq)
+        min_len = heap[0][0]
+        if length > min_len:
+            _, removed = heapq.heapreplace(heap, (length, seq))
+            seen.remove(removed)
+            seen.add(seq)
 
 
 def find_latest_checkpoint(prefix=DEFAULT_CHECKPOINT_PREFIX):
     best = None
-    pattern = prefix+"*.pt"
-    for path in glob.glob(pattern):
+    for path in glob.glob(prefix + "*.pt"):
         name = os.path.basename(path)
         m = re.match(r"self_play_trained_(\d+)\.pt$", name)
-        if not m:
-            continue
-        ver = int(m.group(1))
-        if best is None or ver > best:
-            best = ver
+        if m:
+            ver = int(m.group(1))
+            if best is None or ver > best:
+                best = ver
     return best
-
-
-def next_version(prefix=DEFAULT_CHECKPOINT_PREFIX):
-    latest = find_latest_checkpoint()
-    pattern=prefix+"{:02d}.pt"
-    new = (latest + 1) if (latest is not None) else 0
-    return pattern.format(new)
-
-
-def run_self_play(agent, verbose=False):
-    game = GameState()
-    agents = {X: agent, O: agent}
-
-    while not game.is_over():
-        current_agent = agents[game.player] # BOTH THE SAME, but placed here just to remember in future how to do it
-        move = current_agent.select_move(game)
-        valid, _ = game.make_move(move) # Winner is unused here
-        if not valid:
-            raise ValueError(f"Invalid move: {move}")
-        if verbose:
-            print(f"{'X' if game.player == O else 'O'} played {move}")
-            game.print_board()
-
-    if verbose:
-        print(f"🏁 Game Over! Winner: {['None', 'X', 'O', 'Draw'][game.winner]}")
-
-    # DRAW_SCALE = 0.4
-    max_moves    = 81
-    moves_played = len(agent.last_players)
-    decay_rate   = math.log(100) / (max_moves - 1)
-
-    # if draw, pretend it took the full 81 moves
-    adjusted_moves = moves_played if game.winner != DRAW else max_moves
-    time_factor    = math.exp(-decay_rate * (adjusted_moves - 18))
-
-    rewards = []
-    for p in agent.last_players:
-        if p == game.winner:
-            rewards.append(time_factor)
-        elif game.winner == DRAW:
-            rewards.append( -0.02 ) # decided that everyone gets dinged for draw, at least with a win/loss someone gets rewarded #Nicole says 0 is "the most neutral" setting, was #time_factor * DRAW_SCALE)
-        else:
-            rewards.append(-time_factor)
-
-    result = (
-        agent.last_game_states[:],
-        agent.last_moves[:],
-        agent.last_players[:],
-        rewards,
-        game.winner
-    )
-
-    agent.clear_history()
-
-    return result
-
 
 def format_elapsed(seconds):
     if seconds < 60:
@@ -95,109 +135,139 @@ def format_elapsed(seconds):
         minutes = (seconds % 3600) / 60
         return f"{hours}h {minutes:.2f}m"
 
+def next_version(prefix=DEFAULT_CHECKPOINT_PREFIX):
+    latest = find_latest_checkpoint(prefix)
+    new = (latest + 1) if latest is not None else 0
+    return f"{prefix}{new:02d}.pt"
+
+
+def get_random_x_o():
+    return X if random.random() < 0.5 else O
+
+
+def play_and_train(agent, opponent, runs):
+    agent_wins_x = 0
+    agent_wins_o = 0
+    opponent_wins = 0
+    draws = 0
+    decay_rate = math.log(100) / (81 - 1)
+    start = time.time()
+    k = 5
+    shortest_heap, shortest_set = [], set()
+    longest_heap,  longest_set  = [], set()
+
+    for _ in range(runs):
+        agent.clear_history()
+        game = GameState()
+        seq = []
+        agent_side = get_random_x_o()
+
+        while not game.is_over():
+            current = agent if game.player == agent_side else opponent
+            move = current.select_move(game)
+            valid, _ = game.make_move(move)
+            if not valid:
+                raise ValueError(f"Invalid move: {move}")
+            seq.append(move)
+
+        # tally results
+        if game.winner == agent_side:
+            if agent_side == X:
+                agent_wins_x += 1
+            else:
+                agent_wins_o += 1
+        elif game.winner == DRAW:
+            draws += 1
+        else:
+            opponent_wins += 1
+
+        # record unique sequence
+        tup = tuple(seq)
+        consider_top_k_shortest(tup, shortest_heap, shortest_set, k)
+        consider_top_k_longest(tup, longest_heap,  longest_set,  k)
+
+        # time-based reward shaping
+        num_moves = len(agent.last_players)
+        adjusted = num_moves if game.winner != DRAW else 81
+        time_factor = math.exp(-decay_rate * (adjusted - 18))
+
+        # assign rewards for agent's turns
+        agent.last_rewards = []
+        for p in agent.last_players:
+            if p == game.winner:
+                agent.last_rewards.append(time_factor)
+            elif game.winner == DRAW:
+                agent.last_rewards.append(-0.02)
+            else:
+                agent.last_rewards.append(-time_factor)
+
+        agent.learn()
+
+    elapsed = time.time() - start
+    # shortest_heap holds (-len, seq)
+    shortest = sorted([seq for _, seq in shortest_heap], key=len)
+    # longest_heap holds (len, seq)
+    longest  = sorted([seq for _, seq in longest_heap],  key=len)
+
+    return (agent_wins_x, agent_wins_o), opponent_wins, draws, shortest, longest, elapsed
+
+
+def train_against_random(agent, runs):
+    return play_and_train(agent, get_agent("random"), runs)
+
+
+def train_against_agent(agent, opponent_name, runs):
+    return play_and_train(agent, get_agent(opponent_name), runs)
+
+
+def display_results(opponent, agent_wins_tuple, opponent_wins, draws, shortest, longest, elapsed):
+    agent_wins_x, agent_wins_o = agent_wins_tuple
+    agent_wins_total = agent_wins_x + agent_wins_o
+    total = agent_wins_total + opponent_wins + draws
+    print(f"\nResults vs {opponent}:")
+    print(f"  Agent wins   X   : {agent_wins_x:,} ({100 * agent_wins_x/total:.1f}%)")
+    print(f"  Agent wins   O   : {agent_wins_o:,} ({100 * agent_wins_o/total:.1f}%)")
+    print(f"  Agent wins Total : {agent_wins_total:,} ({100 * agent_wins_total/total:.1f}%)\n")
+    print(f"  Opponent wins   : {opponent_wins:,} ({100 * opponent_wins/total:.1f}%)\n")
+    print(f"  Draws           : {draws:,} ({100 * draws/total:.1f}%)\n")
+    print(f"  Time elapsed    : {format_elapsed(elapsed)} ({total/elapsed:.1f} games/sec)\n")
+
+    current_time = time.localtime()
+    current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
+    print(f"Finished {current_time_str}")
+    
+    write_to_json(shortest, 's')
+    write_to_json(longest, 'l')
+
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--resume",    action="store_true",
-                   help="load the latest checkpoint instead of starting fresh")
-    p.add_argument("--games",     type=parse_games, default=500,
-                   help="how many self-play games to run (underscores OK, e.g. 500_000)")
-    args = p.parse_args()
-    '''
-        500:  12.96s     (38.6 games/sec)
-      2,500:  66.27s     (37.7 games/sec)
-      5,000: 2.26 mins   (36.9 games/sec)
-     10,000: 257.96s     (38.8 games/sec)
-    400,000: 2h 57.02m   (37.7 games/sec)
-    TODO print start time, maybe make progress bar?
-        (20, [27, 20, 78, 54, 9, 28, 21, 74, 60, 2, 24, 64, 30, 11, 42, 38, 51, 29, 15, 47])
-        (24, [19, 75, 55, 22, 67, 48, 74, 60, 1, 21, 73, 59, 7, 23, 79, 57, 10, 32, 17, 34, 70, 40, 52, 66])
-        (25, [37, 31, 23, 70, 50, 60, 2, 24, 63, 27, 11, 51, 65, 34, 3, 18, 64, 30, 20, 78, 36, 46, 59, 6, 38])
-        (27, [12, 46, 77, 78, 56, 16, 40, 32, 25, 59, 24, 54, 11, 43, 50, 70, 30, 10, 14, 53, 69, 45, 74, 62, 26, 21, 65])
-        (27, [48, 64, 40, 49, 66, 28, 21, 55, 12, 29, 26, 70, 32, 15, 37, 22, 77, 61, 5, 25, 75, 74, 78, 73, 76, 34, 3])  
-        (27, [58, 14, 35, 8, 7, 23, 60, 20, 62, 15, 46, 59, 6, 19, 67, 31, 13, 48, 54, 18, 56, 26, 61, 22, 76, 72, 55])   
-        (27, [72, 64, 50, 71, 43, 30, 1, 21, 74, 69, 28, 13, 41, 35, 6, 18, 73, 59, 26, 80, 61, 5, 25, 67, 32, 8, 24])
-        (27, [60, 0, 11, 51, 72, 73, 75, 64, 39, 47, 61, 23, 62, 6, 2, 25, 57, 19, 58, 13, 41, 33, 20, 28, 14, 43, 40])
-        (27, [52, 66, 45, 54, 19, 67, 31, 3, 10, 41, 42, 28, 23, 79, 77, 69, 46, 68, 51, 65, 33, 9, 47, 70, 49, 16, 40])
-        (27, [10, 48, 63, 28, 13, 41, 53, 69, 46, 57, 1, 14, 34, 5, 25, 59, 24, 64, 50, 60, 19, 58, 23, 62, 26, 61, 3])
-        (28, [32, 25, 75, 56, 16, 41, 34, 14, 35, 8, 15, 38, 51, 55, 5, 7, 13, 30, 2, 6, 18, 54, 10, 50, 62, 77, 60, 40])      
-        (28, [39, 46, 66, 28, 21, 74, 60, 11, 51, 54, 10, 50, 70, 48, 65, 53, 69, 37, 41, 35, 25, 57, 19, 59, 16, 49, 68, 44])
-        (28, [37, 49, 67, 30, 19, 66, 46, 57, 10, 40, 31, 5, 17, 51, 64, 50, 61, 13, 27, 2, 15, 45, 55, 21, 54, 1, 43, 75])
-        (28, [37, 49, 67, 30, 19, 66, 46, 57, 10, 40, 31, 5, 17, 51, 64, 50, 61, 13, 27, 2, 15, 45, 55, 21, 54, 1, 43, 75])
-        (28, [62, 25, 57, 18, 54, 2, 26, 70, 40, 50, 69, 29, 6, 0, 10, 49, 77, 79, 67, 48, 74, 61, 4, 21, 56, 17, 33, 9])
-        (28, [37, 49, 67, 30, 19, 66, 46, 57, 10, 40, 31, 5, 17, 51, 64, 50, 61, 13, 27, 2, 15, 45, 55, 21, 54, 1, 43, 75])
-        (28, [77, 80, 70, 39, 29, 17, 44, 42, 38, 33, 20, 62, 8, 6, 2, 16, 41, 51, 73, 58, 21, 55, 12, 37, 50, 71, 56, 26])
-        (28, [66, 47, 62, 15, 29, 17, 34, 13, 40, 50, 70, 48, 55, 5, 6, 2, 24, 73, 76, 57, 0, 20, 60, 11, 35, 16, 30, 21])
-        (28, [65, 51, 56, 24, 64, 31, 13, 30, 9, 45, 55, 23, 71, 35, 16, 32, 17, 43, 63, 47, 61, 5, 25, 76, 77, 79, 66, 46])
-    '''
-
-    RUNS = args.games
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", action="store_true", help="load latest checkpoint")
+    parser.add_argument("--games", type=int, default=500, help="number of games to train")
+    parser.add_argument("--opponent", type=str, default="random", help="opponent agent id (e.g. 'random', 'neural')")
+    args = parser.parse_args()
 
     if args.resume:
         ver = find_latest_checkpoint()
-        if ver is None:
-            print("⚠️\tno existing checkpoints, starting new at _00")
-            model_path = next_version()
-        else:
-            model_path = f"models/neural_net/self_play_trained_{ver:02d}.pt"
-            print(f"🔄\tresuming from {model_path}")
+        model_path = f"{DEFAULT_CHECKPOINT_PREFIX}{ver:02d}.pt" if ver is not None else next_version()
     else:
         model_path = next_version()
-        print(f"✨\tstarting new model at {model_path}")
+    print(f"Model save path: {model_path}")
 
-    agent = NeuralNetAgent(model_path=None)    # always start un-loaded
-    # only load if --resume AND file exists
+    agent = NeuralNetAgent(model_path=None)
     if args.resume and os.path.isfile(model_path):
         agent.load(model_path)
 
     current_time = time.localtime()
     current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
-    print(f"🏋️\tTraining {agent.name} via self-play for {RUNS:,} games...\nStarted {current_time_str}")
-    start = time.time()
+    print(f"Training for {args.games:,} games vs {args.opponent}...\n\nStarting {current_time_str}")
 
-    results = []
+    if args.opponent == "random":
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_random(agent, args.games)
+    else:
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(agent, args.opponent, args.games)
 
-    TOP_N = 16
-    heap = [] # For shortest games
+    display_results(args.opponent, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
 
-    for _ in range(RUNS):
-        states, moves, players, rewards, winner = run_self_play(agent, verbose=False)
-
-        entry = (-len(moves), moves)
-        if len(heap) < TOP_N:
-            heapq.heappush(heap, entry)
-        else:
-            heapq.heappushpop(heap, entry)
-
-        agent.last_game_states.extend(states)
-        agent.last_moves.extend(moves)
-        agent.last_players.extend(players)
-
-        agent.last_rewards.extend(rewards)
-
-        results.append(winner)
-
-        if len(results) % 10 == 0:
-            assert len(agent.last_game_states) == len(agent.last_moves) == len(agent.last_rewards), \
-                f"💥 Batch mismatch before learn: {len(agent.last_game_states)} states, {len(agent.last_moves)} moves, {len(agent.last_rewards)} rewards"
-            agent.learn()
-
-    shortest_games = sorted([(-l,m) for l, m in heap], key=lambda x: x[0])
-
-    elapsed = time.time() - start
-    formatted_time = format_elapsed(elapsed)
-    
-    c = Counter(results)
-
-    print("\n✅ Training complete!")
-    print(f"⏱️ Time elapsed: {formatted_time} ({RUNS/elapsed:.1f} games/sec)")
-    print("📊 Results:")
-    print(f"  X wins  : {c[X]:,}")
-    print(f"  O wins  : {c[O]:,}")
-    print(f"  Draws   : {c[DRAW]:,}")
-    print(f"  Invalid : {c[0]:,}")  # In case of unexpected zero wins
-
-    for short_game in shortest_games:
-        print(f"\t{short_game}")
-
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
     agent.save(model_path)
