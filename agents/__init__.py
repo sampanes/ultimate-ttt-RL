@@ -2,6 +2,7 @@ from .base              import Agent
 from .random_agent      import RandomAgent
 from .first_available_agent import FirstAvailableAgent
 from .neural_net_agent import NeuralNetAgent
+from .neural_net_agent_2 import NeuralNetAgent2
 
 # instead of calling each constructor now, store a factory
 AGENT_FACTORIES = {
@@ -11,8 +12,11 @@ AGENT_FACTORIES = {
         model_path="models/neural_net/self_play_trained_50-33-17.pt"
     ),
     "nn": lambda: NeuralNetAgent(
-        model_path="models/neural_net/self_play_trained_00.pt"
+        model_path="models/neural_net/self_play_trained_02.pt"
     ),
+    "nn2": lambda: NeuralNetAgent2(
+        model_path="models/neural_net_2/self_play_trained_00.pt"
+    )
 }
 
 def get_agent(name: str) -> Agent:

@@ -95,4 +95,5 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
 
 if __name__ == "__main__":
     agent_vs_agent("nn", "random", 1000)
+    # agent_vs_agent("nn", "nn_old", 1000)
 

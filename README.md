@@ -53,6 +53,16 @@ python -m tests.env_check both
 python -m cli.play
 ```
 
+### 4. Run Training
+```
+python -m scripts.neural_net_self_train --games 100_000 --resume
+```
+
+### 4. Run Battles
+```
+python -m scripts.head_to_head_test
+```
+
 ## Project Structure
 
 ```
@@ -71,9 +81,9 @@ ultimate-ttt-RL/
 
 - [x] Build base GameState class with legal move logic
 - [x] CLI playable version of the game
-- [ ] Enforce mini-board constraints and win conditions
-- [ ] Add reward system and RL agent skeleton
-- [ ] Self-play training loop with matchmaking
+- [x] Enforce mini-board constraints and win conditions
+- [x] Add reward system and RL agent skeleton
+- [x] Self-play training loop with matchmaking
 - [ ] Basic GUI to visualize games
 - [ ] Agent vs Agent tournaments and tracking
 

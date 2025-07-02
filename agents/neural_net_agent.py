@@ -1,5 +1,3 @@
-# agents/neural_net_agent.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,9 +29,9 @@ class NeuralNetAgent(Agent):
         super().__init__(name)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
-            print(f"🚀 NeuralNetAgent is using GPU: {torch.cuda.get_device_name(self.device)}")
+            print(f"🚀\tNeuralNetAgent is using GPU: {torch.cuda.get_device_name(self.device)}")
         else:
-            print("⚠️ Using CPU — training will be slower.")
+            print("⚠️\tUsing CPU — training will be slower.")
 
         self.model = SimpleNN().to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
