@@ -13,7 +13,7 @@ from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
 
 '''
-from agents.neural_net_agent_3 import ModelConfig, NeuralNetAgent2
+from agents.neural_net_agent_2 import ModelConfig, NeuralNetAgent2
 
 # override whatever you like here
 cfg = ModelConfig(
@@ -37,7 +37,7 @@ class ModelConfig:
     hidden_sizes: list[int] = None  # e.g. [128, 64]
     output_size: int = 81
     learning_rate: float = 1e-3
-    model_dir: str = "models/neural_net_3"
+    model_dir: str = f"models/neural_net_2/{'-'.join(map(str, hidden_sizes))}"
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     activation: callable = F.relu
 
@@ -79,7 +79,6 @@ class NeuralNetAgent2(Agent):
         super().__init__(name="NeuralNetAgent2")
         self.cfg = cfg
         self.device = cfg.device
-        os.makedirs(cfg.model_dir, exist_ok=True)
 
         # build model + optimizer
         self.model = ConfigurableNN(cfg).to(self.device)
@@ -150,9 +149,21 @@ class NeuralNetAgent2(Agent):
         self.last_rewards = []
 
     def save(self, path: str):
+        '''TODO
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'config': cfg.__dict__,  # optionally deep copy this
+        }, path)
+        '''
         torch.save(self.model.state_dict(), path)
 
     def load(self, path: str):
+        '''TODO
+        ckpt = torch.load(path, map_location=device)
+        cfg = ModelConfig(**ckpt['config'])  # rebuild the right architecture
+        model = ConfigurableNN(cfg)
+        model.load_state_dict(ckpt['model_state_dict'])
+        '''
         state = torch.load(path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.eval()

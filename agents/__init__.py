@@ -15,7 +15,7 @@ AGENT_FACTORIES = {
         model_path="models/neural_net/self_play_trained_02.pt"
     ),
     "nn2": lambda: NeuralNetAgent2(
-        model_path="models/neural_net_2/self_play_trained_00.pt"
+        model_path="models/neural_net_2/self_play_trained_00.pt" # TODO no such pt yet
     )
 }
 

@@ -2,7 +2,6 @@ from agents import get_agent
 from agents.neural_net_agent import NeuralNetAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW
-from collections import Counter
 import argparse, glob, re, os
 import random, time, math
 from typing import Tuple, List, Set, Any, Dict
@@ -89,6 +88,7 @@ def consider_top_k_shortest(seq: Tuple[int, ...],
             _, removed = heapq.heapreplace(heap, (-length, seq))
             seen.remove(removed)
             seen.add(seq)
+
 
 def consider_top_k_longest(seq: Tuple[int, ...],
                            heap: List[Tuple[int, Tuple[int, ...]]],
@@ -228,9 +228,9 @@ def display_results(opponent, agent_wins_tuple, opponent_wins, draws, shortest, 
     print(f"  Agent wins   X   : {agent_wins_x:,} ({100 * agent_wins_x/total:.1f}%)")
     print(f"  Agent wins   O   : {agent_wins_o:,} ({100 * agent_wins_o/total:.1f}%)")
     print(f"  Agent wins Total : {agent_wins_total:,} ({100 * agent_wins_total/total:.1f}%)\n")
-    print(f"  Opponent wins   : {opponent_wins:,} ({100 * opponent_wins/total:.1f}%)\n")
-    print(f"  Draws           : {draws:,} ({100 * draws/total:.1f}%)\n")
-    print(f"  Time elapsed    : {format_elapsed(elapsed)} ({total/elapsed:.1f} games/sec)\n")
+    print(f"  Opponent wins    : {opponent_wins:,} ({100 * opponent_wins/total:.1f}%)\n")
+    print(f"  Draws            : {draws:,} ({100 * draws/total:.1f}%)\n")
+    print(f"  Time elapsed     : {format_elapsed(elapsed)} ({total/elapsed:.1f} games/sec)\n")
 
     current_time = time.localtime()
     current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
