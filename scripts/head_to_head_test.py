@@ -94,6 +94,13 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
     print_results(n_games, x_wins, o_wins, draws, elapsed)
 
 if __name__ == "__main__":
-    agent_vs_agent("nn", "random", 1000)
+    current_time = time.localtime()
+    current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
+    print(f"\n\n##################\nHEAD TO HEAD\n\nStarting {current_time_str}")
+    agent_vs_agent("nn2", "random", 1000)
     # agent_vs_agent("nn", "nn_old", 1000)
+    
+    current_time = time.localtime()
+    current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
+    print(f"\nFinished {current_time_str}")
 

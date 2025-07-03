@@ -37,13 +37,17 @@ class ModelConfig:
     hidden_sizes: list[int] = None  # e.g. [128, 64]
     output_size: int = 81
     learning_rate: float = 1e-3
-    model_dir: str = f"models/neural_net_2/{'-'.join(map(str, hidden_sizes))}"
+    model_dir: str = None  # we'll fill this later
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     activation: callable = F.relu
 
     def __post_init__(self):
         if self.hidden_sizes is None:
             self.hidden_sizes = [128]
+        if self.model_dir is None:
+            layers_str = "-".join(map(str, self.hidden_sizes + [self.output_size]))
+            self.model_dir = f"models/neural_net_2/{layers_str}"
+
 
 class ConfigurableNN(nn.Module):
     """
@@ -55,7 +59,15 @@ class ConfigurableNN(nn.Module):
         in_dim = cfg.input_size
         for h in cfg.hidden_sizes:
             layers.append(nn.Linear(in_dim, h))
-            layers.append(cfg.activation)
+            # Convert function to nn.Module
+            if cfg.activation == F.relu:
+                layers.append(nn.ReLU())
+            elif cfg.activation == F.leaky_relu:
+                layers.append(nn.LeakyReLU())
+            elif cfg.activation == F.tanh:
+                layers.append(nn.Tanh())
+            else:
+                raise ValueError("Unsupported activation function. Use F.relu, F.leaky_relu, etc.")
             in_dim = h
         layers.append(nn.Linear(in_dim, cfg.output_size))
         # Use nn.Sequential for clarity
@@ -79,7 +91,10 @@ class NeuralNetAgent2(Agent):
         super().__init__(name="NeuralNetAgent2")
         self.cfg = cfg
         self.device = cfg.device
-
+        if torch.cuda.is_available():
+            print(f"🚀\t{self.name} is using GPU: {torch.cuda.get_device_name(self.device)}")
+        else:
+            print("⚠️\tUsing CPU — training will be slower.")
         # build model + optimizer
         self.model = ConfigurableNN(cfg).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
@@ -155,6 +170,7 @@ class NeuralNetAgent2(Agent):
             'config': cfg.__dict__,  # optionally deep copy this
         }, path)
         '''
+        print(f"🧠\t{self.name} is saving {path}")
         torch.save(self.model.state_dict(), path)
 
     def load(self, path: str):
@@ -164,6 +180,7 @@ class NeuralNetAgent2(Agent):
         model = ConfigurableNN(cfg)
         model.load_state_dict(ckpt['model_state_dict'])
         '''
+        print(f"🧠\t{self.name} is loading {path}")
         state = torch.load(path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.eval()

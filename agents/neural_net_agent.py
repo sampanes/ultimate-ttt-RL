@@ -29,7 +29,7 @@ class NeuralNetAgent(Agent):
         super().__init__(name)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
-            print(f"🚀\tNeuralNetAgent is using GPU: {torch.cuda.get_device_name(self.device)}")
+            print(f"🚀\t{name} is using GPU: {torch.cuda.get_device_name(self.device)}")
         else:
             print("⚠️\tUsing CPU — training will be slower.")
 
@@ -107,5 +107,6 @@ class NeuralNetAgent(Agent):
         torch.save(self.model.state_dict(), path)
 
     def load(self, path):
+        print(f"🧠\t{self.name} is loading {path}")
         self.model.load_state_dict(torch.load(path, map_location=self.device))
         self.model.eval()

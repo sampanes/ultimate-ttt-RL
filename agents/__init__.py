@@ -2,7 +2,7 @@ from .base              import Agent
 from .random_agent      import RandomAgent
 from .first_available_agent import FirstAvailableAgent
 from .neural_net_agent import NeuralNetAgent
-from .neural_net_agent_2 import NeuralNetAgent2
+from .neural_net_agent_2 import ModelConfig, NeuralNetAgent2
 
 # instead of calling each constructor now, store a factory
 AGENT_FACTORIES = {
@@ -15,7 +15,12 @@ AGENT_FACTORIES = {
         model_path="models/neural_net/self_play_trained_02.pt"
     ),
     "nn2": lambda: NeuralNetAgent2(
-        model_path="models/neural_net_2/self_play_trained_00.pt" # TODO no such pt yet
+        cfg = ModelConfig(
+            hidden_sizes=[256, 512, 512, 512, 256],
+            learning_rate=1e-3,
+            model_dir="models/neural_net_2/256-512-512-512-256-81/"
+        ),
+        model_path="models/neural_net_2/256-512-512-512-256-81/version_00.pt"
     )
 }
 
