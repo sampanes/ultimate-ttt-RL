@@ -95,11 +95,13 @@ def benchmark( test_what ):
     a = torch.randn(size, size, device=device)
     b = torch.randn(size, size, device=device)
 
-    torch.cuda.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
     start = time.time()
     for _ in range(runs):
         c = torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
     end = time.time()
 
     print(f"Size:               {size} x {size}")
