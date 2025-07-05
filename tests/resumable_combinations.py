@@ -1,6 +1,7 @@
 import pickle
 import os
 import csv
+import matplotlib.pyplot as plt
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves, rule_utl_check_mini_win, rule_utl_get_mini_board_state_by_idx
 
@@ -10,8 +11,20 @@ def export_to_csv(depth_counts, filename="utt_depth_counts.csv"):
         writer.writerow(["Move", "Combinations"])
         for move, count in sorted(depth_counts.items()):
             writer.writerow([move, count])
-    print(f"📄 CSV exported to {filename}")
+    print(f"\U0001F4C4 CSV exported to {filename}")
 
+def plot_depth_counts(depth_counts):
+    moves = sorted(depth_counts.keys())
+    counts = [depth_counts[m] for m in moves]
+    plt.figure(figsize=(10, 5))
+    plt.plot(moves, counts, marker='o')
+    plt.title("Number of Legal UTTT Game States by Move Depth")
+    plt.xlabel("Move Depth")
+    plt.ylabel("Combinations")
+    plt.grid(True)
+    plt.xticks(moves)
+    plt.tight_layout()
+    plt.show()
 
 def save_checkpoint(filename, stack, depth_counts, max_depth, processed):
     with open(filename, 'wb') as f:
@@ -85,9 +98,10 @@ def load_and_inspect(filename):
     print(f"Max depth: {data['max_depth']}")
     print(f"Stack size: {len(data['stack']):,}")
     print_depth_counts(data['depth_counts'])
-
+    plot_depth_counts(data['depth_counts'])
 
 if __name__ == '__main__':
     results = resumeable_count_games_up_to_depth(10)
     for move, count in results.items():
         print(f"move\t{move:<3}has {count:,} combinations")
+    plot_depth_counts(results)
