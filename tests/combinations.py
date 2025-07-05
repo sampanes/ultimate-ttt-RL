@@ -1,19 +1,9 @@
 from engine.constants import EMPTY, X, O, DRAW
-from engine.rules import rule_utl_valid_moves, rule_utl_check_mini_win
+from engine.rules import rule_utl_valid_moves, rule_utl_check_mini_win, rule_utl_get_mini_board_state_by_idx
 
-def get_mini_board(gameboard, mini_idx):
-    start_row = (mini_idx // 3) * 3
-    start_col = (mini_idx % 3) * 3
-    indices = []
-    for dr in range(3):
-        for dc in range(3):
-            r = start_row + dr
-            c = start_col + dc
-            indices.append(r * 9 + c)
-    return [gameboard[i] for i in indices]
 
 def mbw_from_board(board):
-    return [rule_utl_check_mini_win(get_mini_board(board, i)) for i in range(9)]
+    return [rule_utl_check_mini_win(rule_utl_get_mini_board_state_by_idx(board, i)) for i in range(9)]
 
 # Efficient iterative DFS using stack
 def count_possible_games():
@@ -101,6 +91,6 @@ move    8  has 281,067,408 combinations
 '''
 
 if __name__ == '__main__':
-    results = count_games_up_to_depth(8)
+    results = count_games_up_to_depth(10)
     for move, count in results.items():
         print(f"move\t{move:<3}has {count:,} combinations")

@@ -12,6 +12,17 @@ def rule_utl_check_mini_win(cells: List[int]) -> Optional[int]:
         return DRAW
     return EMPTY
 
+def rule_utl_get_mini_board_state_by_idx(gameboard, mini_idx):
+    start_row = (mini_idx // 3) * 3
+    start_col = (mini_idx % 3) * 3
+    indices = []
+    for dr in range(3):
+        for dc in range(3):
+            r = start_row + dr
+            c = start_col + dc
+            indices.append(r * 9 + c)
+    return [gameboard[i] for i in indices]
+
 def rule_utl_get_mini_index(idx):
     row, col = divmod(idx, 9)          # correctly get 0–8 row, col
     mini_row = row // 3                # 0,1,2
