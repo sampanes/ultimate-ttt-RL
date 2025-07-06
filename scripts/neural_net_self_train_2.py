@@ -1,5 +1,6 @@
 from agents import get_agent
-from agents.neural_net_agent_2 import ModelConfig, NeuralNetAgent2
+from agents.base import ModelConfig
+from agents.neural_net_agent_2 import NeuralNetAgent2
 from engine.game import GameState
 from engine.constants import X, O, DRAW
 import argparse, glob, re, os

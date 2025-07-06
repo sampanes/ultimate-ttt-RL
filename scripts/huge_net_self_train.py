@@ -1,9 +1,8 @@
-# File: scripts/huge_net_self_train.py
-
 import argparse, os, time
+import torch
 from agents.huge_net_agent import HugeNetAgent
 from agents import get_agent
-from engine.config import ModelConfig
+from agents.base import ModelConfig
 from neural_net_self_train_2 import (
     train_against_random, train_against_agent, display_results,
     find_latest_checkpoint, next_version
@@ -17,11 +16,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = ModelConfig(
-        hidden_sizes=[2048, 4096, 8192],
-        learning_rate=1e-4
+        hidden_sizes=[2048, 4096, 8192, 8192, 4096],
+        learning_rate=1e-4,
+        label="huge_net"
     )
-    hidden_str = "-".join(map(str, cfg.hidden_sizes + [cfg.output_size]))
-    cfg.model_dir = os.path.join("models", "huge_net", f"{hidden_str}")
 
     if args.resume:
         ver = find_latest_checkpoint(cfg.model_dir)
