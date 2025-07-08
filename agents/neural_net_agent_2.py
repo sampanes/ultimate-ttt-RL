@@ -140,14 +140,15 @@ class NeuralNetAgent2(Agent):
         self.last_players = []
         self.last_rewards = []
 
-    def save(self, path: str):
+    def save(self, path: str, verbose=True):
         '''TODO
         torch.save({
             'model_state_dict': model.state_dict(),
             'config': cfg.__dict__,  # optionally deep copy this
         }, path)
         '''
-        print(f"🧠\t{self.name} is saving {path}")
+        if verbose:
+            print(f"🧠\t{self.name} is saving {path}")
         torch.save(self.model.state_dict(), path)
 
     def load(self, path: str):

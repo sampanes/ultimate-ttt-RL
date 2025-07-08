@@ -4,6 +4,7 @@ import random, time, math
 from typing import Tuple, List, Set, Any, Dict
 from engine.game import GameState
 from engine.constants import X, O, DRAW
+from tqdm import trange
 import heapq, re, os
 
 
@@ -12,13 +13,19 @@ def play_and_train(agent, opponent, runs):
     agent_wins_o = 0
     opponent_wins = 0
     draws = 0
-    decay_rate = math.log(100) / (81 - 1)
+    reward_decay_rate = math.log(100) / (81 - 1)
     start = time.time()
+    epsilon = 0.1
+    epsilon_decay = 0.9999
+    min_epsilon = 0.01
     k = 5
     shortest_heap, shortest_set = [], set()
     longest_heap,  longest_set  = [], set()
 
-    for _ in range(runs):
+    # A bit hacky so I can go to work
+    sneaky_saves = True
+    save_interval = 10
+    for i in trange(1, runs + 1, desc="Training", unit="game"):#range(runs):
         agent.clear_history()
         game = GameState()
         seq = []
@@ -48,9 +55,21 @@ def play_and_train(agent, opponent, runs):
         consider_top_k_shortest(tup, shortest_heap, shortest_set, k)
         consider_top_k_longest(tup, longest_heap,  longest_set,  k)
 
-        calculate_reward(agent, game, decay_rate)
+        calculate_reward(agent, game, reward_decay_rate)
 
         agent.learn()
+
+        # decay epsilon
+        epsilon = max(min_epsilon, epsilon * epsilon_decay)
+
+        # TODO figure out save directory for sneak saves on long runs away from home
+        # if sneaky_saves and i % (runs/save_interval) == 0:
+        #     t = time.localtime()
+        #     t_str = f"{t.tm_mday:02}{t.tm_hour:02}"
+        #     chunk = i // save_interval
+        #     weekend_name = f"weekend_{t_str}_{chunk:03d}.pt"
+        #     weekend_path = os.path.join(checkpoint_dir, weekend_name)
+        #     agent.save(weekend_path, verbose=False)
 
     elapsed = time.time() - start
     # shortest_heap holds (-len, seq)

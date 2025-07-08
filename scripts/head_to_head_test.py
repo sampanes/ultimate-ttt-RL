@@ -3,6 +3,7 @@ from engine.constants import X, O
 from engine.game import GameState
 from engine.rules import rule_utl_valid_moves
 from collections import defaultdict
+import argparse
 import random
 import time
 
@@ -93,12 +94,33 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
 
     print_results(n_games, x_wins, o_wins, draws, elapsed)
 
+
+def validate_int(value):
+    try:
+        v=int(value.replace('_',''))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a valid integer.")
+    return v
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--games", type=validate_int, default=500, help="number of games to play")
+    parser.add_argument("--a1", type=str, default="nn", help="Agent 1, i.e. nn2 or random")
+    parser.add_argument("--a2", type=str, default="random", help="Agent 2, i.e. nn2 or random")
+    args = parser.parse_args()
+
     current_time = time.localtime()
     current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
-    print(f"\n\n##################\nHEAD TO HEAD\n\nStarting {current_time_str}")
-    agent_vs_agent("nn2", "random", 1000)
-    # agent_vs_agent("nn", "nn_old", 1000)
+
+    title = f"HEAD TO HEAD, {args.a1} vs {args.a2}"
+    width = len(title)+8
+    border = "*"*width
+    print(border)
+    print("*   "+title+"   *")
+    print(border)
+    print(f"\n\nStarting {current_time_str}")
+    agent_vs_agent(args.a1, args.a2, args.games)
     
     current_time = time.localtime()
     current_time_str = f"{current_time.tm_mon}/{current_time.tm_mday}/{current_time.tm_year} @ {current_time.tm_hour:02}:{current_time.tm_min:02}:{current_time.tm_sec:02}"
