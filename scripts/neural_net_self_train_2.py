@@ -18,10 +18,9 @@ if __name__ == "__main__":
 
     cfg = ModelConfig(
         hidden_sizes=[256, 512, 512, 512, 256],
-        learning_rate=1e-3
+        learning_rate=1e-3,
+        label="neural_net_2"
     )
-    hidden_str    = "-".join(map(str, cfg.hidden_sizes + [cfg.output_size]))
-    cfg.model_dir = os.path.join("models", "neural_net_2", f"{hidden_str}")
 
     if args.resume:
         ver = find_latest_checkpoint(cfg.model_dir)
