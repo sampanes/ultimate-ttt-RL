@@ -105,7 +105,8 @@ class NeuralNetAgent2(Agent):
         assert len(self.last_game_states) == len(self.last_moves) == len(self.last_rewards)
 
         self.model.train()
-        states = torch.stack(self.last_game_states).to(self.device)
+        # states = torch.stack(self.last_game_states).to(self.device)
+        states = torch.stack(self.last_game_states, dim=0).to(self.device)
         outputs = self.model(states)
         targets = outputs.clone().detach()
 

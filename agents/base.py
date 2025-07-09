@@ -53,4 +53,3 @@ def board_to_tensor(board):
 
 def get_random_x_o():
     return X if random.random() < 0.5 else O
-
