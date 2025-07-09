@@ -1,12 +1,10 @@
-import os
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from agents.base import Agent, ModelConfig
+from agents.base import Agent, ModelConfig, board_to_tensor
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
@@ -52,16 +50,7 @@ class ConfigurableNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
-
-
-def board_to_tensor(board: list[int]) -> torch.Tensor:
-    """
-    Convert 9x9 board values into a 1D float32 tensor.
-    EMPTY->0.0, X->1.0, O->-1.0
-    """
-    mapping = {EMPTY: 0.0, X: 1.0, O: -1.0}
-    arr = [mapping[val] for val in board]
-    return torch.tensor(arr, dtype=torch.float32)
+    
 
 class NeuralNetAgent2(Agent):
     def __init__(self, cfg: ModelConfig, model_path: str = None):

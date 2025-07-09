@@ -1,8 +1,10 @@
 import json
 from agents import get_agent
+from agents.base import board_to_tensor, get_random_x_o
 import random, time, math
 from typing import Tuple, List, Set, Any, Dict
 from engine.game import GameState
+from engine.rules import rule_utl_valid_moves
 from engine.constants import X, O, DRAW
 from tqdm import trange
 import heapq, re, os
@@ -13,18 +15,24 @@ def play_and_train(agent, opponent, runs):
     agent_wins_o = 0
     opponent_wins = 0
     draws = 0
+
+    # for time-based shaping 
     reward_decay_rate = math.log(100) / (81 - 1)
-    start = time.time()
-    epsilon = 0.1
-    epsilon_decay = 0.9999
-    min_epsilon = 0.01
+
     k = 5
     shortest_heap, shortest_set = [], set()
     longest_heap,  longest_set  = [], set()
 
+    epsilon = 0.1
+    epsilon_decay = 0.9999
+    min_epsilon = 0.01
+
+    start = time.time()
+
     # A bit hacky so I can go to work
     sneaky_saves = True
     save_interval = 10
+    # checkpoint_dir # TODO find a way to automate this
     for i in trange(1, runs + 1, desc="Training", unit="game"):#range(runs):
         agent.clear_history()
         game = GameState()
@@ -32,10 +40,28 @@ def play_and_train(agent, opponent, runs):
         agent_side = get_random_x_o()
 
         while not game.is_over():
-            current = agent if game.player == agent_side else opponent
-            move = current.select_move(game)
-            valid, _ = game.make_move(move)
-            if not valid:
+            if game.player == agent_side:
+                valid = rule_utl_valid_moves(game.board, game.last_move, game.mini_winners)
+
+                # grab the state tensor once
+                state = board_to_tensor(game.board).to(agent.device)
+
+                # ε-greedy pick
+                if random.random() < epsilon:
+                    move = random.choice(valid)
+                else:
+                    move = agent.select_move(game)
+
+                # record *every* decision
+                agent.last_game_states.append(state)
+                agent.last_moves.append(move)
+                agent.last_players.append(game.player)
+
+            else:
+                move = opponent.select_move(game)
+
+            valid_move, _ = game.make_move(move)
+            if not valid_move:
                 raise ValueError(f"Invalid move: {move}")
             seq.append(move)
 
@@ -65,7 +91,7 @@ def play_and_train(agent, opponent, runs):
         # TODO figure out save directory for sneak saves on long runs away from home
         # if sneaky_saves and i % (runs/save_interval) == 0:
         #     t = time.localtime()
-        #     t_str = f"{t.tm_mday:02}{t.tm_hour:02}"
+        #     t_str = f"{t.tm_mday:02}_{t.tm_hour:02}"
         #     chunk = i // save_interval
         #     weekend_name = f"weekend_{t_str}_{chunk:03d}.pt"
         #     weekend_path = os.path.join(checkpoint_dir, weekend_name)
@@ -247,10 +273,6 @@ def next_version(model_dir: str, file_template: str = "version_{:02d}.pt") -> st
     os.makedirs(model_dir, exist_ok=True)
     version_path = os.path.join(model_dir, file_template.format(new))
     return version_path
-
-
-def get_random_x_o():
-    return X if random.random() < 0.5 else O
 
 
 def get_current_time_str():

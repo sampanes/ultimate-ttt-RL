@@ -163,114 +163,6 @@ def get_random_x_o():
     return X if random.random() < 0.5 else O
 
 
-def play_and_train(agent, opponent, runs):
-    agent_wins_x = 0
-    agent_wins_o = 0
-    opponent_wins = 0
-    draws = 0
-
-    # for time-based shaping (unused now but kept for consistency)
-    decay_rate = math.log(100) / (81 - 1)
-
-    # for shortest/longest tracking
-    k = 5
-    shortest_heap, shortest_set = [], set()
-    longest_heap,  longest_set  = [], set()
-
-    epsilon = 0.1
-    epsilon_decay = 0.9999
-    min_epsilon = 0.01
-
-    start = time.time()
-
-    # open log file and write header
-    log_path = "training_log.csv"
-    
-    # A bit hacky so I can go to bed
-    sneaky_saves = True
-    save_interval = 10
-    checkpoint_dir = os.path.dirname("models/neural_net_2/256-512-512-512-256-81")
-    with open(log_path, "w") as log_file:
-        log_file.write("game,epsilon,agent_wins_total,opponent_wins,draws\n")
-
-        for i in trange(1, runs + 1, desc="Training", unit="game"):
-            agent.clear_history()
-            game = GameState()
-            seq = []
-            agent_side = get_random_x_o()
-
-            while not game.is_over():
-                if game.player == agent_side:
-                    valid = rule_utl_valid_moves(game.board, game.last_move, game.mini_winners)
-
-                    # grab the state tensor once
-                    state = board_to_tensor(game.board).to(agent.device)
-
-                    # ε-greedy pick
-                    if random.random() < epsilon:
-                        move = random.choice(valid)
-                    else:
-                        move = agent.select_move(game)
-
-                    # record *every* decision
-                    agent.last_game_states.append(state)
-                    agent.last_moves.append(move)
-                    agent.last_players.append(game.player)
-
-                else:
-                    move = opponent.select_move(game)
-
-                valid_move, _ = game.make_move(move)
-                if not valid_move:
-                    raise ValueError(f"Invalid move: {move}")
-                seq.append(move)
-
-            # tally results
-            if game.winner == agent_side:
-                if agent_side == X:
-                    agent_wins_x += 1
-                else:
-                    agent_wins_o += 1
-            elif game.winner == DRAW:
-                draws += 1
-            else:
-                opponent_wins += 1
-
-            # track shortest/longest
-            tup = tuple(seq)
-            consider_top_k_shortest(tup, shortest_heap, shortest_set, k)
-            consider_top_k_longest(tup, longest_heap, longest_set, k)
-
-            # simple ±1 rewards
-            reward = 1 if game.winner == agent_side else -1 if game.winner in (X, 1-X) else 0
-            agent.last_rewards = [reward] * len(agent.last_players)
-
-            # learn
-            agent.learn()
-
-            # decay epsilon
-            epsilon = max(min_epsilon, epsilon * epsilon_decay)
-
-            # periodic logging
-            if i % 1000 == 0 or i == runs:
-                total_agent = agent_wins_x + agent_wins_o
-                log_file.write(f"{i},{epsilon:.4f},{total_agent},{opponent_wins},{draws}\n")
-            if sneaky_saves and i % (runs/save_interval) == 0:
-                t = time.localtime()
-                t_str = f"{t.tm_mday:02}{t.tm_hour:02}"
-                chunk = i // save_interval
-                weekend_name = f"weekend_{t_str}_{chunk:03d}.pt"
-                weekend_path = os.path.join(checkpoint_dir, weekend_name)
-                agent.save(weekend_path, verbose=False)
-
-    elapsed = time.time() - start
-
-    # build return sequences
-    shortest = sorted([seq for _, seq in shortest_heap], key=len)
-    longest  = sorted([seq for _, seq in longest_heap],  key=len)
-
-    return (agent_wins_x, agent_wins_o), opponent_wins, draws, shortest, longest, elapsed
-
 
 def display_results(opponent, agent_wins_tuple, opponent_wins, draws, shortest, longest, elapsed):
     agent_wins_x, agent_wins_o = agent_wins_tuple
@@ -300,7 +192,6 @@ def validate_int(value):
     return v
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true", help="load latest checkpoint")
@@ -311,8 +202,6 @@ if __name__ == "__main__":
     cfg = ModelConfig(
         hidden_sizes=[256, 512, 512, 512, 256],
         learning_rate=1e-3,
-        label="neural_net_2"
-        learning_rate=1e-4,
         label="neural_net_2"
     )
 

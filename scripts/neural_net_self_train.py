@@ -1,9 +1,10 @@
 from agents import get_agent
+from agents.base import get_random_x_o
 from agents.neural_net_agent import NeuralNetAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW
 import argparse, glob, re, os
-import random, time, math
+import time, math
 from typing import Tuple, List, Set, Any, Dict
 import heapq
 import json
@@ -139,10 +140,6 @@ def next_version(prefix=DEFAULT_CHECKPOINT_PREFIX):
     latest = find_latest_checkpoint(prefix)
     new = (latest + 1) if latest is not None else 0
     return f"{prefix}{new:02d}.pt"
-
-
-def get_random_x_o():
-    return X if random.random() < 0.5 else O
 
 
 def play_and_train(agent, opponent, runs):

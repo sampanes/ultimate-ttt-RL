@@ -21,6 +21,6 @@ Thumbs.db
 *.tmp
 
 # Model files (optional, if you want to use Git LFS or HF Hub)
-*.pt
+*weekend*.pt
 *.ckpt
 *.npz

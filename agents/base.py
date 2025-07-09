@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 import torch
+import random
+import numpy as np
 import torch.nn.functional as F
+from engine.constants import X, O, DRAW
 
 @dataclass
 class ModelConfig:
@@ -31,3 +34,23 @@ class Agent:
     def select_move(self, gamestate):
         """Given a GameState, return a valid move index (0-80)."""
         raise NotImplementedError("select_move must be implemented by subclasses")
+    
+
+def board_to_tensor(board):
+    """
+    Convert a GameState.board (e.g. a 9x9 nested list or numpy array of ints)
+    into a 1D float tensor on CPU. You can then call `.to(device)` or `.cpu()`
+    on the result.
+
+    Example mapping: empty=0.0, X=1.0, O=-1.0
+    """
+    # assume board is list[list[int]] or np.array
+    arr = np.array(board, dtype=np.float32)
+    # If your board uses other encodings, adjust mapping here
+    # e.g. arr[arr == some_code] = ...
+    return torch.from_numpy(arr).view(-1)  # flatten to vector
+
+
+def get_random_x_o():
+    return X if random.random() < 0.5 else O
+

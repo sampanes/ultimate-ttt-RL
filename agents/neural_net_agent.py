@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import os
-from agents.base import Agent
+from agents.base import Agent, board_to_tensor
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
@@ -42,9 +42,6 @@ class NeuralNetAgent(Agent):
         self.last_players = []
         self.last_rewards = []
 
-    def board_to_tensor(self, board):
-        mapping = {EMPTY: 0, X: 1, O: -1}
-        return torch.tensor([mapping[val] for val in board], dtype=torch.float32).to(self.device)
 
     def select_move(self, gamestate: GameState):
         valid = rule_utl_valid_moves(gamestate.board, gamestate.last_move, gamestate.mini_winners)
