@@ -1,6 +1,6 @@
 import json
 from agents import get_agent
-from agents.base import board_to_tensor, get_random_x_o
+from agents.agent_base import board_to_tensor, get_random_x_o
 import random, time, math
 from typing import Tuple, List, Set, Any, Dict
 from engine.game import GameState

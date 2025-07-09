@@ -1,9 +1,8 @@
-from agents.base import ModelConfig
+from agents.agent_base import ModelConfig
 from agents.neural_net_agent_2 import NeuralNetAgent2
-from engine.game import GameState
 from engine.constants import X, O, DRAW
 import argparse, re, os
-import random, time, math
+import time
 from typing import Tuple, List, Set, Any, Dict
 import heapq
 import json
@@ -194,11 +193,19 @@ if __name__ == "__main__":
     parser.add_argument("--opponent", type=str, default="random", help="opponent agent id (e.g. 'random', 'neural')")
     args = parser.parse_args()
 
+    # # # #
+    '''
+    WHERE WE MAKE NEW NN SHAPES
+    '''
     cfg = ModelConfig(
-        hidden_sizes=[256, 512, 512, 512, 256],
+        hidden_sizes=[256, 512, 1024, 2048, 2048, 1024, 512, 256],
         learning_rate=1e-3,
-        label="neural_net_2"
+        label="big_8_layer"
     )
+    '''
+    Update above
+    '''
+    # # # #
 
     ver = find_latest_checkpoint(cfg.model_dir)
     if ver is None:

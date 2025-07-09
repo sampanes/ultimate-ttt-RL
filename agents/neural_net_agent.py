@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import os
-from agents.base import Agent, board_to_tensor
+from agents.agent_base import Agent, board_to_tensor
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState

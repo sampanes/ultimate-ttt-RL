@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from agents.base import Agent, ModelConfig, board_to_tensor
+from agents.agent_base import Agent, ModelConfig, board_to_tensor
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
@@ -105,7 +105,11 @@ class NeuralNetAgent2(Agent):
         assert len(self.last_game_states) == len(self.last_moves) == len(self.last_rewards)
 
         self.model.train()
-        states = torch.stack(self.last_game_states, dim=0).to(self.device)
+        # bring every recorded state to CPU first
+        cpu_states = [s.cpu() for s in self.last_game_states]
+        # now stack on CPU (all same device!), then move the entire batch to GPU
+        states = torch.stack(cpu_states, dim=0).to(self.device)
+
         outputs = self.model(states)
         targets = outputs.clone().detach()
 

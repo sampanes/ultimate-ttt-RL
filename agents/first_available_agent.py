@@ -1,4 +1,4 @@
-from .base import Agent
+from .agent_base import Agent
 from engine.rules import rule_utl_valid_moves
 
 class FirstAvailableAgent(Agent):

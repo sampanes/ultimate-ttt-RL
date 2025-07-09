@@ -1,9 +1,8 @@
 import argparse, os, time
 import torch
 from agents.huge_net_agent import HugeNetAgent
-from agents import get_agent
-from agents.base import ModelConfig
-from neural_net_self_train_2 import (
+from agents.agent_base import ModelConfig
+from trainer_base import (
     train_against_random, train_against_agent, display_results,
     find_latest_checkpoint, next_version
 )

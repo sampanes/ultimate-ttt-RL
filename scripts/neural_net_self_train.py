@@ -1,5 +1,5 @@
 from agents import get_agent
-from agents.base import get_random_x_o
+from agents.agent_base import get_random_x_o
 from agents.neural_net_agent import NeuralNetAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW

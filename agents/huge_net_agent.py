@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from agents.base import Agent, ModelConfig
+from agents.agent_base import Agent, ModelConfig
 
 class HugeNet(nn.Module):
     def __init__(self, input_size: int, hidden_sizes: list[int], output_size: int):
