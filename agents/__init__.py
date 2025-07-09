@@ -37,6 +37,13 @@ AGENT_FACTORIES = {
             model_dir="models/neural_net_2/256-512-512-512-256-81/"
         ),
         model_path="models/neural_net_2/256-512-512-512-256-81/version_01.pt"
+    ),
+    "nn_big_8": lambda: NeuralNetAgent2(
+        cfg = ModelConfig(
+            hidden_sizes=[256, 512, 1024, 2048, 2048, 1024, 512, 256],
+            learning_rate=1e-3,
+            label="big_8_layer"
+        )
     )
 }
 

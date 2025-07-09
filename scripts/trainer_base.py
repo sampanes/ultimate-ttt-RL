@@ -9,6 +9,8 @@ from engine.constants import X, O, DRAW
 from tqdm import trange
 import heapq, re, os
 
+SMALL_GAME = 19
+BIG_GAME = 778
 
 def play_and_train(agent, opponent, runs):
     agent_wins_x = 0
@@ -193,12 +195,16 @@ def consider_top_k_shortest(seq: Tuple[int, ...],
                             seen: Set[Tuple[int, ...]],
                             k: int = 5):
     """
-    Maintains a max‐heap of size ≤ k containing the k shortest unique seqs seen so far.
+    Maintains a max-heap of size ≤ k containing the k shortest unique seqs seen so far.
     `heap` stores entries as (-len(seq), seq) so the root is the *longest* of the shortest cluster.
     """
     if seq in seen:
         return
     length = len(seq)
+
+    if length > SMALL_GAME:
+        return
+    
     if len(heap) < k:
         heapq.heappush(heap, (-length, seq))
         seen.add(seq)
@@ -222,6 +228,10 @@ def consider_top_k_longest(seq: Tuple[int, ...],
     if seq in seen:
         return
     length = len(seq)
+
+    if length < BIG_GAME:
+        return
+
     if len(heap) < k:
         heapq.heappush(heap, (length, seq))
         seen.add(seq)

@@ -53,9 +53,9 @@ python -m tests.env_check both
 python -m cli.play
 ```
 
-### 4. Run Training (vs random is working best)
+### 4. Run Training (can assign new NN shapes in flexible NN, weights save to new folder)
 ```
-python -m scripts.neural_net_self_train --games 100_000 --resume --opponent random
+python -m scripts.trainer_flexible_nn --games 100_000 --resume --opponent random
 ```
 
 ### 4. Run Battles

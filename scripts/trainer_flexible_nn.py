@@ -203,7 +203,7 @@ if __name__ == "__main__":
         label="big_8_layer"
     )
     '''
-    Update above
+    Update above, copy it into cfg of __init__
     '''
     # # # #
 
