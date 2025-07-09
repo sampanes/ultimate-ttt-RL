@@ -44,7 +44,7 @@ def play_and_train(agent, opponent, runs):
                 valid = rule_utl_valid_moves(game.board, game.last_move, game.mini_winners)
 
                 # grab the state tensor once
-                state = board_to_tensor(game.board).to(agent.device)
+                state = board_to_tensor(game.board).cpu()
 
                 # ε-greedy pick
                 if random.random() < epsilon:

@@ -159,11 +159,6 @@ def next_version(model_dir: str, file_template: str = "version_{:02d}.pt") -> st
     return version_path
 
 
-def get_random_x_o():
-    return X if random.random() < 0.5 else O
-
-
-
 def display_results(opponent, agent_wins_tuple, opponent_wins, draws, shortest, longest, elapsed):
     agent_wins_x, agent_wins_o = agent_wins_tuple
     agent_wins_total = agent_wins_x + agent_wins_o
