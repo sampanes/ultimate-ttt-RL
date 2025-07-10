@@ -1,6 +1,6 @@
 import json
 from agents import get_agent
-from agents.agent_base import board_to_tensor, get_random_x_o
+from agents.agent_base import board_to_tensor_from_gamestate, get_random_x_o
 import random, time, math
 from typing import Tuple, List, Set, Any, Dict
 from engine.game import GameState
@@ -47,7 +47,7 @@ def play_and_train(agent, opponent, runs):
                 valid = rule_utl_valid_moves(game.board, game.last_move, game.mini_winners)
 
                 # grab the state tensor once
-                state = board_to_tensor(game.board).cpu()
+                state = board_to_tensor_from_gamestate(game).to(agent.device)
 
                 # ε-greedy pick
                 if random.random() < epsilon:
@@ -91,7 +91,7 @@ def play_and_train(agent, opponent, runs):
         total_agent_wins = agent_wins_x + agent_wins_o
         win_rate = total_agent_wins / i if i > 0 else 0
         t.set_description(f"🏋️‍♀️ {loss:.4f} | ε={epsilon:.3f} | WR={100*win_rate:.1f}%")
-        
+
         # decay epsilon
         epsilon = max(min_epsilon, epsilon * epsilon_decay)
 

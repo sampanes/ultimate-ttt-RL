@@ -72,6 +72,10 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
     a1 = get_agent(a1_string)
     a2 = get_agent(a2_string)
 
+    for agent in (a1, a2):
+        if hasattr(agent, "set_eval"):
+            agent.set_eval(True)
+
     for _ in range(n_games):
         if random.random() < 0.5:
             a1, a2 = a2, a1

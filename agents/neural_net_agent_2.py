@@ -71,6 +71,9 @@ class NeuralNetAgent2(Agent):
         # history for training
         self.clear_history()
 
+    def set_eval(self, is_eval: bool = True):
+        self.model.eval() if is_eval else self.model.train()
+
     def select_move(self, gamestate: GameState) -> int:
         valid = rule_utl_valid_moves(
             gamestate.board, gamestate.last_move, gamestate.mini_winners
