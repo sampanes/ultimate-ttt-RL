@@ -74,6 +74,7 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
 
     for agent in (a1, a2):
         if hasattr(agent, "set_eval"):
+            print(f"Setting {agent.name} to eval mode")
             agent.set_eval(True)
 
     for _ in range(n_games):
