@@ -35,7 +35,8 @@ def play_and_train(agent, opponent, runs):
     sneaky_saves = True
     save_interval = 10
     # checkpoint_dir # TODO find a way to automate this
-    for i in trange(1, runs + 1, desc="Training", unit="game"):#range(runs):
+    t = trange(1, runs + 1, desc="Training", unit="game")
+    for i in t:
         agent.clear_history()
         game = GameState()
         seq = []
@@ -85,8 +86,12 @@ def play_and_train(agent, opponent, runs):
 
         calculate_reward(agent, game, reward_decay_rate)
 
-        agent.learn()
+        loss = agent.learn()
 
+        total_agent_wins = agent_wins_x + agent_wins_o
+        win_rate = total_agent_wins / i if i > 0 else 0
+        t.set_description(f"🏋️‍♀️ {loss:.4f} | ε={epsilon:.3f} | WR={100*win_rate:.1f}%")
+        
         # decay epsilon
         epsilon = max(min_epsilon, epsilon * epsilon_decay)
 

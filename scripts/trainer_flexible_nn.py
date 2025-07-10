@@ -188,7 +188,8 @@ def validate_int(value):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resume", action="store_true", help="load latest checkpoint")
+    parser.add_argument("--startnew", action="store_true", help="load latest checkpoint and save to it too")
+    parser.add_argument("--overwrite", action="store_true", help="load latest checkpoint and save to it too")
     parser.add_argument("--games", type=validate_int, default=500, help="number of games to train")
     parser.add_argument("--opponent", type=str, default="random", help="opponent agent id (e.g. 'random', 'neural')")
     args = parser.parse_args()
@@ -199,27 +200,27 @@ if __name__ == "__main__":
     '''
     cfg = ModelConfig(
         hidden_sizes=[256, 512, 1024, 2048, 2048, 1024, 512, 256],
-        learning_rate=1e-3,
+        learning_rate=1e-5,
         label="big_8_layer"
     )
     '''
     Update above, copy it into cfg of __init__
     '''
     # # # #
-
+    
     ver = find_latest_checkpoint(cfg.model_dir)
     if ver is None:
         model_path_load = next_version(cfg.model_dir)
     else:
         model_path_load = os.path.join(cfg.model_dir, f"version_{ver:02d}.pt")
 
-    if args.resume:
+    if args.overwrite:
         model_path_save = model_path_load
     else:
         model_path_save = next_version(cfg.model_dir)
 
     agent = NeuralNetAgent2(cfg, model_path=None)
-    if args.resume and os.path.isfile(model_path_load):
+    if (not args.startnew) and os.path.isfile(model_path_load):
         agent.load(model_path_load)
 
     current_time_str = get_current_time_str()

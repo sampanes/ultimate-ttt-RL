@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -81,13 +80,10 @@ class NeuralNetAgent2(Agent):
         with torch.no_grad():
             logits = self.model(x)
         # mask invalid moves
-        mask = np.full((self.cfg.output_size,), -np.inf, dtype=float)
         valid = list(valid)
-        cpu_logits = logits.cpu().numpy()
-        for idx in valid:
-            mask[idx] = cpu_logits[idx]
-        # pick best
-        best_move = int(np.argmax(mask))
+        masked_logits = torch.full_like(logits, float('-inf'))
+        masked_logits[valid] = logits[valid]
+        best_move = int(torch.argmax(masked_logits))
 
         # record for learning
         self.last_game_states.append(x.detach())
@@ -123,6 +119,7 @@ class NeuralNetAgent2(Agent):
         self.optimizer.step()
 
         self.clear_history()
+        return loss.item()
 
     def clear_history(self):
         """
