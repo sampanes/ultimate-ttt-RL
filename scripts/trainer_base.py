@@ -25,9 +25,15 @@ def play_and_train(agent, opponent, runs):
     shortest_heap, shortest_set = [], set()
     longest_heap,  longest_set  = [], set()
 
-    epsilon = 0.1
-    epsilon_decay = 0.9999
-    min_epsilon = 0.01
+    start_epsilon = 1.0
+    min_epsilon = 0.1  # or 0.01 if you want
+
+    # This makes epsilon decay linearly on a log scale over the full `runs`
+    epsilon_decay = math.exp(math.log(min_epsilon / start_epsilon) / runs)
+
+    epsilon = start_epsilon
+
+    min_epsilon = 0.02
 
     start = time.time()
 
@@ -35,7 +41,7 @@ def play_and_train(agent, opponent, runs):
     sneaky_saves = True
     save_interval = 10
     # checkpoint_dir # TODO find a way to automate this
-    t = trange(1, runs + 1, desc="Training", unit="game")
+    t = trange(1, runs + 1, desc="Training", unit="game", bar_format = "{desc}: {percentage:.3f}%|{bar}| {n:,}/{total:,} [{elapsed}<{remaining}, {rate_fmt}]")
     for i in t:
         agent.clear_history()
         game = GameState()
@@ -137,6 +143,17 @@ def train_against_random(agent, runs):
 
 def train_against_agent(agent, opponent_name, runs):
     return play_and_train(agent, get_agent(opponent_name), runs)
+
+def train_against_self(agent, runs):
+    # Clone the current agent to be the opponent
+    import copy
+    opponent = copy.deepcopy(agent)
+    if hasattr(agent, "set_eval"):
+        opponent.set_eval(True)  # Don't let opponent learn
+        return play_and_train(agent, opponent, runs)
+    else:
+        print(f"Add set_eval func in {agent.name} like seen in neural net agent 3")
+        train_against_random(agent, runs)
 
 
 def write_interesting_games_multiline(

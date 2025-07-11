@@ -60,6 +60,7 @@ class NeuralNetAgent3(Agent):
         super().__init__(name="NeuralNetAgent3")
         self.cfg = cfg
         self.device = cfg.device
+        self.verbose = False
         if torch.cuda.is_available():
             print(f"🚀\t{self.name} is using GPU: {torch.cuda.get_device_name(self.device)}")
         else:
@@ -91,9 +92,13 @@ class NeuralNetAgent3(Agent):
 
         # mask invalid moves
         valid = list(valid)
-        # print("logits shape:", logits.shape)         # should be (81,)
-        # print("valid moves:", valid)                # list of ints
-        # print("max valid move:", max(valid))        # must be ≤ 80
+        if self.verbose:
+            print("logits shape:", logits.shape)         # should be (81,)
+            print("valid moves:", valid)                # list of ints
+            valid_logits = [(i, logits[i].item()) for i in valid]
+            valid_logits.sort(key=lambda x: x[1], reverse=True)
+            print("Top valid logits:", valid_logits[:5])
+
 
         masked_logits = torch.full_like(logits, float('-inf'))
         masked_logits[valid] = logits[valid]

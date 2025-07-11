@@ -8,7 +8,7 @@ import heapq
 import json
 import argparse, os
 from scripts.trainer_base import (
-    next_version, find_latest_checkpoint, train_against_random, train_against_agent,
+    next_version, find_latest_checkpoint, train_against_agent, train_against_self,
     get_current_time_str, display_results
 )
 
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     cfg = ModelConfigCNN(
         conv_channels=[32, 64, 64],
         fc_hidden_sizes=[256, 512, 1024, 512, 128],
-        learning_rate=1e-5,
+        learning_rate=1e-4,
         label="new_cnn"
     )
     '''
@@ -227,7 +227,10 @@ if __name__ == "__main__":
     current_time_str = get_current_time_str()
     print(f"Training for {args.games:,} games vs {args.opponent}...\n\nStarting {current_time_str}")
 
-    agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(agent, args.opponent, args.games)
+    if args.opponent == "self":
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_self(agent, args.games)
+    else:
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(agent, args.opponent, args.games)
 
     display_results(args.opponent, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
 
