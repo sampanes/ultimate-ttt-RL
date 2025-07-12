@@ -57,6 +57,10 @@ python -m cli.play
 ```
 python -m scripts.trainer_flexible_cnn --games 100_000 --overwrite --opponent random
 ```
+and if you want live updates on http://localhost:8000/gui/live_plot/live_metrics_plot.html
+```
+python -m http.server 8000
+```
 
 ### 4. Run Battles
 ```

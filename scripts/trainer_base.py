@@ -12,6 +12,22 @@ import heapq, re, os
 SMALL_GAME = 19
 BIG_GAME = 778
 
+LOG_FILE = "loss_logs/metrics_log.jsonl"
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+def append_metrics(loss: float, epsilon: float, winrate: float):
+    entry = {
+        "loss": loss,
+        "epsilon": epsilon,
+        "winrate": winrate
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+def clear_metrics_log():
+    """Clears the metrics log file."""
+    open(LOG_FILE, "w").close()
+
 def play_and_train(agent, opponent, runs):
     agent_wins_x = 0
     agent_wins_o = 0
@@ -36,6 +52,7 @@ def play_and_train(agent, opponent, runs):
     min_epsilon = 0.02
 
     start = time.time()
+    clear_metrics_log()
 
     # A bit hacky so I can go to work
     sneaky_saves = True
@@ -97,6 +114,8 @@ def play_and_train(agent, opponent, runs):
         total_agent_wins = agent_wins_x + agent_wins_o
         win_rate = total_agent_wins / i if i > 0 else 0
         t.set_description(f"🏋️‍♀️ {loss:.4f} | ε={epsilon:.3f} | WR={100*win_rate:.1f}%")
+
+        append_metrics(loss, epsilon, win_rate)
 
         # decay epsilon
         epsilon = max(min_epsilon, epsilon * epsilon_decay)

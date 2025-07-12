@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Live Metrics Plot</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            background-color: #121212;
+            color: #f0f0f0;
+            font-family: sans-serif;
+        }
+    
+        canvas {
+            background-color: #121212;
+        }
+    
+        h2 {
+            color: #f0f0f0;
+        }
+    
+        .chartjs-legend li span {
+            border-radius: 50% !important;
+        }
+    
+        button {
+            background-color: #1e1e1e;
+            color: #f0f0f0;
+            border: 1px solid #555;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+    </style>
+    
+</head>
+
+<body>
+    <h2 id="metricsHeader">📊 Training Metrics (loading...)</h2>
+    <div style="height: 1000px; width: 100%;">
+        <canvas id="metricsChart"></canvas>
+    </div>
+      
+    <button onclick="chart.resetZoom()">Reset Zoom</button>
+
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <script>
+        function movingAverage(data, windowSize = 20) {
+                const result = [];
+                for (let i = 0; i < data.length; i++) {
+                    const start = Math.max(0, i - windowSize + 1);
+                    const window = data.slice(start, i + 1);
+                    const avg = window.reduce((sum, val) => sum + val, 0) / window.length;
+                    result.push(avg);
+                }
+                return result;
+            }
+
+        function downsample(arr, maxPoints) {
+                const stride = Math.ceil(arr.length / maxPoints);
+                const result = [];
+                for (let i = 0; i < arr.length; i += stride) {
+                    const slice = arr.slice(i, i + stride);
+                    const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
+                    result.push(avg);
+                }
+                return result;
+            }
+
+        const ctx = document.getElementById('metricsChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Loss',
+                        borderColor: 'red',
+                        pointBackgroundColor: 'red',
+                        data: [],
+                        fill: false, 
+                        showLine: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 4,
+                        borderWidth: 0,
+                    },
+                    {
+                        label: 'Epsilon',
+                        borderColor: 'blue',
+                        data: [],
+                        fill: false,
+                    },
+                    {
+                        label: 'Winrate',
+                        borderColor: 'green',
+                        data: [],
+                        fill: false,
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { beginAtZero: true },
+                    y: { beginAtZero: true, max: 1 }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            usePointStyle: true
+                        }
+                    },
+                    zoom: {
+                        pan: {
+                            enabled: true,
+                            mode: 'x',  // Only horizontal
+                            modifierKey: 'ctrl', // Optional: enable panning only with ctrl key on desktop
+                        },
+                        zoom: {
+                            pinch: {
+                                enabled: true // Pinch-to-zoom on mobile
+                            },
+                            wheel: {
+                                enabled: true,
+                                modifierKey: 'ctrl' // Optional: zoom only with ctrl+scroll
+                            },
+                            mode: 'x', // Only zoom in x direction
+                        }
+                    }
+                }
+            }
+
+        });
+
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('../../loss_logs/metrics_log.jsonl');
+                const text = await res.text();
+                const lines = text.trim().split('\n');
+                const data = lines.map(line => JSON.parse(line));
+
+                const losses = data.map(d => d.loss);
+                const epsilons = data.map(d => d.epsilon);
+                const winrates = data.map(d => d.winrate);
+
+                const MAX_POINTS = 5000;
+
+                const smoothedLoss = downsample(movingAverage(losses, 8), MAX_POINTS);
+                const downsampledEps = downsample(epsilons, MAX_POINTS);
+                const downsampledWin = downsample(winrates, MAX_POINTS);
+
+                chart.data.labels = smoothedLoss.map((_, i) => i);
+                chart.data.datasets[0].data = smoothedLoss;
+                chart.data.datasets[1].data = downsampledEps;
+                chart.data.datasets[2].data = downsampledWin;
+                if (data.length > 0) {
+                    const latest = data[data.length - 1];
+                    const eps = latest.epsilon.toFixed(3);
+                    const win = (latest.winrate * 100).toFixed(1);
+                    document.getElementById("metricsHeader").textContent =
+                        `📊 Training Metrics (ε=${eps}, win rate ${win}%)`;
+                }
+
+                chart.update();
+            } catch (e) {
+                console.error("Failed to fetch or parse metrics:", e);
+            }
+        }
+
+        fetchMetrics();
+        setInterval(fetchMetrics, 1000); // refresh every second
+    </script>
+</body>
+
+</html>

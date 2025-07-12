@@ -44,8 +44,8 @@ AGENT_FACTORIES = {
             hidden_sizes=[256, 512, 1024, 2048, 2048, 1024, 512, 256],
             learning_rate=1e-5,
             label="big_8_layer"
-        )
-        # NEEDS WEIGHTS
+        ),
+        model_path="models/big_8_layer/256-512-1024-2048-2048-1024-512-256-81/version_01.pt"
     ),
     "new_cnn": lambda: NeuralNetAgent3(
         cfg = ModelConfigCNN(
@@ -54,7 +54,7 @@ AGENT_FACTORIES = {
             learning_rate=1e-5,
             label="new_cnn"
         ),
-        model_path="models/new_cnn/256-512-1024-512-128-81/version_01.pt"
+        model_path="models/new_cnn/256-512-1024-512-128-81/version_04.pt"
     )
 }
 

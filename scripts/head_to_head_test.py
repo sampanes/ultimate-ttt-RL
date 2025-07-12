@@ -111,7 +111,7 @@ def validate_int(value):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--games", type=validate_int, default=500, help="number of games to play")
-    parser.add_argument("--a1", type=str, default="nn", help="Agent 1, i.e. nn2 or random")
+    parser.add_argument("--a1", type=str, default="nn", help="Agent 1, i.e. new_cnn or random")
     parser.add_argument("--a2", type=str, default="random", help="Agent 2, i.e. nn2 or random")
     args = parser.parse_args()
 
