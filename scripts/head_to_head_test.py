@@ -79,12 +79,13 @@ def agent_vs_agent(a1_string, a2_string, n_games=1000):
 
     for _ in range(n_games):
         if random.random() < 0.5:
-            a1, a2 = a2, a1
+            agent_x, agent_o = a2, a1
             x_name, o_name = a2_string, a1_string
         else:
+            agent_x, agent_o = a1, a2
             x_name, o_name = a1_string, a2_string
 
-        winner = run_match(a1, a2, verbose=False)
+        winner = run_match(agent_x, agent_o, verbose=False)
         winner_list.append(winner)
 
         if winner == X:
