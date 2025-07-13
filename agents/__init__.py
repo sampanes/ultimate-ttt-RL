@@ -54,7 +54,16 @@ AGENT_FACTORIES = {
             learning_rate=1e-5,
             label="new_cnn"
         ),
-        model_path="models/new_cnn/256-512-1024-512-128-81/version_04.pt"
+        model_path=""
+    ),
+    "lottery": lambda: NeuralNetAgent3(
+        cfg = ModelConfigCNN(
+            conv_channels=[64, 128, 256, 256],
+            fc_hidden_sizes=[2048, 1024, 1024, 512, 256],
+            learning_rate=1e-5,
+            label="lottery"
+        ),
+        model_path=""
     )
 }
 

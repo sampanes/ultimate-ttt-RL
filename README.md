@@ -62,6 +62,12 @@ and if you want live updates on http://localhost:8000/gui/live_plot/live_metrics
 python -m http.server 8000
 ```
 
+### 4. Look at weight updates, see if some layers are changing more than others
+```
+python -m scripts.visualize_weights --f1 models\new_cnn\256-512-1024-512-128-81\version_05.pt --f2 models\new_cnn\256-512-1024-512-128-81\version_00.pt --heatmap
+```
+don't forget to use "copy relative path"
+
 ### 4. Run Battles
 ```
 python -m scripts.head_to_head_test

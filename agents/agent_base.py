@@ -24,9 +24,14 @@ class ModelConfig:
     def __post_init__(self):
         if self.hidden_sizes is None:
             self.hidden_sizes = [128]
+        self.model_dir = self.get_model_dir()
+
+    def get_model_dir(self):
         if self.model_dir is None:
             layers_str = "-".join(map(str, self.hidden_sizes + [self.output_size]))
-            self.model_dir = f"models/{self.label}/{layers_str}"
+            return f"models/{self.label}/{layers_str}"
+        else:
+            return self.model_dir
 
 @dataclass
 class ModelConfigCNN:
@@ -47,9 +52,14 @@ class ModelConfigCNN:
     def __post_init__(self):
         if self.fc_hidden_sizes is None:
             self.fc_hidden_sizes = [128]
+        self.model_dir = self.get_model_dir()
+
+    def get_model_dir(self):
         if self.model_dir is None:
             layers_str = "-".join(map(str, self.fc_hidden_sizes + [self.output_size]))
-            self.model_dir = f"models/{self.label}/{layers_str}"
+            return f"models/{self.label}/{layers_str}"
+        else:
+            return self.model_dir
 
 class Agent:
     def __init__(self, name="UnnamedAgent"):

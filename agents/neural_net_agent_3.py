@@ -2,12 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import contextlib
 
 from agents.agent_base import Agent, ModelConfigCNN, board_to_tensor_from_gamestate
 from engine.constants import EMPTY, X, O, DRAW
 from engine.rules import rule_utl_valid_moves
 from engine.game import GameState
 
+import glob, re, os
 
 class ConvNet(nn.Module):
     def __init__(self, cfg: ModelConfigCNN):
@@ -69,12 +71,36 @@ class NeuralNetAgent3(Agent):
         self.model = ConvNet(cfg=cfg).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
 
-        # load if a checkpoint provided
-        if model_path:
-            self.load(model_path)
+        self.model_load_magic(model_path, cfg)
 
         # history for training
         self.clear_history()
+
+    def model_load_magic(self, model_path, cfg):
+        # load if a checkpoint provided
+        if model_path is None:
+            self.model_dir = cfg.model_dir
+            self.brand_new_weights(cfg)
+            return
+        else:
+            if model_path == "":
+                self.model_dir = cfg.get_model_dir()
+                pattern = os.path.join(self.model_dir, "version_*.pt")
+                candidates = glob.glob(pattern)
+                if not candidates:
+                    self.brand_new_weights(cfg)
+                    return
+                # pick the highest numbered version
+                version, path = max(
+                    ((int(re.search(r"version_(\d+)\.pt$", p).group(1)), p)
+                     for p in candidates if re.search(r"version_(\d+)\.pt$", p)),
+                    key=lambda t: t[0]
+                )
+                model_path = path
+                if self.verbose:
+                    print(f"🔍 Auto-loaded latest checkpoint {version}: {model_path}")
+
+            self.load(model_path)
 
     def set_eval(self, is_eval: bool = True):
         self.model.eval() if is_eval else self.model.train()
@@ -83,32 +109,24 @@ class NeuralNetAgent3(Agent):
         valid = rule_utl_valid_moves(
             gamestate.board, gamestate.last_move, gamestate.mini_winners
         )
-        # feature extraction
+
         x = board_to_tensor_from_gamestate(gamestate).to(self.device)
-        # with torch.no_grad():
-        logits = self.model(x)
-        logits = logits.squeeze(0) if logits.dim() == 2 else logits  # ✅ only flattens if needed
+
+        # choose a context: no_grad in eval, no-op in train
+        ctx = torch.no_grad if not self.model.training else contextlib.nullcontext
+        with ctx():
+            logits = self.model(x)
+
+        # flatten if needed
+        logits = logits.squeeze(0) if logits.dim() == 2 else logits
         assert logits.shape == (81,), f"Expected (81,), got {logits.shape}"
 
         # mask invalid moves
-        valid = list(valid)
-        if self.verbose:
-            print("logits shape:", logits.shape)         # should be (81,)
-            print("valid moves:", valid)                # list of ints
-            valid_logits = [(i, logits[i].item()) for i in valid]
-            valid_logits.sort(key=lambda x: x[1], reverse=True)
-            print("Top valid logits:", valid_logits[:5])
+        masked = torch.full_like(logits, float('-inf'))
+        for i in valid:
+            masked[i] = logits[i]
 
-
-        masked_logits = torch.full_like(logits, float('-inf'))
-        masked_logits[valid] = logits[valid]
-        best_move = int(torch.argmax(masked_logits))
-
-        # record for learning
-        self.last_game_states.append(x.detach())
-        self.last_moves.append(best_move)
-        self.last_players.append(gamestate.player)
-
+        best_move = int(torch.argmax(masked))
         return best_move
 
     def learn(self):
@@ -161,3 +179,14 @@ class NeuralNetAgent3(Agent):
         state = torch.load(path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.eval()
+
+
+    def brand_new_weights(self, cfg):
+        # no checkpoint → this is a fresh network:
+        # let's save its initial weights for LTH / rewinding later
+        init_path = os.path.join(cfg.model_dir, "initial.pt")
+        # make sure the directory exists
+        os.makedirs(os.path.dirname(init_path), exist_ok=True)
+        torch.save({"initial_state_dict": self.model.state_dict()}, init_path)
+        if self.verbose:
+            print(f"🗃️  Saved initial weights to {init_path}")

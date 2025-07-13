@@ -159,7 +159,6 @@ def calculate_reward(agent, game, decay_rate):
 def train_against_random(agent, runs):
     return play_and_train(agent, get_agent("random"), runs)
 
-
 def train_against_agent(agent, opponent_name, runs):
     return play_and_train(agent, get_agent(opponent_name), runs)
 

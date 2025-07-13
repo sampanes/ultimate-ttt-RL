@@ -33,7 +33,7 @@ def diff_states(state1, state2):
         if name not in state1:
             print(f"  {name} only in second file")
 
-def state_diff_heatmap(state1, state2, title="Weight Changes", gamma=0.9):
+def state_diff_heatmap(state1, state2, gamma, title="Weight Changes"):
     diffs, names, max_len = [], [], 0
     for key in state1:
         if key in state2 and state1[key].shape == state2[key].shape:
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     parser.add_argument("--f1", required=True, help="Path to first .pt file")
     parser.add_argument("--f2", help="Optional second .pt file for comparison")
     parser.add_argument("--heatmap", action="store_true", help="Show heatmap diff if both files are provided")
-    parser.add_argument("--gamma", help="If heatmap, choose gamma, .99 for accurate, .01 for exaggerated contrast")
+    parser.add_argument("--gamma", default=0.9, help="If heatmap, choose gamma, .99 for accurate, .01 for exaggerated contrast")
 
     args = parser.parse_args()
 
@@ -92,4 +92,4 @@ if __name__ == "__main__":
 
         if args.heatmap:
             title = f"Δ Weights\n{args.f1} vs {args.f2}"
-            state_diff_heatmap(state1, state2, title, args.gamma)
+            state_diff_heatmap(state1, state2, args.gamma, title)
