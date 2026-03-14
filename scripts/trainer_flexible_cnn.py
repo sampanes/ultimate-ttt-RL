@@ -8,7 +8,7 @@ import heapq
 import json
 import argparse, os
 from scripts.trainer_base import (
-    next_version, find_latest_checkpoint, train_against_agent, train_against_self,
+    next_version, find_latest_checkpoint, train_against_agent, train_against_agent_pool, train_against_self,
     get_current_time_str, display_results
 )
 
@@ -191,7 +191,8 @@ if __name__ == "__main__":
     parser.add_argument("--startnew", action="store_true", help="load latest checkpoint and save to it too")
     parser.add_argument("--overwrite", action="store_true", help="load latest checkpoint and save to it too")
     parser.add_argument("--games", type=validate_int, default=500, help="number of games to train")
-    parser.add_argument("--opponent", type=str, default="random", help="opponent agent id (e.g. 'random', 'neural')")
+    parser.add_argument("--opponent", type=str, default="random", help="single opponent agent id (e.g. 'random', 'nn2')")
+    parser.add_argument("--opponent-pool", type=str, default="", help="comma-separated opponent ids sampled per game (e.g. 'random,first,nn2')")
     args = parser.parse_args()
 
     # # # #
@@ -225,14 +226,24 @@ if __name__ == "__main__":
         agent.load(model_path_load)
 
     current_time_str = get_current_time_str()
-    print(f"Training for {args.games:,} games vs {args.opponent}...\n\nStarting {current_time_str}")
 
-    if args.opponent == "self":
+    if args.opponent_pool.strip():
+        opponent_names = [name.strip() for name in args.opponent_pool.split(",") if name.strip()]
+        if not opponent_names:
+            raise ValueError("--opponent-pool was provided but no valid opponent ids were found")
+        opponent_label = "pool:" + ",".join(opponent_names)
+        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent_pool(agent, opponent_names, args.games)
+    elif args.opponent == "self":
+        opponent_label = args.opponent
+        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
         agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_self(agent, args.games)
     else:
+        opponent_label = args.opponent
+        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
         agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(agent, args.opponent, args.games)
 
-    display_results(args.opponent, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
+    display_results(opponent_label, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
 
     os.makedirs(os.path.dirname(model_path_save), exist_ok=True)
     agent.save(model_path_save)

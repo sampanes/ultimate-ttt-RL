@@ -57,6 +57,11 @@ python -m cli.play
 ```
 python -m scripts.trainer_flexible_cnn --games 100_000 --overwrite --opponent random
 ```
+
+To reduce overfitting to one rival, train against a mixed opponent pool sampled each game:
+```
+python -m scripts.trainer_flexible_cnn --games 100_000 --opponent-pool random,first,nn2
+```
 and if you want live updates on http://localhost:8000/gui/live_plot/live_metrics_plot.html
 ```
 python -m http.server 8000

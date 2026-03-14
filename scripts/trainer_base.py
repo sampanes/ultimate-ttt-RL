@@ -28,6 +28,15 @@ def clear_metrics_log():
     """Clears the metrics log file."""
     open(LOG_FILE, "w").close()
 
+def _normalize_opponents(opponent):
+    """Return a non-empty list of opponents for per-game sampling."""
+    if isinstance(opponent, (list, tuple)):
+        if not opponent:
+            raise ValueError("opponent pool cannot be empty")
+        return list(opponent)
+    return [opponent]
+
+
 def play_and_train(agent, opponent, runs):
     agent_wins_x = 0
     agent_wins_o = 0
@@ -58,12 +67,15 @@ def play_and_train(agent, opponent, runs):
     sneaky_saves = True
     save_interval = 10
     # checkpoint_dir # TODO find a way to automate this
+    opponents = _normalize_opponents(opponent)
+
     t = trange(1, runs + 1, desc="Training", unit="game", bar_format = "{desc}: {percentage:.3f}%|{bar}| {n:,}/{total:,} [{elapsed}<{remaining}, {rate_fmt}]")
     for i in t:
         agent.clear_history()
         game = GameState()
         seq = []
         agent_side = get_random_x_o()
+        current_opponent = random.choice(opponents)
 
         while not game.is_over():
             if game.player == agent_side:
@@ -84,7 +96,7 @@ def play_and_train(agent, opponent, runs):
                 agent.last_players.append(game.player)
 
             else:
-                move = opponent.select_move(game)
+                move = current_opponent.select_move(game)
 
             valid_move, _ = game.make_move(move)
             if not valid_move:
@@ -161,6 +173,14 @@ def train_against_random(agent, runs):
 
 def train_against_agent(agent, opponent_name, runs):
     return play_and_train(agent, get_agent(opponent_name), runs)
+
+
+def train_against_agent_pool(agent, opponent_names, runs):
+    opponents = [get_agent(name) for name in opponent_names]
+    for opponent in opponents:
+        if hasattr(opponent, "set_eval"):
+            opponent.set_eval(True)
+    return play_and_train(agent, opponents, runs)
 
 def train_against_self(agent, runs):
     # Clone the current agent to be the opponent
