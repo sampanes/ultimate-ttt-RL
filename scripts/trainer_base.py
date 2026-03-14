@@ -8,6 +8,7 @@ from engine.rules import rule_utl_valid_moves
 from engine.constants import X, O, DRAW
 from tqdm import trange
 import heapq, re, os
+from pathlib import Path
 
 SMALL_GAME = 19
 BIG_GAME = 778
@@ -28,7 +29,54 @@ def clear_metrics_log():
     """Clears the metrics log file."""
     open(LOG_FILE, "w").close()
 
-def play_and_train(agent, opponent, runs):
+
+
+def _checkpoint_version(path: Path):
+    m = re.match(r"version_(\d+)\.pt$", path.name)
+    return int(m.group(1)) if m else None
+
+
+def prune_checkpoints(checkpoint_path: str, keep_last: int = 0):
+    """Keep only the newest `keep_last` version_XX.pt files in checkpoint dir."""
+    if keep_last <= 0 or not checkpoint_path:
+        return []
+
+    cp = Path(checkpoint_path)
+    parent = cp.parent
+    if not parent.exists():
+        return []
+
+    versioned = []
+    for f in parent.glob("version_*.pt"):
+        ver = _checkpoint_version(f)
+        if ver is not None:
+            versioned.append((ver, f))
+
+    if len(versioned) <= keep_last:
+        return []
+
+    versioned.sort(key=lambda t: t[0])
+    to_delete = versioned[:-keep_last]
+    removed = []
+    for _, fp in to_delete:
+        try:
+            fp.unlink()
+            removed.append(str(fp))
+        except OSError:
+            continue
+    return removed
+
+
+def _normalize_opponents(opponent):
+    """Return a non-empty list of opponents for per-game sampling."""
+    if isinstance(opponent, (list, tuple)):
+        if not opponent:
+            raise ValueError("opponent pool cannot be empty")
+        return list(opponent)
+    return [opponent]
+
+
+def play_and_train(agent, opponent, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
     agent_wins_x = 0
     agent_wins_o = 0
     opponent_wins = 0
@@ -58,12 +106,15 @@ def play_and_train(agent, opponent, runs):
     sneaky_saves = True
     save_interval = 10
     # checkpoint_dir # TODO find a way to automate this
+    opponents = _normalize_opponents(opponent)
+
     t = trange(1, runs + 1, desc="Training", unit="game", bar_format = "{desc}: {percentage:.3f}%|{bar}| {n:,}/{total:,} [{elapsed}<{remaining}, {rate_fmt}]")
     for i in t:
         agent.clear_history()
         game = GameState()
         seq = []
         agent_side = get_random_x_o()
+        current_opponent = random.choice(opponents)
 
         while not game.is_over():
             if game.player == agent_side:
@@ -76,15 +127,18 @@ def play_and_train(agent, opponent, runs):
                 if random.random() < epsilon:
                     move = random.choice(valid)
                 else:
-                    move = agent.select_move(game)
+                    if hasattr(agent, "select_move_from_state"):
+                        move = agent.select_move_from_state(state, valid)
+                    else:
+                        move = agent.select_move(game)
 
                 # record *every* decision
-                agent.last_game_states.append(state)
+                agent.last_game_states.append(state.detach())
                 agent.last_moves.append(move)
                 agent.last_players.append(game.player)
 
             else:
-                move = opponent.select_move(game)
+                move = current_opponent.select_move(game)
 
             valid_move, _ = game.make_move(move)
             if not valid_move:
@@ -119,6 +173,12 @@ def play_and_train(agent, opponent, runs):
 
         # decay epsilon
         epsilon = max(min_epsilon, epsilon * epsilon_decay)
+
+
+        if checkpoint_every and checkpoint_path and (i % checkpoint_every == 0):
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            agent.save(checkpoint_path, verbose=False)
+            prune_checkpoints(checkpoint_path, keep_last=keep_last_checkpoints)
 
         # TODO figure out save directory for sneak saves on long runs away from home
         # if sneaky_saves and i % (runs/save_interval) == 0:
@@ -156,22 +216,30 @@ def calculate_reward(agent, game, decay_rate):
             agent.last_rewards.append(-time_factor)
 
 
-def train_against_random(agent, runs):
-    return play_and_train(agent, get_agent("random"), runs)
+def train_against_random(agent, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
+    return play_and_train(agent, get_agent("random"), runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path, keep_last_checkpoints=keep_last_checkpoints)
 
-def train_against_agent(agent, opponent_name, runs):
-    return play_and_train(agent, get_agent(opponent_name), runs)
+def train_against_agent(agent, opponent_name, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
+    return play_and_train(agent, get_agent(opponent_name), runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path, keep_last_checkpoints=keep_last_checkpoints)
 
-def train_against_self(agent, runs):
+
+def train_against_agent_pool(agent, opponent_names, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
+    opponents = [get_agent(name) for name in opponent_names]
+    for opponent in opponents:
+        if hasattr(opponent, "set_eval"):
+            opponent.set_eval(True)
+    return play_and_train(agent, opponents, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path, keep_last_checkpoints=keep_last_checkpoints)
+
+def train_against_self(agent, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
     # Clone the current agent to be the opponent
     import copy
     opponent = copy.deepcopy(agent)
     if hasattr(agent, "set_eval"):
         opponent.set_eval(True)  # Don't let opponent learn
-        return play_and_train(agent, opponent, runs)
+        return play_and_train(agent, opponent, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path, keep_last_checkpoints=keep_last_checkpoints)
     else:
         print(f"Add set_eval func in {agent.name} like seen in neural net agent 3")
-        train_against_random(agent, runs)
+        train_against_random(agent, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path, keep_last_checkpoints=keep_last_checkpoints)
 
 
 def write_interesting_games_multiline(

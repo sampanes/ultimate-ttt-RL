@@ -57,10 +57,23 @@ python -m cli.play
 ```
 python -m scripts.trainer_flexible_cnn --games 100_000 --overwrite --opponent random
 ```
+
+To reduce overfitting to one rival, train against a mixed opponent pool sampled each game:
+```
+python -m scripts.trainer_flexible_cnn --games 100_000 --opponent-pool random,first,nn2 --autosave-every 5000 --keep-last 10
+```
+(`--autosave-every` is useful for unattended overnight/weekend runs.)
 and if you want live updates on http://localhost:8000/gui/live_plot/live_metrics_plot.html
 ```
 python -m http.server 8000
 ```
+
+
+To prune weak checkpoints from battle results with a confirmation prompt:
+```
+python -m scripts.prune_losers_by_battle --model-dir models/new_cnn/256-512-1024-512-128-81 --max-models 12 --games-per-pair 8 --delete-below 0.40
+```
+(The script prints winners/losers and requires typing `YES` exactly before deleting loser checkpoints.)
 
 ### 4. Look at weight updates, see if some layers are changing more than others
 ```

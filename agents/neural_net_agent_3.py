@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import contextlib
 
 from agents.agent_base import Agent, ModelConfigCNN, board_to_tensor_from_gamestate
 from engine.constants import EMPTY, X, O, DRAW
@@ -70,6 +69,10 @@ class NeuralNetAgent3(Agent):
         # build model + optimizer
         self.model = ConvNet(cfg=cfg).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
         self.model_load_magic(model_path, cfg)
 
@@ -105,29 +108,26 @@ class NeuralNetAgent3(Agent):
     def set_eval(self, is_eval: bool = True):
         self.model.eval() if is_eval else self.model.train()
 
+    def select_move_from_state(self, state: torch.Tensor, valid_moves) -> int:
+        """Fast path used by trainer when state tensor is already built."""
+        self.model.eval()
+        with torch.inference_mode():
+            logits = self.model(state)
+
+        logits = logits.squeeze(0) if logits.dim() == 2 else logits
+        assert logits.shape == (81,), f"Expected (81,), got {logits.shape}"
+
+        valid_idx = torch.as_tensor(valid_moves, dtype=torch.long, device=logits.device)
+        masked = torch.full_like(logits, float('-inf'))
+        masked[valid_idx] = logits[valid_idx]
+        return int(torch.argmax(masked).item())
+
     def select_move(self, gamestate: GameState) -> int:
         valid = rule_utl_valid_moves(
             gamestate.board, gamestate.last_move, gamestate.mini_winners
         )
-
-        x = board_to_tensor_from_gamestate(gamestate).to(self.device)
-
-        # choose a context: no_grad in eval, no-op in train
-        ctx = torch.no_grad if not self.model.training else contextlib.nullcontext
-        with ctx():
-            logits = self.model(x)
-
-        # flatten if needed
-        logits = logits.squeeze(0) if logits.dim() == 2 else logits
-        assert logits.shape == (81,), f"Expected (81,), got {logits.shape}"
-
-        # mask invalid moves
-        masked = torch.full_like(logits, float('-inf'))
-        for i in valid:
-            masked[i] = logits[i]
-
-        best_move = int(torch.argmax(masked))
-        return best_move
+        state = board_to_tensor_from_gamestate(gamestate).to(self.device)
+        return self.select_move_from_state(state, valid)
 
     def learn(self):
         """
@@ -138,7 +138,9 @@ class NeuralNetAgent3(Agent):
         assert len(self.last_game_states) == len(self.last_moves) == len(self.last_rewards)
 
         self.model.train()
-        states = torch.stack([s.cpu() for s in self.last_game_states]).to(self.device)
+        states = torch.stack([s.detach() for s in self.last_game_states], dim=0)
+        if states.device != self.device:
+            states = states.to(self.device, non_blocking=True)
         logits = self.model(states)  # shape: [B, 81]
 
         # Gather target values and the indices of moves
