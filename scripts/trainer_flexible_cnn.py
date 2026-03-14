@@ -193,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--games", type=validate_int, default=500, help="number of games to train")
     parser.add_argument("--opponent", type=str, default="random", help="single opponent agent id (e.g. 'random', 'nn2')")
     parser.add_argument("--opponent-pool", type=str, default="", help="comma-separated opponent ids sampled per game (e.g. 'random,first,nn2')")
+    parser.add_argument("--autosave-every", type=validate_int, default=0, help="save checkpoint every N games during training (0 disables)")
     args = parser.parse_args()
 
     # # # #
@@ -232,16 +233,25 @@ if __name__ == "__main__":
         if not opponent_names:
             raise ValueError("--opponent-pool was provided but no valid opponent ids were found")
         opponent_label = "pool:" + ",".join(opponent_names)
-        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
-        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent_pool(agent, opponent_names, args.games)
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent_pool(
+            agent, opponent_names, args.games,
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+        )
     elif args.opponent == "self":
         opponent_label = args.opponent
-        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
-        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_self(agent, args.games)
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_self(
+            agent, args.games,
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+        )
     else:
         opponent_label = args.opponent
-        print(f"Training for {args.games:,} games vs {opponent_label}...\n\nStarting {current_time_str}")
-        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(agent, args.opponent, args.games)
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(
+            agent, args.opponent, args.games,
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+        )
 
     display_results(opponent_label, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
 

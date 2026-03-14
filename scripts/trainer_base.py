@@ -37,7 +37,7 @@ def _normalize_opponents(opponent):
     return [opponent]
 
 
-def play_and_train(agent, opponent, runs):
+def play_and_train(agent, opponent, runs, checkpoint_every: int = 0, checkpoint_path: str = None):
     agent_wins_x = 0
     agent_wins_o = 0
     opponent_wins = 0
@@ -88,10 +88,13 @@ def play_and_train(agent, opponent, runs):
                 if random.random() < epsilon:
                     move = random.choice(valid)
                 else:
-                    move = agent.select_move(game)
+                    if hasattr(agent, "select_move_from_state"):
+                        move = agent.select_move_from_state(state, valid)
+                    else:
+                        move = agent.select_move(game)
 
                 # record *every* decision
-                agent.last_game_states.append(state)
+                agent.last_game_states.append(state.detach())
                 agent.last_moves.append(move)
                 agent.last_players.append(game.player)
 
@@ -132,6 +135,11 @@ def play_and_train(agent, opponent, runs):
         # decay epsilon
         epsilon = max(min_epsilon, epsilon * epsilon_decay)
 
+
+        if checkpoint_every and checkpoint_path and (i % checkpoint_every == 0):
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            agent.save(checkpoint_path, verbose=False)
+
         # TODO figure out save directory for sneak saves on long runs away from home
         # if sneaky_saves and i % (runs/save_interval) == 0:
         #     t = time.localtime()
@@ -168,30 +176,30 @@ def calculate_reward(agent, game, decay_rate):
             agent.last_rewards.append(-time_factor)
 
 
-def train_against_random(agent, runs):
-    return play_and_train(agent, get_agent("random"), runs)
+def train_against_random(agent, runs, checkpoint_every: int = 0, checkpoint_path: str = None):
+    return play_and_train(agent, get_agent("random"), runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path)
 
-def train_against_agent(agent, opponent_name, runs):
-    return play_and_train(agent, get_agent(opponent_name), runs)
+def train_against_agent(agent, opponent_name, runs, checkpoint_every: int = 0, checkpoint_path: str = None):
+    return play_and_train(agent, get_agent(opponent_name), runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path)
 
 
-def train_against_agent_pool(agent, opponent_names, runs):
+def train_against_agent_pool(agent, opponent_names, runs, checkpoint_every: int = 0, checkpoint_path: str = None):
     opponents = [get_agent(name) for name in opponent_names]
     for opponent in opponents:
         if hasattr(opponent, "set_eval"):
             opponent.set_eval(True)
-    return play_and_train(agent, opponents, runs)
+    return play_and_train(agent, opponents, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path)
 
-def train_against_self(agent, runs):
+def train_against_self(agent, runs, checkpoint_every: int = 0, checkpoint_path: str = None):
     # Clone the current agent to be the opponent
     import copy
     opponent = copy.deepcopy(agent)
     if hasattr(agent, "set_eval"):
         opponent.set_eval(True)  # Don't let opponent learn
-        return play_and_train(agent, opponent, runs)
+        return play_and_train(agent, opponent, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path)
     else:
         print(f"Add set_eval func in {agent.name} like seen in neural net agent 3")
-        train_against_random(agent, runs)
+        train_against_random(agent, runs, checkpoint_every=checkpoint_every, checkpoint_path=checkpoint_path)
 
 
 def write_interesting_games_multiline(
