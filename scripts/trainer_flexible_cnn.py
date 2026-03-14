@@ -9,7 +9,7 @@ import json
 import argparse, os
 from scripts.trainer_base import (
     next_version, find_latest_checkpoint, train_against_agent, train_against_agent_pool, train_against_self,
-    get_current_time_str, display_results
+    get_current_time_str, display_results, prune_checkpoints
 )
 
 DEFAULT_CHECKPOINT_PREFIX = "models/neural_net_2/self_play_trained_"
@@ -194,6 +194,7 @@ if __name__ == "__main__":
     parser.add_argument("--opponent", type=str, default="random", help="single opponent agent id (e.g. 'random', 'nn2')")
     parser.add_argument("--opponent-pool", type=str, default="", help="comma-separated opponent ids sampled per game (e.g. 'random,first,nn2')")
     parser.add_argument("--autosave-every", type=validate_int, default=0, help="save checkpoint every N games during training (0 disables)")
+    parser.add_argument("--keep-last", type=validate_int, default=10, help="max number of version_XX.pt checkpoints to keep in the model folder")
     args = parser.parse_args()
 
     # # # #
@@ -233,27 +234,33 @@ if __name__ == "__main__":
         if not opponent_names:
             raise ValueError("--opponent-pool was provided but no valid opponent ids were found")
         opponent_label = "pool:" + ",".join(opponent_names)
-        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every}, keep_last={args.keep_last})...\n\nStarting {current_time_str}")
         agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent_pool(
             agent, opponent_names, args.games,
-            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save,
+            keep_last_checkpoints=args.keep_last
         )
     elif args.opponent == "self":
         opponent_label = args.opponent
-        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every}, keep_last={args.keep_last})...\n\nStarting {current_time_str}")
         agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_self(
             agent, args.games,
-            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save,
+            keep_last_checkpoints=args.keep_last
         )
     else:
         opponent_label = args.opponent
-        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every})...\n\nStarting {current_time_str}")
+        print(f"Training for {args.games:,} games vs {opponent_label} (autosave={args.autosave_every}, keep_last={args.keep_last})...\n\nStarting {current_time_str}")
         agent_wins, opponent_wins, draws, shortest, longest, elapsed = train_against_agent(
             agent, args.opponent, args.games,
-            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save
+            checkpoint_every=args.autosave_every, checkpoint_path=model_path_save,
+            keep_last_checkpoints=args.keep_last
         )
 
     display_results(opponent_label, agent_wins, opponent_wins, draws, shortest, longest, elapsed)
 
     os.makedirs(os.path.dirname(model_path_save), exist_ok=True)
     agent.save(model_path_save)
+    removed = prune_checkpoints(model_path_save, keep_last=args.keep_last)
+    if removed:
+        print(f"🧹 Pruned {len(removed)} old checkpoints (keep_last={args.keep_last})")
