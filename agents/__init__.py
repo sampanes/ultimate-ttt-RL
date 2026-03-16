@@ -4,6 +4,7 @@ from .first_available_agent import FirstAvailableAgent
 from .neural_net_agent import NeuralNetAgent
 from .neural_net_agent_2 import ModelConfig, NeuralNetAgent2
 from .neural_net_agent_3 import ModelConfigCNN, NeuralNetAgent3 
+from .super_agent_config import build_super_agent
 
 # instead of calling each constructor now, store a factory
 AGENT_FACTORIES = {
@@ -64,7 +65,8 @@ AGENT_FACTORIES = {
             label="lottery"
         ),
         model_path=""
-    )
+    ),
+    "super_agent": build_super_agent,
 }
 
 def get_agent(name: str) -> Agent:

@@ -224,7 +224,12 @@ def train_against_agent(agent, opponent_name, runs, checkpoint_every: int = 0, c
 
 
 def train_against_agent_pool(agent, opponent_names, runs, checkpoint_every: int = 0, checkpoint_path: str = None, keep_last_checkpoints: int = 0):
-    opponents = [get_agent(name) for name in opponent_names]
+    opponents = []
+    for item in opponent_names:
+        if isinstance(item, str):
+            opponents.append(get_agent(item))
+        else:
+            opponents.append(item)
     for opponent in opponents:
         if hasattr(opponent, "set_eval"):
             opponent.set_eval(True)

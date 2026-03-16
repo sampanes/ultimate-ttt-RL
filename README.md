@@ -113,3 +113,44 @@ ultimate-ttt-RL/
 ## License
 
 MIT
+
+## Super-agent mode (immortal + dormant + wake-on-surpass)
+
+If your population is flatlining from repeatedly cycling weak checkpoints, use the new **super-agent arena loop**.
+
+### What it does
+- Keeps one immortal checkpoint at `models/super_agent/1024-2048-4096-2048-1024-512-81/super_agent.pt`.
+- Never prunes/deletes that file.
+- Evaluates your latest `new_cnn` challenger checkpoint against the super-agent.
+- If challenger score is below threshold, super-agent stays dormant (no training burn).
+- If challenger crosses threshold, super-agent wakes and trains hard against a curriculum that can include `random`, `first`, `last`, `best`, `second_best`, `best_plus_random`, plus any fixed arena agents.
+- Uses the same training arena + metrics log + GUI live plot flow (`loss_logs/metrics_log.jsonl` and `gui/live_plot/live_metrics_plot.html`).
+
+### Run it (brand-new user quickstart)
+1. Install dependencies from Setup.
+2. (Optional but recommended) Train challenger snapshots first:
+   ```
+   python -m scripts.trainer_flexible_cnn --games 100_000 --opponent-pool random,first,nn2 --autosave-every 5000 --keep-last 10
+   ```
+3. Start the live plot server in another terminal:
+   ```
+   python -m http.server 8000
+   ```
+4. Run the super-agent gate + wake loop:
+   ```
+   python -m scripts.super_agent_arena --challenger-model-dir models/new_cnn/256-512-1024-512-128-81 --gate-games 60 --wake-threshold 0.55 --train-games 50000 --autosave-every 2000 --curriculum random,first,last,best,second_best,best_plus_random,nn,nn2
+   ```
+5. Open the metrics graph:
+   - `http://localhost:8000/gui/live_plot/live_metrics_plot.html`
+
+### Useful knobs
+- `--wake-threshold`: raise (e.g. 0.60) to wake less often, lower (e.g. 0.52) to wake more often.
+- `--gate-games`: increase for less noisy wake decisions.
+- `--rank-recent` + `--rank-games-per-pair`: controls how "best" and "second_best" challengers are selected from recent checkpoints.
+- `--curriculum`: set the wake training curriculum. Supports: `random`, `first`, `last`, `best`, `second_best`, `best_plus_random`, `nn`, `nn2`, `nn_big_8`, `new_cnn`, `lottery`, `super_agent`.
+
+### Suggested anti-flatline workflow
+- Train challengers with `--opponent-pool` instead of one static opponent.
+- Use regular battle pruning for challenger directories only.
+- Keep super-agent immutable + continuous (single immortal file) so your benchmark never resets.
+- Periodically run head-to-head checks to monitor if challengers are truly surpassing instead of farming one niche opponent.
