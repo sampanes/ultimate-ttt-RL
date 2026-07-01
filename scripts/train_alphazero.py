@@ -329,7 +329,7 @@ def main():
 
             # --- Checkpoint ---
             version_path = os.path.join(args.model_dir, f"version_{version_idx:03d}.pt")
-            agent.save_model(version_path)
+            agent.save(version_path)
             prune_versions(args.model_dir, args.keep_versions)
             version_idx += 1
 
@@ -340,7 +340,7 @@ def main():
                 if args.save_best and wr > best_wr:
                     best_wr = wr
                     best_path = os.path.join(args.model_dir, "best.pt")
-                    agent.save_model(best_path)
+                    agent.save(best_path)
 
             # --- Metrics ---
             if not args.no_metrics:
@@ -351,7 +351,7 @@ def main():
                     value_loss=avg_val,
                 )
 
-            wr_str = f"{wr*100:.1f}%" if not (isinstance(wr, float) and np.isnan(wr)) else "—"
+            wr_str = f"{wr*100:.1f}%" if not (isinstance(wr, float) and np.isnan(wr)) else "--"
             print(
                 f"iter {iteration+1:4d} | "
                 f"buf={len(buffer):6d} | "
@@ -364,7 +364,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\nInterrupted. Saving final checkpoint...")
-        agent.save_model(os.path.join(args.model_dir, "final.pt"))
+        agent.save(os.path.join(args.model_dir, "final.pt"))
         print("Saved.")
 
 
