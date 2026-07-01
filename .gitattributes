@@ -1,0 +1,5 @@
+*.py text eol=lf
+
+# Windows batch files must be CRLF -- LF-only breaks goto/labels in cmd.exe
+*.bat text eol=crlf
+*.cmd text eol=crlf

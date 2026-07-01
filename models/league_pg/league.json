@@ -1,0 +1,177 @@
+[
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1004.9809699552109,
+    "model_path": "models/league_pg\\archive\\archive_0000_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1193.3667487926814,
+    "model_path": "models/league_pg\\archive\\archive_0001_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1390.337345572275,
+    "model_path": "models/league_pg\\archive\\archive_0002_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1392.8438669394213,
+    "model_path": "models/league_pg\\archive\\archive_0003_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1431.3356494932857,
+    "model_path": "models/league_pg\\archive\\archive_0004_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1479.5945416082081,
+    "model_path": "models/league_pg\\archive\\archive_0005_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1540.952797954662,
+    "model_path": "models/league_pg\\archive\\archive_0006_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1590.7193846177497,
+    "model_path": "models/league_pg\\archive\\archive_0007_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1666.0061656070304,
+    "model_path": "models/league_pg\\archive\\archive_0008_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 1969.580779482962,
+    "model_path": "models/league_pg\\archive\\archive_0009_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2116.082295811119,
+    "model_path": "models/league_pg\\archive\\archive_0010_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2147.856722661782,
+    "model_path": "models/league_pg\\archive\\archive_0011_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2208.3822052188125,
+    "model_path": "models/league_pg\\archive\\archive_0012_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2305.2258412855795,
+    "model_path": "models/league_pg\\archive\\archive_0013_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2336.276068330586,
+    "model_path": "models/league_pg\\archive\\archive_0014_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2421.6186163189027,
+    "model_path": "models/league_pg\\archive\\archive_0015_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2486.808705021317,
+    "model_path": "models/league_pg\\archive\\archive_0016_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2507.3311885710204,
+    "model_path": "models/league_pg\\archive\\archive_0017_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2643.207918052282,
+    "model_path": "models/league_pg\\archive\\archive_0018_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2670.3328760182017,
+    "model_path": "models/league_pg\\archive\\archive_0019_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2732.9845821667327,
+    "model_path": "models/league_pg\\archive\\archive_0020_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 2833.2145091381913,
+    "model_path": "models/league_pg\\archive\\archive_0021_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3027.2336999974286,
+    "model_path": "models/league_pg\\archive\\archive_0022_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3031.615983761823,
+    "model_path": "models/league_pg\\archive\\archive_0023_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3111.812364082051,
+    "model_path": "models/league_pg\\archive\\archive_0024_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3336.7964337531344,
+    "model_path": "models/league_pg\\archive\\archive_0025_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3570.1252339311086,
+    "model_path": "models/league_pg\\archive\\archive_0026_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3721.029888176031,
+    "model_path": "models/league_pg\\archive\\archive_0027_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 3888.8486525338676,
+    "model_path": "models/league_pg\\archive\\archive_0028_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4098.630549612402,
+    "model_path": "models/league_pg\\archive\\archive_0029_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4126.56646542464,
+    "model_path": "models/league_pg\\archive\\archive_0030_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4237.948160771871,
+    "model_path": "models/league_pg\\archive\\archive_0031_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4278.775658887811,
+    "model_path": "models/league_pg\\archive\\archive_0032_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4284.594021038368,
+    "model_path": "models/league_pg\\archive\\archive_0033_NeuralNetAgentPG.pt"
+  },
+  {
+    "name": "NeuralNetAgentPG",
+    "elo": 4437.337175048648,
+    "model_path": "models/league_pg\\archive\\archive_0034_NeuralNetAgentPG.pt"
+  }
+]

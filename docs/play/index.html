@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Play — Ultimate Tic-Tac-Toe AI</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0d13;
+      --surface:  #131722;
+      --surface2: #1b212e;
+      --border:   #29313f;
+      --accent:   #3b9eff;
+      --accent2:  #22d3ee;
+      --green:    #22c55e;
+      --yellow:   #eab308;
+      --red:      #ef4444;
+      --text:     #e6edf3;
+      --muted:    #8b97a8;
+
+      /* board sizing — tweak one var to resize everything */
+      --cell:        40px;
+      --cell-gap:    3px;
+      --mini-gap:    10px;
+      --mini-radius: 5px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1.5rem 1rem 3rem;
+      gap: 1.25rem;
+    }
+
+    /* ── header ── */
+    .top-bar {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .back-link {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .back-link:hover { color: var(--text); }
+    .top-bar h1 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .top-bar h1 span { color: var(--accent); }
+
+    /* ── status bar ── */
+    #status-bar {
+      width: 100%;
+      max-width: 520px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.9rem;
+      min-height: 44px;
+    }
+    #status-text {
+      font-weight: 600;
+    }
+    #status-text.your-turn  { color: var(--accent2); }
+    #status-text.ai-turn    { color: var(--muted); }
+    #status-text.you-win    { color: var(--green); }
+    #status-text.ai-win     { color: var(--red); }
+    #status-text.draw       { color: var(--yellow); }
+    #status-text.loading    { color: var(--muted); font-weight: 400; }
+    #status-text.error      { color: var(--red); font-size: 0.78rem; font-weight: 400; }
+
+    .indicator {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+    .indicator.pulse {
+      background: var(--accent);
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── difficulty row ── */
+    .diff-row {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .diff-btn {
+      padding: 0.3rem 0.75rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s, border-color 0.1s;
+    }
+    .diff-btn:hover { border-color: var(--accent); color: var(--text); }
+    .diff-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    /* ── board ── */
+    #board {
+      display: grid;
+      grid-template-columns: repeat(3, auto);
+      gap: var(--mini-gap);
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      padding: var(--mini-gap);
+      user-select: none;
+    }
+
+    .mini {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, var(--cell));
+      grid-template-rows:    repeat(3, var(--cell));
+      gap: var(--cell-gap);
+      background: var(--border);
+      border: 2px solid var(--border);
+      border-radius: var(--mini-radius);
+      padding: var(--cell-gap);
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    /* active (forced) mini */
+    .mini.active {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+    }
+
+    /* won minis — faint tint + large letter overlay */
+    .mini.won-x { border-color: var(--accent2); }
+    .mini.won-o { border-color: var(--yellow); }
+    .mini.won-x .mini-result { color: var(--accent2); }
+    .mini.won-o .mini-result { color: var(--yellow); }
+    .mini.draw  { border-color: var(--muted); }
+
+    .mini-result {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: calc(var(--cell) * 2.2);
+      font-weight: 900;
+      letter-spacing: -0.05em;
+      pointer-events: none;
+      opacity: 0.55;
+    }
+    .mini.won-x .mini-result,
+    .mini.won-o .mini-result,
+    .mini.draw  .mini-result { display: flex; }
+
+    /* cells */
+    .cell {
+      background: var(--surface);
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: calc(var(--cell) * 0.48);
+      font-weight: 800;
+      color: var(--muted);
+      transition: background 0.1s;
+    }
+    .cell.x    { color: var(--accent); }
+    .cell.o    { color: var(--yellow); }
+    .cell.valid {
+      cursor: pointer;
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    }
+    .cell.valid:hover {
+      background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+    }
+    .cell.last {
+      background: color-mix(in srgb, var(--accent2) 12%, var(--surface));
+    }
+
+    /* ── controls ── */
+    .controls {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .btn {
+      padding: 0.55rem 1.2rem;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter 0.12s, transform 0.08s;
+    }
+    .btn:hover  { filter: brightness(1.15); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; filter: none; }
+
+    /* ── model footer ── */
+    #model-info {
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-align: center;
+      line-height: 1.7;
+    }
+    #model-info a { color: var(--accent); text-decoration: none; }
+    #model-info a:hover { text-decoration: underline; }
+    #model-name { color: var(--accent2); }
+
+    /* ── loading overlay ── */
+    #loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 13, 19, 0.85);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
+      font-size: 0.95rem;
+      color: var(--muted);
+      z-index: 100;
+    }
+    #loading-overlay.show { display: flex; }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 420px) {
+      :root { --cell: 32px; --mini-gap: 7px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- loading overlay (while model initializes) -->
+<div id="loading-overlay" class="show">
+  <div class="spinner"></div>
+  <div id="loading-msg">Loading model…</div>
+</div>
+
+<div class="top-bar">
+  <a class="back-link" href="../">&#8592; Back</a>
+  <h1>Ultimate Tic-Tac-Toe <span>AI</span></h1>
+</div>
+
+<div id="status-bar">
+  <div id="indicator" class="indicator"></div>
+  <div id="status-text" class="loading">Initialising…</div>
+  <div style="width:10px"></div><!-- spacer -->
+</div>
+
+<div class="diff-row" id="diff-row">
+  <button class="diff-btn" data-temp="1.8">Easy</button>
+  <button class="diff-btn" data-temp="0.45">Medium</button>
+  <button class="diff-btn active" data-temp="0.0">Hard</button>
+</div>
+
+<div id="board"><!-- built by JS --></div>
+
+<div class="controls">
+  <button class="btn primary" id="btn-new">New Game</button>
+  <button class="btn" id="btn-swap">Swap Sides</button>
+</div>
+
+<div id="model-info">
+  Model: <span id="model-name">loading…</span>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/sampanes/ultimate-ttt-RL" target="_blank" rel="noopener">source</a>
+</div>
+
+<!-- ─────────────────────────────────────────────── scripts ── -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script src="uttt_engine.js"></script>
+<script src="agent.js"></script>
+<script>
+// ── Game state ───────────────────────────────────────────────────────────────
+let _game        = null;   // current GameState
+let _humanSide   = X;      // which player the human controls
+let _runner      = null;   // AgentRunner (null until loaded)
+let _aiThinking  = false;
+let _temperature = 0.0;    // current difficulty temperature
+
+// ── Board DOM ────────────────────────────────────────────────────────────────
+const _cells = new Array(81);    // flat array of <div class="cell">
+const _minis = new Array(9);     // <div class="mini">
+
+function _buildBoard() {
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+
+  for (let m = 0; m < 9; m++) {
+    const miniDiv = document.createElement('div');
+    miniDiv.className = 'mini';
+
+    // large result letter overlay (shown when mini is decided)
+    const resultSpan = document.createElement('span');
+    resultSpan.className = 'mini-result';
+    miniDiv.appendChild(resultSpan);
+
+    for (const idx of MINI_INDICES[m]) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.idx = idx;
+      cell.addEventListener('click', () => _onCellClick(idx));
+      miniDiv.appendChild(cell);
+      _cells[idx] = cell;
+    }
+
+    board.appendChild(miniDiv);
+    _minis[m] = miniDiv;
+  }
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function _render() {
+  if (!_game) return;
+
+  const validSet = new Set(_game.validMoves());
+
+  // Update each cell.
+  for (let i = 0; i < 81; i++) {
+    const el = _cells[i];
+    el.className = 'cell';
+    el.textContent = '';
+
+    const v = _game.board[i];
+    if      (v === X) { el.classList.add('x'); el.textContent = 'X'; }
+    else if (v === O) { el.classList.add('o'); el.textContent = 'O'; }
+
+    if (i === _game.lastMove) el.classList.add('last');
+
+    if (validSet.has(i) && !_aiThinking && !_game.isOver() && _game.player === _humanSide) {
+      el.classList.add('valid');
+    }
+  }
+
+  // Update each mini-board.
+  for (let m = 0; m < 9; m++) {
+    const md  = _minis[m];
+    const mw  = _game.miniWinner[m];
+    const rs  = md.querySelector('.mini-result');
+
+    md.classList.remove('active', 'won-x', 'won-o', 'draw');
+    rs.textContent = '';
+
+    if (mw === X)    { md.classList.add('won-x'); rs.textContent = 'X'; }
+    else if (mw === O)    { md.classList.add('won-o'); rs.textContent = 'O'; }
+    else if (mw === DRAW) { md.classList.add('draw');  rs.textContent = '·'; }
+    else if (!_game.isOver() && _game.player === _humanSide) {
+      // Highlight the mini the human must play in.
+      const forced = (_game.constraint === -1) ? null : _game.constraint;
+      if (forced === null || forced === m) {
+        // Active only if this mini actually contains valid moves.
+        const hasValid = MINI_INDICES[m].some(c => validSet.has(c));
+        if (hasValid) md.classList.add('active');
+      }
+    }
+  }
+}
+
+// ── Status bar ───────────────────────────────────────────────────────────────
+function _setStatus(kind, text) {
+  const st  = document.getElementById('status-text');
+  const ind = document.getElementById('indicator');
+  st.className = kind;
+  st.textContent = text;
+  ind.className  = 'indicator' + (kind === 'ai-turn' ? ' pulse' : '');
+}
+
+function _updateStatus() {
+  if (!_game) return;
+  if (_game.isOver()) {
+    if      (_game.winner === _humanSide) _setStatus('you-win',  'You win!');
+    else if (_game.winner === DRAW)       _setStatus('draw',     'Draw!');
+    else                                  _setStatus('ai-win',   'AI wins.');
+    return;
+  }
+  if (_aiThinking) { _setStatus('ai-turn', 'AI thinking…'); return; }
+  _setStatus('your-turn', 'Your turn');
+}
+
+// ── Move handling ─────────────────────────────────────────────────────────────
+function _onCellClick(idx) {
+  if (!_runner || !_game || _aiThinking || _game.isOver()) return;
+  if (_game.player !== _humanSide) return;
+  if (!_game.validMoves().includes(idx)) return;
+
+  _game.makeMove(idx);
+  _render();
+  _updateStatus();
+
+  if (!_game.isOver()) _scheduleAiMove();
+}
+
+function _scheduleAiMove() {
+  _aiThinking = true;
+  _render();       // remove valid-cell highlighting while AI thinks
+  _updateStatus();
+  setTimeout(_doAiMove, 80);
+}
+
+async function _doAiMove() {
+  if (!_runner || !_game || _game.isOver()) { _aiThinking = false; return; }
+  try {
+    const move = await _runner.selectMove(_game, _temperature);
+    _game.makeMove(move);
+  } finally {
+    _aiThinking = false;
+  }
+  _render();
+  _updateStatus();
+}
+
+// ── Game control ──────────────────────────────────────────────────────────────
+function _newGame() {
+  if (_aiThinking) return;
+  _game = new GameState();
+  _render();
+  _updateStatus();
+  // AI goes first when human is O.
+  if (_humanSide !== _game.player) _scheduleAiMove();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function _init() {
+  _buildBoard();
+
+  // Wire up controls.
+  document.getElementById('btn-new').addEventListener('click', () => _newGame());
+
+  document.getElementById('btn-swap').addEventListener('click', () => {
+    if (_aiThinking) return;
+    _humanSide = (_humanSide === X) ? O : X;
+    _newGame();
+  });
+
+  document.querySelectorAll('.diff-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _temperature = parseFloat(btn.dataset.temp);
+    });
+  });
+
+  // Load the agent.
+  const overlay = document.getElementById('loading-overlay');
+  const loadMsg = document.getElementById('loading-msg');
+  const nameEl  = document.getElementById('model-name');
+
+  try {
+    loadMsg.textContent = 'Fetching model config…';
+    _runner = await loadAgent('../models/model_config.json');
+    nameEl.textContent = _runner.name;
+    overlay.classList.remove('show');
+    _newGame();
+  } catch (err) {
+    loadMsg.textContent = '';
+    overlay.classList.remove('show');
+    _setStatus('error', err.message);
+    nameEl.textContent = 'not loaded';
+    // Still let the human play; moves just won't get AI replies.
+    _game = new GameState();
+    _render();
+  }
+}
+
+_init();
+</script>
+</body>
+</html>

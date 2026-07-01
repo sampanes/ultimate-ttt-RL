@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Training Metrics</title>
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%93%8A</text></svg>" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Palette/type intentionally mirror the Arena dashboard (gui/arena/static/css/style.css)
+         so the two monitoring tools read as one product.
+         NOTE: this same loss curve is also embedded in the Arena dashboard's "Training" tab
+         (served via /api/metrics). This standalone page is the zero-dependency fallback for
+         watching a single-net run when you don't want to start the Flask server. -->
+    <style>
+        :root {
+            --clr-bg: #0a0d13;
+            --clr-surface: #131722;
+            --clr-surface2: #1b212e;
+            --clr-border: #29313f;
+            --clr-text: #e6edf3;
+            --clr-muted: #8b97a8;
+            --clr-loss: #ef4444;
+            --clr-eps: #22d3ee;
+            --clr-win: #22c55e;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: var(--clr-bg);
+            color: var(--clr-text);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            padding: 1.25rem;
+        }
+
+        .wrap {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+
+        h2 {
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+        }
+
+        .live-label {
+            font-size: 0.78rem;
+            color: var(--clr-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .pulse-ring {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--clr-eps);
+            animation: pulse-ring 2s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.4); }
+            70% { box-shadow: 0 0 0 8px rgba(34, 211, 238, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
+        }
+
+        button {
+            background: var(--clr-surface2);
+            color: var(--clr-text);
+            border: 1px solid var(--clr-border);
+            padding: 0.5rem 0.9rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: border-color 0.18s ease, background 0.18s ease;
+        }
+
+        button:hover {
+            border-color: var(--clr-eps);
+        }
+
+        .card {
+            background: var(--clr-surface);
+            border: 1px solid var(--clr-border);
+            border-radius: 14px;
+            padding: 1rem 1.1rem 1.25rem;
+        }
+
+        .chart-box {
+            height: 62vh;
+            width: 100%;
+        }
+
+        .hint {
+            font-size: 0.72rem;
+            color: var(--clr-muted);
+            margin-top: 0.75rem;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <div class="topbar">
+            <h2 id="metricsHeader">[#] Training Metrics <span style="color:var(--clr-muted);font-weight:400;">(loading...)</span></h2>
+            <div class="topbar-right">
+                <span class="live-label"><span class="pulse-ring"></span> Live . 2s</span>
+                <button onclick="chart.resetZoom()">Reset Zoom</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="chart-box">
+                <canvas id="metricsChart"></canvas>
+            </div>
+            <div class="hint">
+                Loss reads on the <strong style="color:var(--clr-loss);">right</strong> axis (unbounded);
+                epsilon &amp; win rate on the <strong style="color:var(--clr-eps);">left</strong> (0-1).
+                <strong style="color:#a78bfa;">Stage</strong> (stepped, 0-8) and
+                <strong style="color:#f59e0b;">ELO</strong> ride their own axes.
+                Ctrl + scroll / drag to zoom &amp; pan the x-axis. Older logs without stage/ELO show gaps for those lines.
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <script>
+        function movingAverage(data, windowSize = 20) {
+            const result = [];
+            for (let i = 0; i < data.length; i++) {
+                const start = Math.max(0, i - windowSize + 1);
+                const window = data.slice(start, i + 1);
+                const avg = window.reduce((sum, val) => sum + val, 0) / window.length;
+                result.push(avg);
+            }
+            return result;
+        }
+
+        function downsample(arr, maxPoints) {
+            if (arr.length <= maxPoints) return arr.slice();
+            const stride = Math.ceil(arr.length / maxPoints);
+            const result = [];
+            for (let i = 0; i < arr.length; i += stride) {
+                const slice = arr.slice(i, i + stride).filter(v => !Number.isNaN(v));   // NaN-safe: keep real values in a mixed old->new bucket; all-NaN -> NaN (true gap)
+                const avg = slice.length ? slice.reduce((a, b) => a + b, 0) / slice.length : NaN;
+                result.push(avg);
+            }
+            return result;
+        }
+
+        const gridColor = 'rgba(41,49,63,0.5)';
+        const tickColor = '#64748b';
+
+        const ctx = document.getElementById('metricsChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Loss',
+                        yAxisID: 'yLoss',          // unbounded -> its own right axis (was clipped at max:1)
+                        borderColor: '#ef4444',
+                        pointBackgroundColor: '#ef4444',
+                        data: [],
+                        fill: false,
+                        showLine: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4,
+                        borderWidth: 0,
+                    },
+                    {
+                        label: 'Epsilon',
+                        yAxisID: 'y',
+                        borderColor: '#22d3ee',
+                        pointBackgroundColor: '#22d3ee',
+                        data: [],
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: 'Winrate',
+                        yAxisID: 'y',
+                        borderColor: '#22c55e',
+                        pointBackgroundColor: '#22c55e',
+                        data: [],
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: 'Stage',
+                        yAxisID: 'yStage',
+                        borderColor: '#a78bfa',
+                        pointBackgroundColor: '#a78bfa',
+                        data: [],
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        stepped: true,
+                        spanGaps: false,
+                    },
+                    {
+                        label: 'ELO',
+                        yAxisID: 'yElo',
+                        borderColor: '#f59e0b',
+                        pointBackgroundColor: '#f59e0b',
+                        data: [],
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        spanGaps: false,
+                    },
+                    {
+                        label: 'Value EV',         // explained variance in (-inf,1]; shares the 0-1 axis
+                        yAxisID: 'y',
+                        borderColor: '#ec4899',
+                        pointBackgroundColor: '#ec4899',
+                        data: [],
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        borderDash: [4, 3],
+                        spanGaps: false,
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },     // frequent refresh -> skip the per-tick animation (smoother, less CPU)
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        grid: { color: gridColor },
+                        ticks: { color: tickColor, font: { size: 10 }, maxTicksLimit: 12 },
+                        title: { display: true, text: 'training step (downsampled)', color: tickColor, font: { size: 11 } }
+                    },
+                    y: {                            // left: the 0-1 metrics
+                        position: 'left',
+                        beginAtZero: true,
+                        max: 1,
+                        grid: { color: gridColor },
+                        ticks: { color: tickColor, font: { size: 10 } },
+                        title: { display: true, text: 'epsilon / win rate', color: tickColor, font: { size: 11 } }
+                    },
+                    yLoss: {                        // right: unbounded loss (the fix -- no longer capped at 1)
+                        position: 'right',
+                        beginAtZero: true,
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: tickColor, font: { size: 10 } },
+                        title: { display: true, text: 'loss', color: '#ef4444', font: { size: 11 } }
+                    },
+                    yStage: {                       // left: curriculum stage staircase (0-8, integer)
+                        position: 'left',
+                        min: 0, max: 8, offset: true,
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#a78bfa', font: { size: 10 }, stepSize: 1, precision: 0 },
+                        title: { display: true, text: 'stage', color: '#a78bfa', font: { size: 11 } }
+                    },
+                    yElo: {                         // right: learner ELO (~600-2000)
+                        position: 'right',
+                        offset: true,
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#f59e0b', font: { size: 10 } },
+                        title: { display: true, text: 'ELO', color: '#f59e0b', font: { size: 11 } }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { usePointStyle: true, color: '#8b97a8', font: { size: 12 }, padding: 14 }
+                    },
+                    tooltip: {
+                        backgroundColor: '#131722',
+                        borderColor: '#29313f',
+                        borderWidth: 1,
+                        titleColor: '#e6edf3',
+                        bodyColor: '#8b97a8',
+                        padding: 10
+                    },
+                    zoom: {
+                        pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
+                        zoom: {
+                            pinch: { enabled: true },
+                            wheel: { enabled: true, modifierKey: 'ctrl' },
+                            mode: 'x'
+                        }
+                    }
+                }
+            }
+        });
+
+        // Append-only log -> its length only grows. Track the last size we rendered so the
+        // common idle case (no new line written since last tick) costs nothing: no parse,
+        // no moving-average, no downsample, no chart redraw. inFlight guards against a slow
+        // fetch overlapping the next interval as the file grows.
+        let lastLen = -1;
+        let inFlight = false;
+
+        async function fetchMetrics() {
+            if (inFlight) return;
+            inFlight = true;
+            try {
+                const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+
+                if (text.length === lastLen) return;   // nothing new appended -> skip all work
+                lastLen = text.length;
+
+                const lines = text.trim().split('\n').filter(Boolean);
+                if (lines.length === 0) {
+                    document.getElementById("metricsHeader").innerHTML =
+                        '[#] Training Metrics <span style="color:var(--clr-muted);font-weight:400;">(no data yet...)</span>';
+                    return;
+                }
+                const data = lines.map(line => JSON.parse(line));
+
+                const losses = data.map(d => d.loss);
+                const epsilons = data.map(d => d.epsilon);
+                const winrates = data.map(d => d.winrate);
+                const stages = data.map(d => d.stage ?? NaN);   // missing on old logs -> gap (NOT moving-averaged)
+                const elos = data.map(d => d.elo ?? NaN);
+                const evs = data.map(d => d.explained_var ?? NaN);   // value-head quality; gap on old logs
+
+                const MAX_POINTS = 5000;
+
+                const smoothedLoss = downsample(movingAverage(losses, 8), MAX_POINTS);
+                const downsampledEps = downsample(epsilons, MAX_POINTS);
+                const downsampledWin = downsample(winrates, MAX_POINTS);
+                const downsampledStage = downsample(stages, MAX_POINTS);
+                const downsampledElo = downsample(elos, MAX_POINTS);
+                const downsampledEv = downsample(evs, MAX_POINTS);
+
+                chart.data.labels = smoothedLoss.map((_, i) => i);
+                chart.data.datasets[0].data = smoothedLoss;
+                chart.data.datasets[1].data = downsampledEps;
+                chart.data.datasets[2].data = downsampledWin;
+                chart.data.datasets[3].data = downsampledStage;
+                chart.data.datasets[4].data = downsampledElo;
+                chart.data.datasets[5].data = downsampledEv;
+
+                const latest = data[data.length - 1];
+                const eps = (latest.epsilon ?? 0).toFixed(3);
+                const win = ((latest.winrate ?? 0) * 100).toFixed(1);
+                const loss = (latest.loss ?? 0).toFixed(3);
+                // stage 0 is valid -> test !== null, not ?? (which would treat 0 as missing).
+                const stageStr = (latest.stage ?? null) !== null ? latest.stage : '--';
+                const eloStr   = (latest.elo   ?? null) !== null ? Math.round(latest.elo) : '--';
+                const evStr    = (latest.explained_var ?? null) !== null ? latest.explained_var.toFixed(2) : '--';
+                document.getElementById("metricsHeader").innerHTML =
+                    `[#] Training Metrics <span style="color:var(--clr-muted);font-weight:400;">(loss ${loss} . epsilon=${eps} . win ${win}% . stage ${stageStr} . ELO ${eloStr} . EV ${evStr})</span>`;
+
+                chart.update();
+            } catch (e) {
+                console.error("Failed to fetch or parse metrics:", e);
+            } finally {
+                inFlight = false;
+            }
+        }
+
+        fetchMetrics();
+        setInterval(fetchMetrics, 2000);   // 2s: smoother than 1s, and idle ticks are now near-free
+    </script>
+</body>
+
+</html>

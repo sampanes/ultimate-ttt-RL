@@ -1,0 +1,95 @@
+[OK] C++ engine loaded from <repo>\engine\cpp\build\Release
+Phase-0c diagnostic -- sequential learn() numeric structure
+network=small  games=1000  gamma=0.99  (random weights, nothing trained)
+
+=== C++ ENGINE (env check) ===
+  active (loaded)   : True
+  expected build dir: <repo>\engine\cpp\build\Release
+  build dir exists  : True
+  -> GameState is C++-backed (faster make_move). NOTE clone()/MCTS
+     rollouts still run in Python (the known half-done part) -- search
+     is NOT accelerated yet. Since it's live, run engine/cpp/test_engine.py
+     once for a Python/C++ parity check (correctness insurance, not speed).
+
+=== PERSPECTIVE CHANNEL (item 1) -- confirmation only ===
+  tensor shape = (7, 9, 9)
+             channel   X-to-move mean   O-to-move mean
+        0:X-pos(abs)           0.0000           0.0123
+        1:O-pos(abs)           0.0000           0.0000
+   2:turn(+1=X,-1=O)           1.0000          -1.0000
+             3:valid           1.0000           0.0988
+     4:mini-win(abs)           0.0000           0.0000
+         5:last-move           0.0000           0.0123
+              6:bias           1.0000           1.0000
+  -> ch2 flips sign with turn; X/O sit on absolute ch0/1/4. A color-swapped
+     mirror is a DIFFERENT input. Fix = canonicalize to side-to-move (put
+     'my' pieces on one channel, 'theirs' on another; ch2 becomes constant).
+
+=== NUMERIC TRIO (items 2 & 3) -- gamma=0.99, games=1000 ===
+  g   T   term  adv_mean  adv_std  |act_sum|  |act_mean|  val_loss   sum/val  mean/val
+  [shapes] log_probs=(31,) values=(31,) returns=(31,) adv=(31,)  (if adv is 2-D that's a broadcasting bug worth flagging)
+  0  31    1.3     1.541    0.212      6.174       0.199     2.419      2.55      0.08
+  1  32   -1.6    -1.915    0.157      4.144       0.130     3.691      1.12      0.04
+  2  25   -1.0    -1.074    0.202      2.878       0.115     1.194      2.41      0.10
+  3  28    1.0     1.120    0.143      0.971       0.035     1.274      0.76      0.03
+  4  27    1.3     1.144    0.192      3.172       0.117     1.345      2.36      0.09
+  5  28   -0.1    -0.008    0.220      3.213       0.115     0.048     66.49      2.37
+  6  33   -0.4    -0.163    0.149      8.267       0.251     0.049    168.68      5.11
+  7  25   -0.1    -0.178    0.119      0.536       0.021     0.046     11.73      0.47
+  8  27    1.0     1.055    0.153      0.561       0.021     1.136      0.49      0.02
+  9  25   -1.6    -0.902    0.236      2.683       0.107     0.869      3.09      0.12
+ 10  35    0.2     0.201    0.213      0.246       0.007     0.086      2.87      0.08
+ 11  29   -1.3    -1.019    0.211      4.744       0.164     1.082      4.38      0.15
+ 12  31    1.3     0.897    0.238      3.395       0.110     0.861      3.94      0.13
+ 13  26    1.3     1.234    0.257      0.795       0.031     1.589      0.50      0.02
+ 14  31   -0.4    -0.491    0.166      1.813       0.058     0.269      6.73      0.22
+ 15  34    1.3     1.570    0.195      4.823       0.142     2.502      1.93      0.06
+ 16  32    1.0     0.860    0.233      6.595       0.206     0.794      8.31      0.26
+ 17  31   -1.3    -1.530    0.247      3.871       0.125     2.401      1.61      0.05
+ 18  33   -1.0    -1.353    0.147      3.747       0.114     1.853      2.02      0.06
+ 19  26   -1.0    -1.673    0.216      3.907       0.150     2.845      1.37      0.05
+ 20  35   -0.7    -0.277    0.282      6.033       0.172     0.156     38.64      1.10
+ 21  31   -0.7    -0.705    0.207      3.880       0.125     0.540      7.19      0.23
+ 22  26    1.3     0.608    0.268      5.759       0.221     0.441     13.06      0.50
+ 23  26    1.0     0.484    0.246      1.387       0.053     0.295      4.71      0.18
+ 24  32   -0.7    -0.130    0.241      8.849       0.277     0.075    118.38      3.70
+ 25  32    1.3     0.835    0.259      8.532       0.267     0.764     11.16      0.35
+ 26  28    0.2    -0.571    0.259     13.431       0.480     0.394     34.11      1.22
+ 27  31    0.2    -0.255    0.214      7.707       0.249     0.111     69.68      2.25
+ 28  27   -1.0    -1.156    0.137      3.496       0.129     1.354      2.58      0.10
+ 29  35   -1.3    -1.576    0.102      2.033       0.058     2.496      0.81      0.02
+ 30  30    1.3     1.129    0.194      1.827       0.061     1.313      1.39      0.05
+ 31  29    1.0     1.039    0.399      4.978       0.172     1.239      4.02      0.14
+ 32  26   -1.3    -1.285    0.200      3.505       0.135     1.692      2.07      0.08
+ 33  28    1.3     1.138    0.167      9.159       0.327     1.322      6.93      0.25
+ 34  27   -1.6    -1.148    0.237      2.934       0.109     1.375      2.13      0.08
+ 35  28    1.3     0.959    0.111      1.193       0.043     0.931      1.28      0.05
+ 36  32   -1.3    -1.443    0.147      7.420       0.232     2.104      3.53      0.11
+ 37  30   -0.1    -0.054    0.148      1.973       0.066     0.025     79.53      2.65
+ 38  27    1.0     0.739    0.123      6.613       0.245     0.561     11.79      0.44
+ 39  29   -1.3    -1.657    0.130      5.180       0.179     2.761      1.88      0.06
+ 40  24    1.3     1.562    0.111      1.113       0.046     2.451      0.45      0.02
+ 41  28   -0.1    -0.259    0.187      2.500       0.089     0.102     24.53      0.88
+ 42  31    1.3     1.469    0.146      3.345       0.108     2.180      1.53      0.05
+ 43  33    1.3     1.334    0.111      1.591       0.048     1.792      0.89      0.03
+ 44  28   -1.3    -0.944    0.211      0.415       0.015     0.936      0.44      0.02
+ 45  31   -1.3    -1.231    0.265      4.007       0.129     1.586      2.53      0.08
+ 46  31   -1.6    -1.387    0.452      3.659       0.118     2.128      1.72      0.06
+ 47  30    1.3     1.295    0.131     10.034       0.334     1.695      5.92      0.20
+ 48  31    1.3     1.429    0.099      3.943       0.127     2.052      1.92      0.06
+ 49  32   -1.0    -0.547    0.183      0.627       0.020     0.333      1.88      0.06
+  ... table truncated to first 50 games with trajectories; aggregates below use all 1000 ...
+
+--- AGGREGATE ---
+  T (game length): min=17 mean=29.4 max=38
+  mean |actor_sum| = 4.074   mean |actor_mean| = 0.137   mean value_loss = 1.285
+  mean actor_sum/value_loss  = 17.21   (item 3: large + T-growing => value head under-weighted ~T)
+  mean actor_mean/value_loss = 0.54   (the .mean() variant the fix would switch to)
+  actor_sum/value_loss p25/p50/p75 = 1.16 / 2.87 / 8.45
+  |actor_sum| short games (T<=30)=3.474  vs  long games (T>30)=5.041
+  (item 3: under .sum() the long-game term should be clearly larger)
+
+  adv_mean column: under per-game norm it sits ~0.000 every game (item 2 --
+  the win/loss sign in the *raw* return is being normalized away).
+
+Done. Send this whole output back (e.g. save with '> diag_0c.txt').

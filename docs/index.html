@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ultimate Tic-Tac-Toe AI</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --accent:   #3b9eff;
+      --accent2:  #22d3ee;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --win:      #3fb950;
+      --warn:     #d29922;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 3rem 1.5rem;
+    }
+
+    .hero {
+      text-align: center;
+      max-width: 640px;
+      margin-bottom: 3rem;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      border: 1px solid var(--accent2);
+      border-radius: 99px;
+      padding: 0.25rem 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--text) 30%, var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 1rem;
+    }
+
+    .subtitle {
+      font-size: 1.05rem;
+      color: var(--muted);
+      line-height: 1.65;
+      margin-bottom: 2rem;
+    }
+
+    .cta-row {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.7rem 1.5rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: filter 0.15s, transform 0.1s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn:hover  { filter: brightness(1.12); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    /* board preview */
+    .board-wrap {
+      margin: 0 auto 3rem;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      width: min(280px, 80vw);
+    }
+    .mini {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+      background: var(--border);
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      padding: 4px;
+    }
+    .mini.won-x { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+    .mini.won-o { border-color: var(--warn);   background: color-mix(in srgb, var(--warn)   12%, var(--surface)); }
+    .cell {
+      aspect-ratio: 1;
+      border-radius: 2px;
+      background: var(--surface);
+      display: flex; align-items: center; justify-content: center;
+      font-size: clamp(0.6rem, 2vw, 0.85rem);
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .cell.x { color: var(--accent); }
+    .cell.o { color: var(--warn); }
+
+    /* stats row */
+    .stats {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 3rem;
+      max-width: 640px;
+    }
+    .stat {
+      text-align: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1.4rem;
+      min-width: 120px;
+    }
+    .stat-val {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .stat-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 0.2rem;
+    }
+
+    /* roadmap */
+    .roadmap {
+      width: 100%;
+      max-width: 560px;
+      margin-bottom: 3rem;
+    }
+    .roadmap h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 0.9rem;
+    }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.85rem;
+      padding: 0.7rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .step:last-child { border-bottom: none; }
+    .dot {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      margin-top: 1px;
+    }
+    .dot.done    { background: var(--win);    color: #0d1117; }
+    .dot.active  { background: var(--accent); color: #fff; }
+    .dot.pending { background: var(--border); color: var(--muted); }
+    .step-title  { font-weight: 600; font-size: 0.9rem; }
+    .step-desc   { font-size: 0.8rem; color: var(--muted); margin-top: 0.15rem; }
+
+    footer {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <div class="hero">
+    <div class="badge">Reinforcement Learning</div>
+    <h1>Ultimate Tic-Tac-Toe AI</h1>
+    <p class="subtitle">
+      A from-scratch RL agent trained to play Ultimate Tic-Tac-Toe —
+      a 9-board game where every move sends your opponent to a new mini-board.
+      Policy-gradient self-play, alpha-beta oracle grading, and MCTS at inference.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="./play/">
+        &#9654; Play now
+      </a>
+      <a class="btn btn-secondary"
+         href="https://github.com/sampanes/ultimate-ttt-RL"
+         target="_blank" rel="noopener">
+        &#128196; Source
+      </a>
+      <a class="btn btn-secondary"
+         href="https://huggingface.co/spaces/ratherbeembed/ultimate-tic-tac-toe"
+         target="_blank" rel="noopener">
+        HuggingFace
+      </a>
+    </div>
+  </div>
+
+  <!-- decorative board -->
+  <div class="board-wrap" aria-hidden="true">
+    <!-- row 0 -->
+    <div class="mini won-x">
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell x">X</div>
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell"></div>
+      <div class="cell"></div><div class="cell o">O</div><div class="cell x">X</div>
+    </div>
+    <div class="mini won-x">
+      <div class="cell x">X</div><div class="cell x">X</div><div class="cell x">X</div>
+      <div class="cell o">O</div><div class="cell"></div><div class="cell o">O</div>
+      <div class="cell"></div><div class="cell o">O</div><div class="cell"></div>
+    </div>
+    <div class="mini">
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell o">O</div>
+      <div class="cell"></div><div class="cell x">X</div><div class="cell"></div>
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell"></div>
+    </div>
+    <!-- row 1 -->
+    <div class="mini">
+      <div class="cell o">O</div><div class="cell"></div><div class="cell x">X</div>
+      <div class="cell"></div><div class="cell o">O</div><div class="cell x">X</div>
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell"></div>
+    </div>
+    <div class="mini won-o">
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell o">O</div>
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell"></div>
+      <div class="cell o">O</div><div class="cell"></div><div class="cell x">X</div>
+    </div>
+    <div class="mini">
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell"></div>
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell o">O</div>
+      <div class="cell"></div><div class="cell x">X</div><div class="cell"></div>
+    </div>
+    <!-- row 2 -->
+    <div class="mini">
+      <div class="cell"></div><div class="cell x">X</div><div class="cell o">O</div>
+      <div class="cell x">X</div><div class="cell"></div><div class="cell o">O</div>
+      <div class="cell o">O</div><div class="cell"></div><div class="cell x">X</div>
+    </div>
+    <div class="mini">
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell x">X</div>
+      <div class="cell"></div><div class="cell o">O</div><div class="cell x">X</div>
+      <div class="cell o">O</div><div class="cell x">X</div><div class="cell"></div>
+    </div>
+    <div class="mini">
+      <div class="cell o">O</div><div class="cell"></div><div class="cell x">X</div>
+      <div class="cell x">X</div><div class="cell o">O</div><div class="cell"></div>
+      <div class="cell"></div><div class="cell x">X</div><div class="cell o">O</div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-val">6.3%</div>
+      <div class="stat-label">endgame blunder rate</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">&lt;1 ms</div>
+      <div class="stat-label">inference / move</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val">1.3 MB</div>
+      <div class="stat-label">int8 model size</div>
+    </div>
+  </div>
+
+  <div class="roadmap">
+    <h2>Roadmap</h2>
+    <div class="step">
+      <div class="dot done">&#10003;</div>
+      <div>
+        <div class="step-title">M2 — Arena + oracle grading</div>
+        <div class="step-desc">Self-play arena, alpha-beta endgame oracle, provable blunder rates on finalists</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="dot active">3</div>
+      <div>
+        <div class="step-title">M3 — Static browser player <em>(in progress)</em></div>
+        <div class="step-desc">Quantize to int8 ONNX, ship WASM — play offline, no server</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="dot pending">4</div>
+      <div>
+        <div class="step-title">M4 — AlphaZero training</div>
+        <div class="step-desc">MCTS-improved policy targets, tanh value head, stronger oracle champion</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="dot pending">5</div>
+      <div>
+        <div class="step-title">M5 — Distill &amp; squeeze</div>
+        <div class="step-desc">Student net keeps oracle strength at pocket footprint</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Built by <a href="https://github.com/sampanes" target="_blank" rel="noopener">sampanes</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://github.com/sampanes/ultimate-ttt-RL" target="_blank" rel="noopener">GitHub</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://huggingface.co/spaces/ratherbeembed/ultimate-tic-tac-toe" target="_blank" rel="noopener">HuggingFace Space</a>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "standard",
+  "ruleset": "ultimate-tic-tac-toe-repo-v1",
+  "description": "Frozen non-terminal openings. Every opening is played twice with candidate colors swapped.",
+  "openings": [
+    {
+      "id": "empty",
+      "moves": []
+    },
+    {
+      "id": "seed-01",
+      "moves": [17, 34, 13, 31, 23, 79]
+    },
+    {
+      "id": "seed-02",
+      "moves": [7, 4, 5, 24, 56, 25]
+    },
+    {
+      "id": "seed-03",
+      "moves": [30, 20, 62, 17, 52, 58]
+    },
+    {
+      "id": "seed-04",
+      "moves": [30, 10, 32, 24, 73, 59]
+    },
+    {
+      "id": "seed-05",
+      "moves": [79, 67, 41, 53, 60, 19]
+    },
+    {
+      "id": "seed-06",
+      "moves": [73, 58, 22, 68, 33, 0]
+    },
+    {
+      "id": "seed-07",
+      "moves": [41, 35, 24, 54, 1, 23]
+    },
+    {
+      "id": "seed-08",
+      "moves": [29, 17, 51, 56, 15, 27]
+    }
+  ]
+}

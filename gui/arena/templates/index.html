@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arena Control</title>
+    <!-- Favicon: inline SVG 3x3 grid (Ultimate TTT), accent blue. All-ASCII, no emoji. -->
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b9eff' stroke-width='2' stroke-linecap='round'><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/></svg>" />
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Pan/zoom for the Training tab's loss curve -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+</head>
+
+<body>
+
+    <!-- ============== HEADER ============== -->
+    <header class="app-header">
+        <div class="header-left">
+            <span class="ico ico-title" data-ico="grid" style="color:var(--clr-accent);"></span>
+            <div>
+                <div class="arena-title">Arena Control</div>
+                <div style="font-size:0.72rem; color:var(--clr-muted); margin-top:2px;">Ultimate Tic-Tac-Toe -- Live League</div>
+            </div>
+            <span id="statusBadge" class="status-badge running">
+                <span class="status-dot"></span>
+                <span id="statusText">Running</span>
+            </span>
+            <span class="uptime-label">
+                <span class="ico" data-ico="clock"></span>
+                <span id="uptimeDisplay">--</span>
+            </span>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
+            <span style="font-size:0.75rem; color:var(--clr-muted); display:flex; align-items:center; gap:0.35rem;">
+                <span class="pulse-ring"></span> Live . 5s
+            </span>
+            <button id="pauseResumeBtn" class="btn btn-pause" onclick="showPauseConfirm()">
+                <span class="ico" data-ico="pause"></span> Pause Training
+            </button>
+            <button class="btn btn-spawn" onclick="showSpawnModal()"
+                style="min-height:44px; padding:0.55rem 1rem; font-size:0.9rem; font-weight:600;">
+                <span class="ico" data-ico="plus"></span> Spawn Agent
+            </button>
+        </div>
+    </header>
+
+    <!-- ============== MAIN ============== -->
+    <main style="padding: 1.1rem; max-width: 1400px; margin: 0 auto;">
+
+        <!-- Tab bar -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="arena" onclick="showTab('arena')">
+                <span class="ico" data-ico="grid"></span> Arena</button>
+            <button class="tab-btn" data-tab="live" onclick="showTab('live')">
+                <span class="ico" data-ico="trophy"></span> Live</button>
+            <button class="tab-btn" data-tab="training" onclick="showTab('training')">
+                <span class="ico" data-ico="activity"></span> Training</button>
+        </div>
+
+        <!-- ============== ARENA TAB (league / population) ============== -->
+        <section id="tab-arena" class="tab-panel active">
+
+        <!-- Stats Row -->
+        <div class="stats-row" style="margin-bottom: 1.1rem;" id="statsRow">
+            <div class="stat-card">
+                <div class="stat-val" id="statBestElo" style="color: #facc15;">--</div>
+                <div class="stat-label">Best ELO</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statGames" style="color: var(--clr-accent2);">--</div>
+                <div class="stat-label">Total Games</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statTotal" style="color: var(--clr-accent);">--</div>
+                <div class="stat-label">Total Agents</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statActive" style="color: var(--clr-green);">--</div>
+                <div class="stat-label">Active</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statStagnant" style="color: var(--clr-yellow);">--</div>
+                <div class="stat-label">Stagnant</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="statRetired" style="color: var(--clr-gray);">--</div>
+                <div class="stat-label">Retired</div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+
+            <!-- Leaderboard -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><span class="ico" data-ico="trophy"></span> Agent Leaderboard</span>
+                    <span style="font-size:0.75rem; color:var(--clr-muted);" id="leaderboardUpdated">--</span>
+                </div>
+                <div class="table-wrap">
+                    <table id="leaderboardTable">
+                        <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Agent</th>
+                                <th>ELO</th>
+                                <th>Stagnation</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaderboardBody">
+                            <tr>
+                                <td colspan="6" style="text-align:center; color:var(--clr-muted); padding:2rem;">
+                                    Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Right column: Chart + Log stacked -->
+            <div style="display:flex; flex-direction:column; gap:1.1rem;">
+
+                <!-- ELO Timeline -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title"><span class="ico" data-ico="trending-up"></span> ELO Timeline</span>
+                        <span style="font-size:0.75rem; color:var(--clr-muted);">Last 20 ticks</span>
+                    </div>
+                    <div class="card-body" style="padding-bottom: 1rem;">
+                        <div class="chart-container">
+                            <canvas id="eloChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Event Log -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title"><span class="ico" data-ico="list"></span> Event Log</span>
+                        <button onclick="clearLog()"
+                            style="font-size:0.72rem; color:var(--clr-muted); background:none; border:none; cursor:pointer; padding:0.2rem 0.4rem; border-radius:4px;"
+                            onmouseover="this.style.color='var(--clr-text)'"
+                            onmouseout="this.style.color='var(--clr-muted)'">Clear</button>
+                    </div>
+                    <div class="card-body" style="padding: 0.75rem;">
+                        <div class="event-log" id="eventLog">
+                            <!-- Events injected here -->
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- end right col -->
+        </div><!-- end main-grid -->
+        </section><!-- end arena tab -->
+
+        <!-- ============== LIVE TAB (hall of fame + now-training spotlight) ============== -->
+        <section id="tab-live" class="tab-panel">
+            <div class="main-grid">
+
+                <!-- Hall of Fame: top all-time by peak ELO -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title"><span class="ico" data-ico="trophy"></span> Hall of Fame -- Top All-Time</span>
+                        <span style="font-size:0.75rem; color:var(--clr-muted);">by peak ELO</span>
+                    </div>
+                    <div class="card-body" style="padding:0.6rem;">
+                        <div id="hofBody"><div class="hof-empty">Loading...</div></div>
+                    </div>
+                </div>
+
+                <!-- Now Training: live per-agent chunk results -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title"><span class="ico" data-ico="activity"></span> Now Training</span>
+                        <span style="font-size:0.72rem; color:var(--clr-muted); display:flex; align-items:center; gap:0.35rem;">
+                            <span class="pulse-ring"></span> Live . 5s
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div id="nowTraining" class="nt-grid">
+                            <div class="hof-empty">Waiting for the next chunk result...</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section><!-- end live tab -->
+
+        <!-- ============== TRAINING TAB (single-net loss curve) ============== -->
+        <section id="tab-training" class="tab-panel">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><span class="ico" data-ico="activity"></span> Training Metrics</span>
+                    <span style="display:flex; align-items:center; gap:0.75rem;">
+                        <span style="font-size:0.75rem; color:var(--clr-muted);" id="metricsSummary">--</span>
+                        <span style="font-size:0.72rem; color:var(--clr-muted); display:flex; align-items:center; gap:0.35rem;">
+                            <span class="pulse-ring"></span> Live . 2s
+                        </span>
+                        <button class="btn btn-cancel" style="min-height:32px; padding:0.3rem 0.7rem; font-size:0.78rem;"
+                            onclick="resetTrainingZoom()">Reset Zoom</button>
+                    </span>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container" style="height:60vh;">
+                        <canvas id="trainingCanvas"></canvas>
+                    </div>
+                    <div class="metrics-hint">
+                        Loss reads on the <strong style="color:var(--clr-red);">right</strong> axis (unbounded);
+                        epsilon &amp; win rate on the <strong style="color:var(--clr-accent2);">left</strong> (0-1).
+                        <strong style="color:#a78bfa;">Stage</strong> (stepped, 0-8) and
+                        <strong style="color:#f59e0b;">ELO</strong> ride their own axes -- watch the curriculum
+                        staircase climb and ELO track it.
+                        Ctrl + scroll / drag to zoom &amp; pan. Reads <code>loss_logs/metrics_log.jsonl</code> via
+                        <code>/api/metrics</code> -- populated by a single-net training run. Older logs without
+                        stage/ELO show gaps for those lines.
+                    </div>
+                </div>
+            </div>
+        </section><!-- end training tab -->
+    </main>
+
+    <!-- ============== PAUSE/RESUME MODAL ============== -->
+    <div class="modal-overlay" id="pauseModal">
+        <div class="modal-box">
+            <div class="modal-title" id="pauseModalTitle"><span class="ico" data-ico="pause"></span> Pause Training?</div>
+            <div class="modal-desc" id="pauseModalDesc">
+                This will pause all active training matches. Agents will retain their current ELO scores. You can resume
+                at any time.
+            </div>
+            <div style="font-size:0.75rem;color:var(--clr-muted);background:var(--clr-surface2);border:1px solid var(--clr-border);border-radius:8px;padding:0.55rem 0.75rem;margin-bottom:1.1rem;line-height:1.7;">
+                <div><span class="ico" data-ico="zap" style="color:var(--clr-yellow);"></span> <strong style="color:var(--clr-text);">Pause</strong> -- CPU drops to idle. GPU VRAM stays allocated.</div>
+                <div><span class="ico" data-ico="shield" style="color:var(--clr-green);"></span> <strong style="color:var(--clr-text);">Ctrl+C</strong> -- resume-safe. State is saved after every chunk.</div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-cancel" onclick="closeModal('pauseModal')">Cancel</button>
+                <button class="btn btn-confirm-pause" id="pauseConfirmBtn" onclick="executePauseResume()"><span class="ico" data-ico="pause"></span> Confirm
+                    Pause</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============== RETIRE MODAL ============== -->
+    <div class="modal-overlay" id="retireModal">
+        <div class="modal-box">
+            <div class="modal-title"><span class="ico" data-ico="trash" style="color:var(--clr-red);"></span> Retire Agent?</div>
+            <div class="modal-desc" id="retireModalDesc">
+                This agent will be permanently retired and removed from future matchmaking. This action cannot be
+                undone.
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-cancel" onclick="closeModal('retireModal')">Cancel</button>
+                <button class="btn btn-danger" onclick="executeRetire()"><span class="ico" data-ico="trash"></span> Retire Agent</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============== SPAWN MODAL ============== -->
+    <div class="modal-overlay" id="spawnModal">
+        <div class="modal-box">
+            <div class="modal-title"><span class="ico" data-ico="plus" style="color:var(--clr-accent);"></span> Spawn New Agent</div>
+            <div class="modal-desc">Configure and deploy a new agent into the arena.</div>
+            <label class="modal-label" for="spawnName">Agent Name</label>
+            <input class="modal-input" id="spawnName" type="text" placeholder="e.g. Omega-9" />
+            <label class="modal-label" for="spawnConfig">Architecture</label>
+            <select class="modal-input" id="spawnConfig">
+                <option value="clone_best">Clone Best Agent</option>
+                <option value="random_2">Random -- Shallow (depth 2)</option>
+                <option value="random_3">Random -- Medium (depth 3)</option>
+                <option value="random_4">Random -- Deep (depth 4)</option>
+                <option value="random_5">Random -- Deeper (depth 5)</option>
+                <option value="random_6">Random -- Subterranean (depth 6)</option>
+                <option value="random_7">Random -- Black Hole (depth 7)</option>
+            </select>
+            <label class="modal-label" for="spawnElo">Starting ELO</label>
+            <input class="modal-input" id="spawnElo" type="number" placeholder="1000" value="1000" />
+            <div class="modal-actions">
+                <button class="btn btn-cancel" onclick="closeModal('spawnModal')">Cancel</button>
+                <button class="btn btn-spawn" style="padding:0.55rem 1rem; font-size:0.9rem; min-height:44px;"
+                    onclick="executeSpawn()"><span class="ico" data-ico="plus"></span> Deploy Agent</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============== TOAST CONTAINER ============== -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- ============== JAVASCRIPT ============== -->
+    <script src="{{ url_for('static', filename='js/arena.js') }}"></script>
+
+    <!-- Backend: arena/gui_server.py (Flask). Routes are namespaced under
+         /api/status, /api/history, /api/events, /api/metrics, and
+         /api/control/{pause,resume,retire/<id>,spawn}. -->
+</body>
+
+</html>
