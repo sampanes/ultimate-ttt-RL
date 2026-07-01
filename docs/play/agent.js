@@ -58,6 +58,91 @@ function _buildInputTensor(state) {
 }
 
 // ---------------------------------------------------------------------------
+// PUCT MCTS — mirrors agents/mcts.py (serial, wave_size=1)
+// ---------------------------------------------------------------------------
+
+class _MCTSNode {
+  constructor(parent, prior, move) {
+    this.parent   = parent;
+    this.children = {};    // cell index (int) -> _MCTSNode
+    this.prior    = prior;
+    this.N        = 0;
+    this.W        = 0.0;
+    this.move     = move;
+  }
+  Q() { return this.N > 0 ? this.W / this.N : 0.0; }
+  U(cPuct, parentN) { return cPuct * this.prior * Math.sqrt(parentN) / (1 + this.N); }
+}
+
+// Expand one leaf: run network, create child nodes, return net value.
+async function _mctsExpand(node, state, session, policyName, valueName) {
+  const valid = state.validMoves();
+  if (valid.length === 0) return 0.0;
+
+  const input   = _buildInputTensor(state);
+  const results = await session.run({ input });
+  const logits  = results[policyName].data;
+  const value   = results[valueName].data[0];
+
+  // Masked softmax over legal moves only.
+  let maxLog = -Infinity;
+  for (const c of valid) if (logits[c] > maxLog) maxLog = logits[c];
+  const exps = valid.map(c => Math.exp(logits[c] - maxLog));
+  const sum  = exps.reduce((a, b) => a + b, 0.0);
+
+  for (let i = 0; i < valid.length; i++) {
+    node.children[valid[i]] = new _MCTSNode(node, exps[i] / sum, valid[i]);
+  }
+  return value;
+}
+
+/**
+ * Run PUCT MCTS for `nSims` simulations.
+ * @returns {Float32Array} visit-count distribution over 81 cells (unnormalised)
+ */
+async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPuct) {
+  const root = new _MCTSNode(null, 0.0, -1);
+  await _mctsExpand(root, rootState, session, policyName, valueName);
+
+  for (let sim = 0; sim < nSims; sim++) {
+    let   node  = root;
+    const state = rootState.clone();
+
+    // Selection: traverse to a leaf via PUCT.
+    while (Object.keys(node.children).length > 0 && state.winner === null) {
+      let best = null, bestScore = -Infinity;
+      for (const child of Object.values(node.children)) {
+        const score = -child.Q() + child.U(cPuct, node.N);
+        if (score > bestScore) { bestScore = score; best = child; }
+      }
+      node = best;
+      state.makeMove(node.move);
+    }
+
+    // Evaluate leaf.
+    let value;
+    if (state.winner !== null) {
+      // Terminal: winner is always the player who just moved (not the next mover).
+      // From the next mover's perspective: win = -1, draw = 0.
+      value = (state.winner === DRAW) ? 0.0 : -1.0;
+    } else {
+      value = await _mctsExpand(node, state, session, policyName, valueName);
+    }
+
+    // Backup: alternate sign each ply (zero-sum).
+    let v = value, n = node;
+    while (n !== null) { n.N += 1; n.W += v; v = -v; n = n.parent; }
+  }
+
+  // Return visit-count distribution.
+  const pi = new Float32Array(81);
+  for (const [mv, child] of Object.entries(root.children)) {
+    pi[parseInt(mv, 10)] = child.N;
+  }
+  return pi;
+}
+
+// ---------------------------------------------------------------------------
 // AgentRunner
 // ---------------------------------------------------------------------------
 
@@ -65,29 +150,51 @@ class AgentRunner {
   /**
    * @param {ort.InferenceSession} session
    * @param {object} config  parsed model_config.json
+   *
+   * nSims controls MCTS depth (0 = raw policy, no search).
+   * Only used when temperature === 0.0 (Hard / argmax mode).
+   * Easy / Medium keep temperature > 0 and bypass MCTS entirely.
    */
   constructor(session, config) {
     this.session      = session;
     this.name         = config.name;
     this._policyName  = config.outputs.policy;
+    this._valueName   = config.outputs.value;
+    this.nSims        = 50;    // MCTS budget for Hard mode; set to 0 to use raw policy
+    this.cPuct        = 1.5;
   }
 
   /**
    * Run one inference step and return the chosen cell index.
    * @param {GameState} state
-   * @param {number}    temperature  0 = argmax (deterministic), >0 = softmax sample
+   * @param {number}    temperature  0 = MCTS/argmax, >0 = raw policy temperature sample
    */
   async selectMove(state, temperature = 0.0) {
     const valid = state.validMoves();
     if (valid.length === 0) return -1;
     if (valid.length === 1) return valid[0];
 
+    // Hard mode: MCTS when nSims > 0.
+    if (temperature === 0.0 && this.nSims > 0) {
+      const pi = await _mctsSearch(
+        state, this.session, this._policyName, this._valueName,
+        this.nSims, this.cPuct,
+      );
+      // Argmax over legal moves by visit count.
+      let best = valid[0], bestN = pi[valid[0]];
+      for (const cell of valid) {
+        if (pi[cell] > bestN) { bestN = pi[cell]; best = cell; }
+      }
+      return best;
+    }
+
+    // Easy / Medium: raw policy + temperature sampling (no MCTS).
     const input   = _buildInputTensor(state);
     const results = await this.session.run({ input });
     const logits  = results[this._policyName].data; // Float32Array[81]
 
     if (temperature === 0.0) {
-      // Deterministic argmax over legal moves.
+      // Argmax over legal moves (nSims === 0 path).
       let best = valid[0], bestVal = logits[valid[0]];
       for (const cell of valid) {
         if (logits[cell] > bestVal) { bestVal = logits[cell]; best = cell; }

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Engine golden-vector test</title>
+  <style>
+    body { font-family: monospace; background: #0a0d13; color: #e6edf3;
+           padding: 1.5rem 2rem; line-height: 1.6; }
+    h1   { color: #3b9eff; font-size: 1.1rem; margin-bottom: 1rem; }
+    .pass  { color: #22c55e; }
+    .fail  { color: #ef4444; }
+    .warn  { color: #eab308; }
+    .info  { color: #8b97a8; }
+    #summary { margin-top: 1.2rem; font-size: 1rem; font-weight: bold; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+<h1>uttt_engine.js &mdash; golden vector test</h1>
+<div id="log"></div>
+<div id="summary"></div>
+
+<script src="uttt_engine.js"></script>
+<script>
+"use strict";
+
+// ── logging ──────────────────────────────────────────────────────────────────
+const _logEl = document.getElementById("log");
+function _log(cls, msg) {
+  const d = document.createElement("div");
+  d.className = cls;
+  d.textContent = msg;
+  _logEl.appendChild(d);
+}
+const pass = msg => _log("pass", "  PASS  " + msg);
+const fail = msg => _log("fail", "  FAIL  " + msg);
+const info = msg => _log("info", msg);
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function _arrEq(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function _setEq(a, b) {
+  if (a.length !== b.length) return false;
+  const sb = new Set(b);
+  return a.every(x => sb.has(x));
+}
+
+// Reconstruct a GameState by replaying moves up to (not including) ply `upTo`.
+// Returns the GameState at that point.
+function _replay(moves, upTo) {
+  const g = new GameState();
+  for (let i = 0; i < upTo; i++) g.makeMove(moves[i]);
+  return g;
+}
+
+// ── run tests ─────────────────────────────────────────────────────────────────
+async function _runTests() {
+  let passed = 0, failed = 0;
+
+  // Load golden vectors.
+  let resp;
+  try {
+    resp = await fetch("./golden_vectors.json");
+  } catch (e) {
+    _log("warn", "[!] Could not fetch golden_vectors.json: " + e.message);
+    _log("warn", "    Run: python -m scripts.gen_golden_vectors");
+    document.getElementById("summary").textContent = "SKIPPED (no data)";
+    return;
+  }
+  if (!resp.ok) {
+    _log("warn", `[!] golden_vectors.json not found (HTTP ${resp.status}).`);
+    _log("warn", "    Run: python -m scripts.gen_golden_vectors");
+    document.getElementById("summary").textContent = "SKIPPED (no data)";
+    return;
+  }
+  const data = await resp.json();
+  info(`Loaded ${data.n_games} games, ${data.total_plies} plies  (seed=${data.seed})`);
+
+  let testNum = 0;
+
+  for (let gi = 0; gi < data.traces.length; gi++) {
+    const trace = data.traces[gi];
+
+    for (let pi = 0; pi < trace.states.length; pi++) {
+      const ref = trace.states[pi];
+
+      // Replay to get the JS state at this ply.
+      const g = _replay(trace.moves, pi);
+      testNum++;
+
+      // ── board ────────────────────────────────────────────────────────────
+      const boardArr = Array.from(g.board);
+      if (!_arrEq(boardArr, ref.board)) {
+        fail(`game ${gi} ply ${pi}: board mismatch`);
+        failed++;
+        continue;
+      }
+
+      // ── player ───────────────────────────────────────────────────────────
+      if (g.player !== ref.player) {
+        fail(`game ${gi} ply ${pi}: player ${g.player} != ${ref.player}`);
+        failed++; continue;
+      }
+
+      // ── lastMove ─────────────────────────────────────────────────────────
+      const jsLast = (g.lastMove === undefined || g.lastMove === null) ? -1 : g.lastMove;
+      if (jsLast !== ref.lastMove) {
+        fail(`game ${gi} ply ${pi}: lastMove ${jsLast} != ${ref.lastMove}`);
+        failed++; continue;
+      }
+
+      // ── miniWinners ───────────────────────────────────────────────────────
+      const mwArr = Array.from(g.miniWinner);
+      if (!_arrEq(mwArr, ref.miniWinners)) {
+        fail(`game ${gi} ply ${pi}: miniWinners mismatch ` +
+             `JS=${JSON.stringify(mwArr)} ref=${JSON.stringify(ref.miniWinners)}`);
+        failed++; continue;
+      }
+
+      // ── constraint ───────────────────────────────────────────────────────
+      if (g.constraint !== ref.constraint) {
+        fail(`game ${gi} ply ${pi}: constraint ${g.constraint} != ${ref.constraint}`);
+        failed++; continue;
+      }
+
+      // ── winner ────────────────────────────────────────────────────────────
+      // Python uses None → JS uses null; Python uses 1/2/3 for X/O/DRAW.
+      const refWinner = ref.winner;
+      const jsWinner  = g.winner;   // null | X(1) | O(2) | DRAW(3)
+      if (jsWinner !== refWinner) {
+        fail(`game ${gi} ply ${pi}: winner ${jsWinner} != ${refWinner}`);
+        failed++; continue;
+      }
+
+      // ── validMoves ────────────────────────────────────────────────────────
+      const jsMoves  = g.validMoves().sort((a, b) => a - b);
+      const refMoves = ref.validMoves;   // already sorted by Python
+      if (!_setEq(jsMoves, refMoves)) {
+        fail(`game ${gi} ply ${pi}: validMoves mismatch ` +
+             `JS=[${jsMoves}] ref=[${refMoves}]`);
+        failed++; continue;
+      }
+
+      passed++;
+    }
+  }
+
+  info("");
+  info(`Ran ${testNum} ply-state checks across ${data.traces.length} games.`);
+  const sumEl = document.getElementById("summary");
+  if (failed === 0) {
+    sumEl.className = "pass";
+    sumEl.textContent = `ALL ${passed} CHECKS PASSED`;
+  } else {
+    sumEl.className = "fail";
+    sumEl.textContent = `${failed} FAILED / ${passed} passed`;
+  }
+}
+
+_runTests();
+</script>
+</body>
+</html>

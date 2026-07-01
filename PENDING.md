@@ -119,11 +119,24 @@ Files: `scripts/train_league.py` (poll loop), `gui/arena/templates/index.html` (
 
 ## M3 — next milestone (torch + home box)
 
-1. Export `arena:21@hof` to ONNX with fixed input/output contract
-2. Apply static int8 quantization with a representative UTTT position set
-3. Verify PyTorch vs ONNX vs int8 policy/value parity; rerun M2 benchmark on quantized model
-4. Port rules + MCTS to TypeScript/WASM; lock golden vectors against Python
-5. Measure cold download, bundle bytes, peak memory, move latency (desktop + phone)
-6. Publish static GitHub Pages build
+**Authoring-box work DONE:**
+- `scripts/export_onnx.py` — exports arena:21@hof to ONNX + dynamic int8 (home runs it)
+- `scripts/gen_golden_vectors.py` — generates `docs/play/golden_vectors.json` from Python engine
+- `docs/play/golden_vectors.json` — 50-game, 2957-ply correctness fixture (seed 0)
+- `docs/play/test_engine.html` — browser golden-vector test runner (open to verify JS engine)
+- `docs/play/uttt_engine.js` — full game engine port (home box wrote)
+- `docs/play/agent.js` — ONNX inference wrapper + PUCT MCTS (Hard=50 sims, Easy/Medium=raw policy)
+- `docs/play/index.html` + `docs/index.html` — complete play page + landing page (home box wrote)
+
+**Home-box steps remaining:**
+1. Run export: `python -m scripts.export_onnx --candidate arena:21@hof --quantize`
+   → writes `docs/models/model_int8.onnx` + updates `model_config.json`
+2. Commit model: `git add docs/models/ && git commit -m 'feat(m3): add int8 ONNX pocket model'`
+3. Verify parity: re-run M2 benchmark on quantized model (need parity + KL check from export output)
+4. Measure: cold download time, bundle bytes, peak browser memory, move latency (desktop + phone)
+5. Run `python -m scripts.gen_golden_vectors` (needs engine) then open `docs/play/test_engine.html` to confirm all JS engine checks PASS
+6. Push to GitHub Pages: enable Pages on `main` branch `docs/` folder in repo settings
+
+**M3 exit gate:** static page plays a complete legal game offline, reports model hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
 
 See `SHIP_PLAN.md` M3 section for full exit gate.

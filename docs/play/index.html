@@ -285,9 +285,9 @@
 </div>
 
 <div class="diff-row" id="diff-row">
-  <button class="diff-btn" data-temp="1.8">Easy</button>
-  <button class="diff-btn" data-temp="0.45">Medium</button>
-  <button class="diff-btn active" data-temp="0.0">Hard</button>
+  <button class="diff-btn" data-temp="1.8" data-sims="0">Easy</button>
+  <button class="diff-btn" data-temp="0.45" data-sims="0">Medium</button>
+  <button class="diff-btn active" data-temp="0.0" data-sims="50">Hard (MCTS)</button>
 </div>
 
 <div id="board"><!-- built by JS --></div>
@@ -474,6 +474,7 @@ async function _init() {
       document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _temperature = parseFloat(btn.dataset.temp);
+      if (_runner) _runner.nSims = parseInt(btn.dataset.sims || '0', 10);
     });
   });
 
@@ -485,6 +486,9 @@ async function _init() {
   try {
     loadMsg.textContent = 'Fetching model config…';
     _runner = await loadAgent('../models/model_config.json');
+    // Sync nSims with whichever difficulty button is active at load time.
+    const activeBtn = document.querySelector('.diff-btn.active');
+    if (activeBtn) _runner.nSims = parseInt(activeBtn.dataset.sims || '0', 10);
     nameEl.textContent = _runner.name;
     overlay.classList.remove('show');
     _newGame();
