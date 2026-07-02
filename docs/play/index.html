@@ -263,6 +263,74 @@
     @media (max-width: 420px) {
       :root { --cell: 32px; --mini-gap: 7px; }
     }
+
+    /* ── eval panel ── */
+    #board-area {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+    }
+
+    #eval-panel {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    #eval-panel.show { display: flex; }
+
+    .eval-side-label {
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    #eval-bar-track {
+      width: 14px;
+      height: 130px;
+      border-radius: 4px;
+      background: var(--yellow);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    #eval-bar-x {
+      width: 100%;
+      height: 50%;
+      background: var(--accent2);
+      transition: height 0.35s ease;
+    }
+
+    #eval-adv {
+      font-size: 0.6rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .eval-divider {
+      width: 14px;
+      height: 1px;
+      background: var(--border);
+    }
+
+    #eval-top-label {
+      font-size: 0.55rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-align: center;
+    }
+
+    .eval-move {
+      font-size: 0.58rem;
+      color: var(--text);
+      text-align: center;
+      line-height: 1.5;
+    }
+    .eval-move .ev-pct { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -290,11 +358,25 @@
   <button class="diff-btn active" data-temp="0.0" data-sims="50">Hard (MCTS)</button>
 </div>
 
-<div id="board"><!-- built by JS --></div>
+<div id="board-area">
+  <div id="eval-panel">
+    <div class="eval-side-label">X</div>
+    <div id="eval-bar-track"><div id="eval-bar-x"></div></div>
+    <div class="eval-side-label">O</div>
+    <div id="eval-adv">--</div>
+    <div class="eval-divider"></div>
+    <div id="eval-top-label">TOP</div>
+    <div class="eval-move" id="eval-m0">--</div>
+    <div class="eval-move" id="eval-m1">--</div>
+    <div class="eval-move" id="eval-m2">--</div>
+  </div>
+  <div id="board"><!-- built by JS --></div>
+</div>
 
 <div class="controls">
   <button class="btn primary" id="btn-new">New Game</button>
   <button class="btn" id="btn-swap">Swap Sides</button>
+  <button class="btn" id="btn-eval">Show eval</button>
 </div>
 
 <div id="model-info">
@@ -414,6 +496,34 @@ function _updateStatus() {
   _setStatus('your-turn', 'Your turn');
 }
 
+// ── Eval panel ────────────────────────────────────────────────────────────────
+let _showEval = false;
+
+function _updateEvalPanel(ev) {
+  if (!_showEval || !ev) return;
+  const pct = Math.round(Math.min(Math.max((1 + ev.xAdv) / 2, 0), 1) * 100);
+  document.getElementById('eval-bar-x').style.height = pct + '%';
+  const abs = Math.abs(ev.xAdv);
+  document.getElementById('eval-adv').textContent =
+    abs < 0.05 ? 'Even' : (ev.xAdv > 0 ? 'X' : 'O') + ' +' + abs.toFixed(2);
+  const ids = ['eval-m0', 'eval-m1', 'eval-m2'];
+  ev.topMoves.forEach((m, i) => {
+    const r = Math.floor(m.cell / 9), c = m.cell % 9;
+    const mini  = Math.floor(r / 3) * 3 + Math.floor(c / 3);
+    const local = (r % 3) * 3 + (c % 3);
+    document.getElementById(ids[i]).innerHTML =
+      `M${mini + 1}.${local + 1} <span class="ev-pct">${m.pct}%</span>`;
+  });
+}
+
+function _resetEvalPanel() {
+  document.getElementById('eval-bar-x').style.height = '50%';
+  document.getElementById('eval-adv').textContent = '--';
+  ['eval-m0', 'eval-m1', 'eval-m2'].forEach(id => {
+    document.getElementById(id).innerHTML = '--';
+  });
+}
+
 // ── Move handling ─────────────────────────────────────────────────────────────
 function _onCellClick(idx) {
   if (!_runner || !_game || _aiThinking || _game.isOver()) return;
@@ -444,12 +554,14 @@ async function _doAiMove() {
   }
   _render();
   _updateStatus();
+  _updateEvalPanel(_runner && _runner.lastEval);
 }
 
 // ── Game control ──────────────────────────────────────────────────────────────
 function _newGame() {
   if (_aiThinking) return;
   _game = new GameState();
+  _resetEvalPanel();
   _render();
   _updateStatus();
   // AI goes first when human is O.
@@ -462,6 +574,16 @@ async function _init() {
 
   // Wire up controls.
   document.getElementById('btn-new').addEventListener('click', () => _newGame());
+
+  document.getElementById('btn-eval').addEventListener('click', () => {
+    _showEval = !_showEval;
+    document.getElementById('btn-eval').textContent = _showEval ? 'Hide eval' : 'Show eval';
+    document.getElementById('eval-panel').classList.toggle('show', _showEval);
+    if (_showEval) {
+      if (_runner && _runner.lastEval) _updateEvalPanel(_runner.lastEval);
+      else _resetEvalPanel();
+    }
+  });
 
   document.getElementById('btn-swap').addEventListener('click', () => {
     if (_aiThinking) return;

@@ -134,12 +134,13 @@ async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPu
     while (n !== null) { n.N += 1; n.W += v; v = -v; n = n.parent; }
   }
 
-  // Return visit-count distribution.
+  // Return visit-count distribution + MCTS value at root (from root player's perspective).
   const pi = new Float32Array(81);
   for (const [mv, child] of Object.entries(root.children)) {
     pi[parseInt(mv, 10)] = child.N;
   }
-  return pi;
+  const rootValue = root.N > 0 ? root.W / root.N : 0.0;
+  return { pi, rootValue };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +163,7 @@ class AgentRunner {
     this._valueName   = config.outputs.value;
     this.nSims        = 50;    // MCTS budget for Hard mode; set to 0 to use raw policy
     this.cPuct        = 1.5;
+    this.lastEval     = null;  // { xAdv, topMoves, mode } — updated after each selectMove
   }
 
   /**
@@ -176,44 +178,58 @@ class AgentRunner {
 
     // Hard mode: MCTS when nSims > 0.
     if (temperature === 0.0 && this.nSims > 0) {
-      const pi = await _mctsSearch(
+      const { pi, rootValue } = await _mctsSearch(
         state, this.session, this._policyName, this._valueName,
         this.nSims, this.cPuct,
       );
       // Argmax over legal moves by visit count.
-      let best = valid[0], bestN = pi[valid[0]];
+      let best = valid[0], bestN = pi[valid[0]], totalN = 0;
       for (const cell of valid) {
+        totalN += pi[cell];
         if (pi[cell] > bestN) { bestN = pi[cell]; best = cell; }
       }
+      const topCells = valid.slice().sort((a, b) => pi[b] - pi[a]).slice(0, 3);
+      this.lastEval = {
+        xAdv:     (state.player === X) ? rootValue : -rootValue,
+        topMoves: topCells.map(c => ({ cell: c, pct: totalN > 0 ? Math.round(pi[c] / totalN * 100) : 0 })),
+        mode:     'mcts',
+      };
       return best;
     }
 
     // Easy / Medium: raw policy + temperature sampling (no MCTS).
-    const input   = _buildInputTensor(state);
-    const results = await this.session.run({ input });
-    const logits  = results[this._policyName].data; // Float32Array[81]
+    const input    = _buildInputTensor(state);
+    const results  = await this.session.run({ input });
+    const logits   = results[this._policyName].data;
+    const netValue = results[this._valueName].data[0];
 
-    if (temperature === 0.0) {
-      // Argmax over legal moves (nSims === 0 path).
-      let best = valid[0], bestVal = logits[valid[0]];
-      for (const cell of valid) {
-        if (logits[cell] > bestVal) { bestVal = logits[cell]; best = cell; }
-      }
-      return best;
-    }
-
-    // Temperature-scaled sampling.
+    // Temp=1 softmax over valid moves for display; temperature-scaled for sampling.
     let maxLog = -Infinity;
     for (const cell of valid) if (logits[cell] > maxLog) maxLog = logits[cell];
+    const exps1  = valid.map(c => Math.exp(logits[c] - maxLog));
+    const sum1   = exps1.reduce((a, b) => a + b, 0);
+    const probs1 = exps1.map(v => v / sum1);
+    const probMap  = new Map(valid.map((c, i) => [c, probs1[i]]));
+    const topCells = valid.slice().sort((a, b) => probMap.get(b) - probMap.get(a)).slice(0, 3);
 
-    const probs = valid.map(c => Math.exp((logits[c] - maxLog) / temperature));
-    const total = probs.reduce((a, b) => a + b, 0);
-    let r = Math.random() * total;
-    for (let i = 0; i < valid.length; i++) {
-      r -= probs[i];
-      if (r <= 0) return valid[i];
+    let chosen;
+    if (temperature === 0.0) {
+      chosen = valid[0];
+      for (const cell of valid) if (logits[cell] > logits[chosen]) chosen = cell;
+    } else {
+      const expsT = valid.map(c => Math.exp((logits[c] - maxLog) / temperature));
+      const sumT  = expsT.reduce((a, b) => a + b, 0);
+      let r = Math.random() * sumT;
+      chosen = valid[valid.length - 1];
+      for (let i = 0; i < valid.length; i++) { r -= expsT[i]; if (r <= 0) { chosen = valid[i]; break; } }
     }
-    return valid[valid.length - 1]; // floating-point fallback
+
+    this.lastEval = {
+      xAdv:     (state.player === X) ? netValue : -netValue,
+      topMoves: topCells.map(c => ({ cell: c, pct: Math.round(probMap.get(c) * 100) })),
+      mode:     'policy',
+    };
+    return chosen;
   }
 }
 
