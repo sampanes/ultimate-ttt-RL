@@ -248,7 +248,9 @@ async function loadAgent(configUrl) {
   // WASM paths must be set before any InferenceSession.create() call.
   ort.env.wasm.wasmPaths = _WASM_CDN;
 
-  const modelUrl = new URL(config.file, configUrl).href;
+  // cfgResp.url is always absolute (fetch resolves relative paths);
+  // configUrl may be a bare relative path which new URL() rejects as a base.
+  const modelUrl = new URL(config.file, cfgResp.url).href;
   const session  = await ort.InferenceSession.create(modelUrl, {
     executionProviders:    ['wasm'],
     graphOptimizationLevel: 'all',
