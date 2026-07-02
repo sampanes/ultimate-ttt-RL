@@ -62,5 +62,6 @@ engine/cpp/*.dll
 # Generated benchmark runs (curated milestone reports live at repo root)
 results/
 
-# ONNX export intermediates -- fp32 is reproducible from checkpoint; only int8 ships
-docs/models/model.onnx
+# int8 ONNX intermediate -- ConvInteger op not supported by onnxruntime-web WASM;
+# serving fp32 (model.onnx) instead. Kept locally for re-quantization experiments.
+docs/models/model_int8.onnx

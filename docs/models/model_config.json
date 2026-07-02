@@ -3,9 +3,9 @@
   "name": "arena:21@hof",
   "version": "m3-r1",
   "description": "Policy-gradient self-play, 1-ply tactical overlay at eval.",
-  "file": "./model_int8.onnx",
+  "file": "./model.onnx",
   "fp32_kb": 5035,
-  "int8_kb": 1283,
+  "int8_kb": null,
   "input": {
     "name": "input",
     "shape": [
