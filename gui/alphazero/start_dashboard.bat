@@ -3,14 +3,18 @@ setlocal
 cd /d "%~dp0..\.."
 
 REM ============================================================
-REM  start_dashboard.bat  -- start both monitoring dashboards
+REM  start_dashboard.bat -- AlphaZero training dashboard (viewer only)
 REM
-REM  Arena GUI    (Flask, port 5050)  : http://[ip]:5050/
-REM  AZ dashboard (static, port 7654) : http://[ip]:7654/gui/alphazero/
+REM  This does NOT start training. Start training separately:
+REM    .venv\Scripts\python -m scripts.train_alphazero --network medium --value_tanh ...
 REM
-REM  Both are idempotent -- kills prior instances first.
-REM  Stop with:  taskkill /FI "WINDOWTITLE eq uttt-arena" /T /F
-REM              taskkill /FI "WINDOWTITLE eq az-dashboard" /T /F
+REM  Dashboard: http://[ip]:7654/gui/alphazero/
+REM  It just reads loss_logs/metrics_log.jsonl -- zero training overhead.
+REM
+REM  (Arena GUI is separate and NOT needed for AZ runs: start-arena.bat)
+REM
+REM  Idempotent -- kills a prior instance first.
+REM  Stop with:  taskkill /FI "WINDOWTITLE eq az-dashboard" /T /F
 REM ============================================================
 
 if not exist ".venv\Scripts\python.exe" (
@@ -18,20 +22,15 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-REM -- Arena GUI (Flask) --
-taskkill /FI "WINDOWTITLE eq uttt-arena" /T /F >nul 2>&1
-start "uttt-arena" cmd /c ".venv\Scripts\python -m arena.gui_server --port 5050 || pause"
-
-REM -- AZ training dashboard (http.server, zero overhead) --
 taskkill /FI "WINDOWTITLE eq az-dashboard" /T /F >nul 2>&1
 start "az-dashboard" .venv\Scripts\python -m http.server 7654
 
 echo.
-echo Both dashboards started.
+echo AZ dashboard started (viewer only -- does not start training).
 echo.
-echo   Arena GUI    : http://localhost:5050/
-echo   AZ dashboard : http://localhost:7654/gui/alphazero/
+echo   Local     : http://localhost:7654/gui/alphazero/
+echo   Tailscale : http://[your-tailscale-ip]:7654/gui/alphazero/
 echo.
-echo Via Tailscale -- replace localhost with your Tailscale IP.
+echo Stop: taskkill /FI "WINDOWTITLE eq az-dashboard" /T /F
 echo.
 endlocal
