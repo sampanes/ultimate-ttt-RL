@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AlphaZero Training</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b9eff' stroke-width='2' stroke-linecap='round'><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/></svg>" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0d13;
+      --surface:  #131722;
+      --surface2: #1b212e;
+      --border:   #29313f;
+      --text:     #e6edf3;
+      --muted:    #8b97a8;
+      --accent:   #3b9eff;
+      --cyan:     #22d3ee;
+      --green:    #22c55e;
+      --red:      #ef4444;
+      --yellow:   #f59e0b;
+      --purple:   #a78bfa;
+      --pink:     #ec4899;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 1.1rem;
+    }
+
+    /* ── header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.1rem;
+    }
+    .header-left { display: flex; align-items: center; gap: 0.8rem; }
+    .header-title { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.01em; }
+    .header-title span { color: var(--accent); }
+    .pulse-ring {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--cyan);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(34,211,238,0.4); }
+      70%  { box-shadow: 0 0 0 8px rgba(34,211,238,0); }
+      100% { box-shadow: 0 0 0 0 rgba(34,211,238,0); }
+    }
+    .live-badge {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.75rem; color: var(--muted);
+    }
+    .header-right { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .btn {
+      background: var(--surface2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 7px;
+      padding: 0.4rem 0.8rem; font-size: 0.8rem; font-weight: 600;
+      cursor: pointer; transition: border-color 0.15s;
+    }
+    .btn:hover { border-color: var(--accent); }
+
+    /* ── stat cards ── */
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.7rem;
+      margin-bottom: 1rem;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+    }
+    .stat-label {
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.07em;
+      color: var(--muted); text-transform: uppercase; margin-bottom: 0.3rem;
+    }
+    .stat-value {
+      font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+    }
+    .stat-sub {
+      font-size: 0.65rem; color: var(--muted); margin-top: 0.3rem;
+    }
+    .stat-card.accent  .stat-value { color: var(--accent); }
+    .stat-card.green   .stat-value { color: var(--green); }
+    .stat-card.red     .stat-value { color: var(--red); }
+    .stat-card.yellow  .stat-value { color: var(--yellow); }
+    .stat-card.cyan    .stat-value { color: var(--cyan); }
+    .stat-card.purple  .stat-value { color: var(--purple); }
+
+    /* ── chart grid ── */
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 0.7rem;
+      margin-bottom: 0.7rem;
+    }
+    .chart-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.7rem;
+    }
+    @media (max-width: 860px) {
+      .chart-grid, .chart-grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.9rem 1rem 1rem;
+    }
+    .card-title {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+      color: var(--muted); text-transform: uppercase;
+      margin-bottom: 0.6rem;
+      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    }
+    .card-title-actions { display: flex; gap: 0.35rem; }
+    .mini-btn {
+      font-size: 0.65rem; padding: 0.15rem 0.4rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; cursor: pointer; color: var(--muted);
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .mini-btn:hover, .mini-btn.active { color: var(--accent); border-color: var(--accent); }
+
+    .chart-wrap { position: relative; }
+    .chart-tall  .chart-wrap { height: 320px; }
+    .chart-short .chart-wrap { height: 200px; }
+    .chart-mid   .chart-wrap { height: 260px; }
+
+    /* ── milestone bar ── */
+    .milestone-row {
+      display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap;
+    }
+    .milestone {
+      font-size: 0.62rem; padding: 0.15rem 0.5rem;
+      border-radius: 4px; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--muted);
+      transition: background 0.3s, color 0.3s, border-color 0.3s;
+    }
+    .milestone.reached {
+      background: color-mix(in srgb, var(--green) 15%, var(--surface2));
+      border-color: var(--green); color: var(--green);
+    }
+
+    /* ── recent log ── */
+    .log-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 0.7rem;
+      font-size: 0.65rem;
+      font-family: "Consolas", "SF Mono", monospace;
+      color: var(--muted);
+      height: 140px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .log-box .log-line { display: block; }
+    .log-box .log-line:last-child { color: var(--text); }
+
+    /* ── footer ── */
+    .footer {
+      margin-top: 0.8rem;
+      font-size: 0.68rem; color: var(--muted); text-align: center;
+    }
+
+    /* ── no-data banner ── */
+    #no-data {
+      display: none;
+      padding: 3rem 1rem; text-align: center;
+      color: var(--muted); font-size: 0.9rem; line-height: 2;
+    }
+    #no-data code {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.1rem 0.4rem;
+      font-family: "Consolas", monospace; color: var(--cyan);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── header ────────────────────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-left">
+    <div class="header-title">AlphaZero <span>Training</span></div>
+    <div class="live-badge"><span class="pulse-ring"></span> Live &middot; 5s</div>
+  </div>
+  <div class="header-right">
+    <span id="run-elapsed" style="font-size:0.75rem; color:var(--muted);">--</span>
+    <button class="btn" id="btn-log-scale">Log scale</button>
+    <button class="btn" onclick="_resetZoom()">Reset zoom</button>
+  </div>
+</div>
+
+<!-- ── no-data state ─────────────────────────────────────────────────────── -->
+<div id="no-data">
+  No training data yet.<br>
+  Start a run with:<br>
+  <code>python -m scripts.train_alphazero --network medium --value_tanh --games_per_iter 50</code><br><br>
+  This page auto-refreshes every 5 seconds.
+</div>
+
+<!-- ── stat cards ────────────────────────────────────────────────────────── -->
+<div class="stat-row" id="stat-row">
+  <div class="stat-card accent">
+    <div class="stat-label">Iteration</div>
+    <div class="stat-value" id="s-iter">--</div>
+    <div class="stat-sub" id="s-iter-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card red">
+    <div class="stat-label">Loss (now)</div>
+    <div class="stat-value" id="s-loss">--</div>
+    <div class="stat-sub" id="s-loss-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card cyan">
+    <div class="stat-label">Value loss</div>
+    <div class="stat-value" id="s-vloss">--</div>
+    <div class="stat-sub" id="s-vloss-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card green">
+    <div class="stat-label">Win rate (now)</div>
+    <div class="stat-value" id="s-wr">--</div>
+    <div class="stat-sub" id="s-wr-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card yellow">
+    <div class="stat-label">Best WR ever</div>
+    <div class="stat-value" id="s-best-wr">--</div>
+    <div class="stat-sub" id="s-best-wr-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="stat-label">Loss reduction</div>
+    <div class="stat-value" id="s-loss-drop">--</div>
+    <div class="stat-sub" id="s-loss-drop-sub">&nbsp;</div>
+  </div>
+</div>
+
+<!-- ── charts row 1 ──────────────────────────────────────────────────────── -->
+<div class="chart-grid">
+  <div class="card chart-tall">
+    <div class="card-title">
+      Loss curve
+      <div class="card-title-actions">
+        <button class="mini-btn active" id="btn-smooth" onclick="_toggleSmooth()">Smooth</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-loss"></canvas></div>
+  </div>
+  <div class="card chart-tall">
+    <div class="card-title">Win rate vs random</div>
+    <div class="chart-wrap"><canvas id="chart-wr"></canvas></div>
+    <div class="milestone-row" id="milestones">
+      <div class="milestone" data-threshold="0.50" id="m50">WR 50%</div>
+      <div class="milestone" data-threshold="0.60" id="m60">WR 60%</div>
+      <div class="milestone" data-threshold="0.70" id="m70">WR 70%</div>
+      <div class="milestone" data-threshold="0.80" id="m80">WR 80%</div>
+      <div class="milestone" data-threshold="0.90" id="m90">WR 90%</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── charts row 2 ──────────────────────────────────────────────────────── -->
+<div class="chart-grid-2">
+  <div class="card chart-mid">
+    <div class="card-title">Value loss</div>
+    <div class="chart-wrap"><canvas id="chart-vloss"></canvas></div>
+  </div>
+  <div class="card chart-mid">
+    <div class="card-title">
+      Recent iterations
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0;">
+        last 5 rows
+      </div>
+    </div>
+    <div class="log-box" id="log-box">
+      <span class="log-line" style="color:var(--muted);">Waiting for data...</span>
+    </div>
+    <div style="margin-top:0.5rem; font-size:0.62rem; color:var(--muted);">
+      Throughput: <span id="s-throughput">--</span>
+    </div>
+  </div>
+</div>
+
+<div class="footer" id="footer-info">
+  Reads <code style="font-family:monospace; font-size:0.68rem;">loss_logs/metrics_log.jsonl</code>
+  &mdash; add <code style="font-family:monospace; font-size:0.68rem;">t</code> (Unix timestamp) field for time tracking
+</div>
+
+<script>
+// ── Chart defaults ─────────────────────────────────────────────────────────
+const GRID   = 'rgba(41,49,63,0.5)';
+const TICK   = '#64748b';
+const MAX_PTS = 4000;
+
+function _baseOpts(yLabel, yColor) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 0 },
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: {
+        grid: { color: GRID },
+        ticks: { color: TICK, font: { size: 10 }, maxTicksLimit: 8 },
+        title: { display: true, text: 'iteration', color: TICK, font: { size: 10 } },
+      },
+      y: {
+        grid: { color: GRID },
+        ticks: { color: TICK, font: { size: 10 } },
+        title: { display: true, text: yLabel, color: yColor || TICK, font: { size: 10 } },
+        beginAtZero: false,
+      },
+    },
+    plugins: {
+      legend: { labels: { usePointStyle: true, color: '#8b97a8', font: { size: 11 }, padding: 12 } },
+      tooltip: {
+        backgroundColor: '#131722', borderColor: '#29313f', borderWidth: 1,
+        titleColor: '#e6edf3', bodyColor: '#8b97a8', padding: 9,
+      },
+      zoom: {
+        pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
+        zoom: { pinch: { enabled: true }, wheel: { enabled: true, modifierKey: 'ctrl' }, mode: 'x' },
+      },
+    },
+  };
+}
+
+function _mkDataset(label, color, dash) {
+  return {
+    label, borderColor: color, backgroundColor: color,
+    data: [], fill: false, borderWidth: 2, pointRadius: 0,
+    borderDash: dash || [],
+  };
+}
+
+// ── Loss chart ─────────────────────────────────────────────────────────────
+const lossOpts = _baseOpts('loss', '#ef4444');
+lossOpts.scales.yRight = {
+  position: 'right', grid: { drawOnChartArea: false },
+  ticks: { color: TICK, font: { size: 10 } },
+  title: { display: true, text: 'value loss', color: '#22d3ee', font: { size: 10 } },
+  beginAtZero: false,
+};
+const chartLoss = new Chart(document.getElementById('chart-loss'), {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { ..._mkDataset('Total loss', '#ef4444'), yAxisID: 'y' },
+    { ..._mkDataset('Value loss', '#22d3ee', [4,3]), yAxisID: 'yRight' },
+  ]},
+  options: lossOpts,
+});
+
+// ── Win rate chart ─────────────────────────────────────────────────────────
+const wrOpts = _baseOpts('win rate vs random', '#22c55e');
+wrOpts.scales.y.min = 0; wrOpts.scales.y.max = 1;
+// Best-WR annotation is drawn as a dataset (dashed line)
+const chartWr = new Chart(document.getElementById('chart-wr'), {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { ..._mkDataset('Win rate', '#22c55e') },
+    { ..._mkDataset('Best WR', '#f59e0b', [6,4]), borderWidth: 1.5 },
+  ]},
+  options: wrOpts,
+});
+
+// ── Value loss chart ───────────────────────────────────────────────────────
+const chartVloss = new Chart(document.getElementById('chart-vloss'), {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { ..._mkDataset('Value loss', '#22d3ee') },
+  ]},
+  options: _baseOpts('value loss', '#22d3ee'),
+});
+
+// ── State ──────────────────────────────────────────────────────────────────
+let _lastLen   = -1;
+let _inFlight  = false;
+let _smooth    = true;
+let _logScale  = false;
+let _allData   = [];
+let _bestWR    = 0;
+let _bestWRIter = 0;
+let _startTs   = null;   // Unix seconds; set from first `t` field seen
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function _ma(arr, w) {
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const s = Math.max(0, i - w + 1);
+    const sl = arr.slice(s, i + 1).filter(v => isFinite(v));
+    out.push(sl.length ? sl.reduce((a, b) => a + b, 0) / sl.length : NaN);
+  }
+  return out;
+}
+
+function _ds(arr, max) {
+  if (arr.length <= max) return arr.slice();
+  const stride = Math.ceil(arr.length / max);
+  const out = [];
+  for (let i = 0; i < arr.length; i += stride) {
+    const sl = arr.slice(i, i + stride).filter(v => isFinite(v));
+    out.push(sl.length ? sl.reduce((a, b) => a + b, 0) / sl.length : NaN);
+  }
+  return out;
+}
+
+function _dsLabels(n, max) {
+  if (n <= max) return Array.from({ length: n }, (_, i) => i + 1);
+  const stride = Math.ceil(n / max);
+  const out = [];
+  for (let i = 0; i < n; i += stride) out.push(i + 1);
+  return out;
+}
+
+function _fmt(n, dec) { return isFinite(n) ? n.toFixed(dec) : '--'; }
+
+function _fmtWR(wr) { return isFinite(wr) && wr > 0 ? (wr * 100).toFixed(1) + '%' : '--'; }
+
+function _fmtElapsed(secs) {
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return `Day ${d}, ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+// ── Toggle handlers ────────────────────────────────────────────────────────
+function _toggleSmooth() {
+  _smooth = !_smooth;
+  document.getElementById('btn-smooth').classList.toggle('active', _smooth);
+  _redraw();
+}
+
+document.getElementById('btn-log-scale').addEventListener('click', () => {
+  _logScale = !_logScale;
+  document.getElementById('btn-log-scale').classList.toggle('active', _logScale);
+  chartLoss.options.scales.y.type    = _logScale ? 'logarithmic' : 'linear';
+  chartLoss.options.scales.yRight.type = _logScale ? 'logarithmic' : 'linear';
+  chartVloss.options.scales.y.type   = _logScale ? 'logarithmic' : 'linear';
+  _redraw();
+});
+
+function _resetZoom() {
+  [chartLoss, chartWr, chartVloss].forEach(c => c.resetZoom());
+}
+
+// ── Redraw ─────────────────────────────────────────────────────────────────
+function _redraw() {
+  const data = _allData;
+  if (!data.length) return;
+
+  const n      = data.length;
+  const losses = data.map(d => d.loss);
+  const vlosses = data.map(d => isFinite(d.value_loss) ? d.value_loss : NaN);
+  const wrs    = data.map(d => isFinite(d.winrate) && d.winrate > 0 ? d.winrate : NaN);
+  const W      = _smooth ? 20 : 1;
+
+  const smLoss   = _ds(_smooth ? _ma(losses, W)   : losses, MAX_PTS);
+  const smVloss  = _ds(_smooth ? _ma(vlosses, W)  : vlosses, MAX_PTS);
+  const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR — milestone detection uses raw
+  const labels   = _dsLabels(n, MAX_PTS);
+  const bestLine = smWr.map(() => _bestWR > 0 ? _bestWR : NaN);
+
+  chartLoss.data.labels                = labels;
+  chartLoss.data.datasets[0].data      = smLoss;
+  chartLoss.data.datasets[1].data      = smVloss;
+  chartLoss.update('none');
+
+  chartWr.data.labels                  = labels;
+  chartWr.data.datasets[0].data        = smWr;
+  chartWr.data.datasets[1].data        = bestLine;
+  chartWr.update('none');
+
+  chartVloss.data.labels               = labels;
+  chartVloss.data.datasets[0].data     = smVloss;
+  chartVloss.update('none');
+}
+
+// ── Stat cards ─────────────────────────────────────────────────────────────
+function _updateCards(data) {
+  const n    = data.length;
+  const last = data[n - 1];
+  const first = data[0];
+
+  // iter
+  document.getElementById('s-iter').textContent = n.toLocaleString();
+  const gamesTotal = last.games_total ?? null;
+  document.getElementById('s-iter-sub').textContent =
+    gamesTotal ? (gamesTotal).toLocaleString() + ' games' : 'iter ' + n;
+
+  // loss
+  document.getElementById('s-loss').textContent  = _fmt(last.loss, 3);
+  const lossFirst = first.loss;
+  const lossDelta = isFinite(lossFirst) && isFinite(last.loss) ? last.loss - lossFirst : null;
+  document.getElementById('s-loss-sub').textContent =
+    lossDelta !== null ? (lossDelta < 0 ? '' : '+') + lossDelta.toFixed(3) + ' vs start' : '';
+
+  // value loss
+  document.getElementById('s-vloss').textContent = _fmt(last.value_loss, 4);
+  document.getElementById('s-vloss-sub').textContent = 'MSE';
+
+  // win rate
+  const wr = isFinite(last.winrate) && last.winrate > 0 ? last.winrate : NaN;
+  document.getElementById('s-wr').textContent  = _fmtWR(wr);
+  // find last 20 WR readings
+  const recentWrs = data.slice(-20).map(d => d.winrate).filter(v => isFinite(v) && v > 0);
+  const trend = recentWrs.length >= 2
+    ? recentWrs[recentWrs.length - 1] - recentWrs[0]
+    : null;
+  document.getElementById('s-wr-sub').textContent =
+    trend !== null ? (trend >= 0 ? '+' : '') + (trend * 100).toFixed(1) + '% last 20 evals' : 'vs random';
+
+  // best WR
+  document.getElementById('s-best-wr').textContent    = _fmtWR(_bestWR);
+  document.getElementById('s-best-wr-sub').textContent =
+    _bestWRIter > 0 ? 'at iter ' + _bestWRIter.toLocaleString() : '';
+
+  // loss reduction
+  const drop = isFinite(lossFirst) && isFinite(last.loss) && lossFirst > 0
+    ? (lossFirst - last.loss) / lossFirst
+    : null;
+  document.getElementById('s-loss-drop').textContent =
+    drop !== null ? (drop * 100).toFixed(0) + '%' : '--';
+  document.getElementById('s-loss-drop-sub').textContent =
+    drop !== null ? _fmt(lossFirst, 2) + ' -> ' + _fmt(last.loss, 2) : 'start loss unknown';
+}
+
+// ── Milestones ─────────────────────────────────────────────────────────────
+function _updateMilestones(data) {
+  const maxWR = Math.max(...data.map(d => d.winrate).filter(v => isFinite(v) && v > 0), 0);
+  document.querySelectorAll('.milestone').forEach(el => {
+    const t = parseFloat(el.dataset.threshold);
+    el.classList.toggle('reached', maxWR >= t);
+  });
+}
+
+// ── Log box ────────────────────────────────────────────────────────────────
+function _updateLog(data) {
+  const n     = data.length;
+  const last5 = data.slice(-5);
+  const lines = last5.map((d, i) => {
+    const iter = n - last5.length + i + 1;
+    const wr   = isFinite(d.winrate) && d.winrate > 0 ? ` wr=${(d.winrate*100).toFixed(1)}%` : '';
+    const vl   = isFinite(d.value_loss) ? ` vl=${d.value_loss.toFixed(4)}` : '';
+    const buf  = d.buffer ? ` buf=${d.buffer.toLocaleString()}` : '';
+    return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}`;
+  });
+  const box = document.getElementById('log-box');
+  box.innerHTML = lines.map(l => `<span class="log-line">${l}</span>`).join('\n');
+  box.scrollTop = box.scrollHeight;
+
+  // throughput: if timestamps available
+  const withTs = data.filter(d => d.t);
+  if (withTs.length >= 2) {
+    const recent = withTs.slice(-Math.min(withTs.length, 100));
+    const dt = recent[recent.length - 1].t - recent[0].t;
+    const iph = dt > 0 ? (recent.length / dt * 3600).toFixed(1) : null;
+    document.getElementById('s-throughput').textContent = iph ? iph + ' iters/hr' : '--';
+  } else {
+    document.getElementById('s-throughput').textContent = 'add t= field for throughput';
+  }
+}
+
+// ── Elapsed time ───────────────────────────────────────────────────────────
+function _updateElapsed(data) {
+  const withTs = data.filter(d => d.t);
+  if (withTs.length >= 1) {
+    if (!_startTs) _startTs = withTs[0].t;
+    const lastTs = withTs[withTs.length - 1].t;
+    document.getElementById('run-elapsed').textContent =
+      _fmtElapsed(lastTs - _startTs) + ' running';
+  } else {
+    // Approximate from iter count (no timestamps)
+    document.getElementById('run-elapsed').textContent =
+      data.length.toLocaleString() + ' iters total';
+  }
+}
+
+// ── Best WR tracker ────────────────────────────────────────────────────────
+function _trackBestWR(data) {
+  data.forEach((d, i) => {
+    if (isFinite(d.winrate) && d.winrate > _bestWR) {
+      _bestWR = d.winrate;
+      _bestWRIter = i + 1;
+    }
+  });
+}
+
+// ── Main fetch loop ────────────────────────────────────────────────────────
+async function _fetch() {
+  if (_inFlight) return;
+  _inFlight = true;
+  try {
+    const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
+    if (!res.ok) { _showNoData(); return; }
+    const text = await res.text();
+    if (text.length === _lastLen) return;
+    _lastLen = text.length;
+
+    const lines = text.trim().split('\n').filter(Boolean);
+    if (!lines.length) { _showNoData(); return; }
+
+    document.getElementById('no-data').style.display  = 'none';
+    document.getElementById('stat-row').style.display = '';
+
+    const data = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    _allData = data;
+
+    _trackBestWR(data);
+    _updateCards(data);
+    _updateMilestones(data);
+    _updateLog(data);
+    _updateElapsed(data);
+    _redraw();
+
+  } catch (e) {
+    console.warn('fetch error:', e);
+  } finally {
+    _inFlight = false;
+  }
+}
+
+function _showNoData() {
+  document.getElementById('no-data').style.display  = 'block';
+  document.getElementById('stat-row').style.display = 'none';
+}
+
+_fetch();
+setInterval(_fetch, 5000);
+
+// Live clock — ticks the elapsed display every second when timestamps present
+setInterval(() => {
+  if (_startTs && _allData.length) {
+    const withTs = _allData.filter(d => d.t);
+    if (withTs.length) {
+      const lastTs = withTs[withTs.length - 1].t;
+      document.getElementById('run-elapsed').textContent =
+        _fmtElapsed(lastTs - _startTs) + ' running';
+    }
+  }
+}, 1000);
+</script>
+</body>
+</html>

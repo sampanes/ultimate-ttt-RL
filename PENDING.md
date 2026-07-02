@@ -96,6 +96,31 @@ Low-priority (ready now, no gate needed):
 
 ## Pending code (author on this box, torch-free)
 
+### MCTS batched leaf eval (do before M4 long run)
+Collect N leaves per MCTS step, batch into one NN forward pass, expand all.
+~5-10x speedup for deep-search oracle runs -- cuts M4 wall time significantly.
+File: `agents/mcts.py` -- add `wave_size` param to `MCTS.search()`.
+Also expose `wave_size` in `scripts/train_alphazero.py` as `--wave_size N`.
+
+### AlphaZero richer logging (do before M4 long run)
+The AZ dopamine dashboard (`gui/alphazero/index.html`) already handles these
+fields gracefully when present (shows "--" when absent). Add to train_alphazero.py:
+
+1. Pass `t=time.time()` in every `append_metrics(...)` call.
+   Enables: wall-clock elapsed, days-running counter, iters/hr throughput.
+
+2. Pass `policy_loss=avg_pol` in every `append_metrics(...)` call.
+   Already supported by `append_metrics`; just not plumbed through yet.
+
+3. Pass `games_total=iteration * args.games_per_iter` for games-played counter.
+   (Add `games_total` key to `append_metrics` the same way `elo` was added.)
+
+4. Pass `buffer=len(buffer)` for buffer-fill display.
+   (Same pattern as above.)
+
+With these 4 additions, the dashboard goes from "iter count + loss" to:
+  "Day 14, 762k games, 74% WR, 23 iters/hr, buffer 48k/50k"
+
 ### Gregory curriculum integration
 Wire `GregoryAgent` into `league_manager.py` stage 5-6 as an external anchor.
 Goal: break the closed-loop stage-6 pool with a gene-pool-independent opponent.
