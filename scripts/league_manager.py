@@ -361,6 +361,10 @@ class LeagueManager:
         # (no free rating for beating a copy of yourself).
         clone.elo = getattr(agent, "elo", 1000.0)
         clone._frozen_elo = True
+        # Weight-identity tag for ParallelGameRunner opponent batching: every clone made
+        # for one batch copies the same (currently frozen) active weights, so they share
+        # a group. Unused unless --batch_opponents is on.
+        clone.weight_key = "clone"
         return clone
 
     def _elo_weighted_choice(self, pool: list) -> "ArchiveEntry":
@@ -407,6 +411,8 @@ class LeagueManager:
         # the constructor default 1000 before -- the phantom-1000 bug).
         opponent.elo = entry.elo
         opponent._frozen_elo = True
+        # Weight-identity tag for --batch_opponents: same path == same weights.
+        opponent.weight_key = "archive:" + path
         return opponent
 
     def _load_archive_agent_filtered(self, template_agent: NeuralNetAgentPG,
@@ -431,6 +437,8 @@ class LeagueManager:
         # Frozen snapshot: rate it at the ELO it earned when archived.
         opponent.elo = entry.elo
         opponent._frozen_elo = True
+        # Weight-identity tag for --batch_opponents: same path == same weights.
+        opponent.weight_key = "archive:" + path
         return opponent
 
     # ------------------------------------------------------------------

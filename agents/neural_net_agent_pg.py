@@ -250,6 +250,55 @@ class NeuralNetAgentPG(Agent):
             return actions, log_probs, values, entropies, states_out, valid_moves_per_game
         return actions, log_probs, values, entropies
 
+    def batch_select_moves_eval(self, gamestates: list) -> list:
+        """Batched DETERMINISTIC (argmax) move selection for eval / opponent use.
+
+        Mirrors select_move's eval branch exactly -- one no_grad forward for the whole
+        batch, then per-game masked argmax -- but takes NO sampling step and touches NO
+        RNG (unlike batch_select_moves, which is the learner's multinomial-sampling path).
+        Returns a plain list of int actions (None where a game has no legal moves),
+        aligned 1:1 with gamestates. No trajectory side effects.
+
+        Because argmax is deterministic and reorder-invariant, grouping/reordering
+        opponent slots and running them through here produces byte-identical moves to
+        the per-slot select_move loop -- exactly what verify_opponent_batch_parity.py
+        certifies. Callers group slots by a weight-identity key first, so every game in
+        one call shares this agent's weights."""
+        valids = [
+            rule_utl_valid_moves(gs.board, gs.last_move, gs.mini_winners)
+            for gs in gamestates
+        ]
+        tensors = [
+            board_to_tensor_from_gamestate(gs, v_computed=v)
+            for gs, v in zip(gamestates, valids)
+        ]
+        batch = torch.stack(tensors).to(self.device)
+        with torch.no_grad():
+            logits_batch = self.model(batch)
+        # model squeezes when B==1; re-expand so logits_batch[i] is always (81,).
+        if logits_batch.dim() == 1:
+            logits_batch = logits_batch.unsqueeze(0)
+
+        moves = []
+        for i, valid in enumerate(valids):
+            if not valid:
+                moves.append(None)
+                continue
+            logits_i = logits_batch[i]
+            # Same 1-ply tactical override as select_move's eval branch. Opponents are
+            # constructed tactical=False (pool==valid -> plain argmax), but mirror it so
+            # a tactical=True opponent still batches identically.
+            if self.tactical:
+                winning, safe = tactical_filter(gamestates[i], valid)
+                pool = winning if winning else safe
+            else:
+                pool = valid
+            masked = torch.full_like(logits_i, float('-inf'))
+            for idx in pool:
+                masked[idx] = logits_i[idx]
+            moves.append(int(torch.argmax(masked).item()))
+        return moves
+
     def learn_from_trajectories(self, trajectories: list, gamma: float = 0.95, entropy_coef: float = 0.05,
                                 value_coef: float = 0.5, update: bool = True,
                                 return_components: bool = False) -> float:

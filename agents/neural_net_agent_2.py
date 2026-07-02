@@ -94,6 +94,33 @@ class NeuralNetAgent2(Agent):
 
         return best_move
 
+    def batch_select_moves_eval(self, gamestates: list) -> list:
+        """Batched deterministic (argmax) move selection -- one forward for the whole
+        batch, per-game masked argmax. Mirrors select_move exactly (no RNG), so grouping
+        opponent slots through here is byte-identical to the per-slot loop. Returns a
+        list of int actions (None where a game has no legal moves)."""
+        valids = [
+            list(rule_utl_valid_moves(gs.board, gs.last_move, gs.mini_winners))
+            for gs in gamestates
+        ]
+        tensors = [board_to_tensor(gs.board) for gs in gamestates]
+        batch = torch.stack(tensors).to(self.device)
+        with torch.no_grad():
+            logits_batch = self.model(batch)
+        if logits_batch.dim() == 1:
+            logits_batch = logits_batch.unsqueeze(0)
+
+        moves = []
+        for i, valid in enumerate(valids):
+            if not valid:
+                moves.append(None)
+                continue
+            logits_i = logits_batch[i]
+            masked = torch.full_like(logits_i, float('-inf'))
+            masked[valid] = logits_i[valid]
+            moves.append(int(torch.argmax(masked)))
+        return moves
+
     def learn(self):
         """REINFORCE policy-gradient update over recorded (s, a, reward) tuples.
 

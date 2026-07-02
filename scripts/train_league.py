@@ -307,19 +307,45 @@ def _terminal(winner: int, active_side: int) -> float:
     return -1.0
 
 
+def _opponent_key(opp):
+    """Weight-identity key for grouping batched opponents within one run() call.
+
+    Opponents sharing this key are guaranteed weight-identical AND same-tactical, so one
+    of them can run the group's batched forward for all. The league tags self-play clones
+    'clone' and archive copies 'archive:<path>'; shared anchor objects (nn_big8, lottery)
+    have no tag and fall back to their model's id (a shared object -> one group). Grouping
+    only ever happens inside a single run() call, where every 'clone' copies the same
+    active weights, so 'clone' is unambiguous."""
+    tac = getattr(opp, "tactical", False)
+    k = getattr(opp, "weight_key", None)
+    if k is not None:
+        return (k, tac)
+    model = getattr(opp, "model", None)
+    return (id(model) if model is not None else id(opp), tac)
+
+
 class ParallelGameRunner:
     def __init__(self, active: NeuralNetAgentPG, opponents: list):
         self.active = active
         self.opponents = opponents
 
-    def run(self, collect_inputs: bool = False) -> list:
+    def run(self, collect_inputs: bool = False, batch_opponents: bool = False) -> list:
         """Run all games to completion, batching active-agent forward passes.
         Returns one Trajectory per game.
 
         collect_inputs=True additionally stores the detached per-move (state, valid_moves,
         action) on each slot/Trajectory so the collect-then-recompute learn path
         (THROUGHPUT.md Part C) can rebuild forward passes. Default False = byte-identical to
-        the in-graph path (no extra capture; Trajectory.states/valids/actions stay empty)."""
+        the in-graph path (no extra capture; Trajectory.states/valids/actions stay empty).
+
+        batch_opponents=True groups the opponent forward passes the same way the active
+        step is already batched: opponents that expose batch_select_moves_eval (all the NN
+        opponents -- clones, archives, nn_big8, lottery) are grouped by weight-identity and
+        run one batched argmax forward per group; stochastic / non-NN opponents (random,
+        deterministics, MixedAgent) stay in a per-slot loop in slot order. Because NN-eval
+        is deterministic argmax and consumes no RNG, this is byte-identical in outcome to
+        the per-slot default -- verify_opponent_batch_parity.py certifies it. Default False
+        = the original unbatched opponent loop."""
         slots = []
         for opp in self.opponents:
             if hasattr(opp, "clear_history"):
@@ -366,15 +392,49 @@ class ParallelGameRunner:
                         slot.done = True
                         slot.rewards[-1] += _terminal(slot.game.winner, slot.active_side)
 
-            # --- sequential opponent step ---
+            # --- opponent step ---
             # also catches slots that just had an active move and whose turn flipped to opponent
-            for slot in slots:
-                if slot.done or slot.game.player == slot.active_side:
+            opp_slots = [
+                s for s in slots
+                if not s.done and s.game.player != s.active_side
+            ]
+            # mini_winners snapshot BEFORE any opponent move. Slots are independent, so
+            # capturing all up front == capturing each right before its own move.
+            mini_befores = {id(s): s.game.mini_winners[:] for s in opp_slots}
+
+            moves = {}
+            if batch_opponents:
+                # Group NN opponents (deterministic argmax, RNG-free) by weight identity;
+                # resolve stochastic / non-NN opponents in place, in slot order, so their
+                # random stream is identical to the unbatched path.
+                groups = {}   # key -> [slots]
+                reps = {}     # key -> representative opponent for the group
+                for s in opp_slots:
+                    opp = s.opponent
+                    if hasattr(opp, "batch_select_moves_eval"):
+                        key = _opponent_key(opp)
+                        groups.setdefault(key, []).append(s)
+                        reps.setdefault(key, opp)
+                    else:
+                        moves[id(s)] = opp.select_move(s.game)
+                for key, members in groups.items():
+                    group_moves = reps[key].batch_select_moves_eval([m.game for m in members])
+                    for m, mv in zip(members, group_moves):
+                        moves[id(m)] = mv
+            else:
+                for s in opp_slots:
+                    moves[id(s)] = s.opponent.select_move(s.game)
+
+            for slot in opp_slots:
+                move = moves[id(slot)]
+                if move is None:
+                    # No legal move for the opponent (pathological -- the game is
+                    # effectively over). Cannot occur in normal play; guarded so a
+                    # None never reaches make_move.
+                    slot.done = True
                     continue
-                mini_before = slot.game.mini_winners[:]
-                move = slot.opponent.select_move(slot.game)
                 slot.game.make_move(move)
-                slot.pending += _shaping(slot.game.mini_winners, mini_before, slot.active_side)
+                slot.pending += _shaping(slot.game.mini_winners, mini_befores[id(slot)], slot.active_side)
                 if slot.game.is_over():
                     slot.done = True
                     if slot.rewards:
@@ -401,7 +461,8 @@ class ParallelGameRunner:
 def run_chunk_parallel(active: NeuralNetAgentPG, league: LeagueManager,
                        chunk_idx: int, n_games: int, batch_size: int, gamma: float = 0.99,
                        log_metrics: bool = False, value_coef: float = 0.5,
-                       recompute: bool = False, minibatch_size: int = 0):
+                       recompute: bool = False, minibatch_size: int = 0,
+                       batch_opponents: bool = False):
     active.set_eval(False)
     entropy_coef = entropy_coef_for_stage(league.curriculum_stage)
 
@@ -428,7 +489,8 @@ def run_chunk_parallel(active: NeuralNetAgentPG, league: LeagueManager,
                 opp.set_eval(True)
             opponents.append(opp)
 
-        trajectories = ParallelGameRunner(active, opponents).run(collect_inputs=recompute)
+        trajectories = ParallelGameRunner(active, opponents).run(
+            collect_inputs=recompute, batch_opponents=batch_opponents)
 
         if recompute:
             # Collect-then-recompute (Part C): decouples #gradient-steps from the batch size.
@@ -594,6 +656,7 @@ def main():
     ap.add_argument("--value_coef",      type=float, default=0.5,             help="Weight on the value (critic) loss in the combined objective: loss = actor + value_coef*value - entropy_coef*entropy. Default 0.5 (unchanged). Sweep 0.25/0.5/1.0 to confirm the value-head weight after the 0c .mean() switch (RESULT_0c ask #3).")
     ap.add_argument("--recompute",       action=argparse.BooleanOptionalAction, default=False, help="Batched path only (--parallel>0): use the collect-then-recompute learn step (THROUGHPUT.md Part C) instead of the in-graph learn_from_trajectories. Stores detached (state,action,reward) during self-play and runs single-epoch minibatch SGD with fresh forwards, so the number of gradient steps is set by --minibatch_size, not the self-play batch (--parallel) -- fixes the 'big batch starves updates' stall AND the OOM. DEFAULT OFF (byte-identical to today). VALIDATE FIRST: python -m scripts.verify_recompute_parity (must PASS) + home_batch --phase recompute, before trusting it in a long run.")
     ap.add_argument("--minibatch_size",  type=int,   default=0,               help="With --recompute: SGD minibatch size over collected transitions (0 = one minibatch = the whole self-play batch = a single full-batch step, numerically equivalent to the in-graph path). Smaller = more gradient steps per self-play batch (the point of the decouple). No effect without --recompute.")
+    ap.add_argument("--batch_opponents", action=argparse.BooleanOptionalAction, default=False, help="Batched path only (--parallel>0): batch the OPPONENT forward passes too, not just the active agent's. NN opponents (clones, archives, nn_big8, lottery) are deterministic argmax at eval time, so grouping them by weight and running one batched forward per group is byte-identical in outcome to the per-slot loop -- it just removes an unbatched Python-driven forward per opponent move. DEFAULT OFF. VALIDATE FIRST: python -m scripts.verify_opponent_batch_parity (must PASS) before trusting it in a long run.")
     ap.add_argument("--seed",            type=int,   default=None,            help="Seed torch/numpy/random for reproducible runs (weight init, opponent sampling, action sampling). Default None = unseeded (existing behavior). Use for N-seed repeats so a good seed can be reproduced; note CUDA kernels are not fully deterministic even when seeded.")
     ap.add_argument("--value_tanh",      action=argparse.BooleanOptionalAction, default=False, help="Apply tanh to the value head output (calibrates to [-1, 1]). Default OFF for backward compat with existing checkpoints. Enable for new AlphaZero runs: fixes the MCTS value-scale mismatch (see agents/mcts.py docstring). Existing checkpoints are incompatible -- start fresh or retrain.")
     ap.add_argument("--tactical",        action="store_true",                 help="Eval only (--eval): enable 1-ply tactical lookahead (take an immediate win / avoid an immediate loss) on top of the policy argmax. Lets you measure the lookahead's strength gain. No effect on training.")
@@ -769,7 +832,8 @@ def main():
                 wins, losses, draws, avg_loss = run_chunk_parallel(
                     active, league, chunk_idx, args.chunk_games, args.parallel,
                     gamma=0.99, log_metrics=log_metrics, value_coef=args.value_coef,
-                    recompute=args.recompute, minibatch_size=args.minibatch_size
+                    recompute=args.recompute, minibatch_size=args.minibatch_size,
+                    batch_opponents=args.batch_opponents
                 )
             else:
                 wins, losses, draws, avg_loss = run_chunk(
