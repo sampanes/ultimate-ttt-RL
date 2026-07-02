@@ -35,6 +35,16 @@ class NeuralNetAgentPG(Agent):
         self.model = ConvNet(cfg=cfg).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
 
+        # --- optional perf toggles, default OFF -> byte-identical. Flipped only on the
+        # ACTIVE learner via enable_amp()/enable_compile() (train_league --amp/--compile),
+        # never on opponents/inference, so those stay eager. _fb is the forward_both
+        # callable the hot self-play + learn forwards route through; enable_compile swaps
+        # it for a compiled callable and leaves self.model (and thus state_dict keys)
+        # untouched, so clone/save/load/ONNX-export are unaffected. ---
+        self._amp = False
+        self._scaler = None
+        self._fb = self.model.forward_both
+
         self.model_load_magic(model_path, cfg)
 
         self.clear_history()
@@ -52,6 +62,31 @@ class NeuralNetAgentPG(Agent):
     def set_eval(self, is_eval: bool = True):
         self.model.eval() if is_eval else self.model.train()
 
+    # ------------------------------------------------------------------
+    # Optional perf toggles (opt-in; default OFF = byte-identical).
+    # ------------------------------------------------------------------
+    def enable_amp(self):
+        """Mixed-precision self-play + learn: fp16 autocast around the hot forwards +
+        a GradScaler around the backward/step. Opt-in via train_league --amp. This
+        CHANGES numerics, so unlike --batch_opponents / --recompute there is no exact
+        parity oracle -- validate convergence with a real run at home. No-op on CPU."""
+        self._amp = True
+        if torch.cuda.is_available():
+            self._scaler = torch.amp.GradScaler("cuda", enabled=True)
+
+    def enable_compile(self):
+        """torch.compile the forward_both callable that the hot self-play + learn
+        forwards route through. Compiles a SEPARATE callable, NOT self.model, so
+        state_dict keys stay unprefixed and clone/save/load/ONNX-export are unaffected.
+        Opt-in via train_league --compile. Call AFTER any checkpoint load."""
+        self._fb = torch.compile(self.model.forward_both)
+
+    def _autocast(self):
+        """fp16 autocast context when AMP is on and CUDA is present; else a no-op."""
+        if self._amp and torch.cuda.is_available():
+            return torch.autocast(device_type="cuda", dtype=torch.float16)
+        return contextlib.nullcontext()
+
     def select_move(self, gamestate: GameState) -> int:
         valid = rule_utl_valid_moves(
             gamestate.board, gamestate.last_move, gamestate.mini_winners
@@ -60,7 +95,8 @@ class NeuralNetAgentPG(Agent):
         x = board_to_tensor_from_gamestate(gamestate, v_computed=valid).to(self.device)
 
         if self.model.training:
-            logits, value = self.model.forward_both(x)
+            with self._autocast():
+                logits, value = self._fb(x)
             logits = logits.squeeze(0) if logits.dim() == 2 else logits
             assert logits.shape == (81,), f"Expected (81,), got {logits.shape}"
 
@@ -171,13 +207,24 @@ class NeuralNetAgentPG(Agent):
         self._record_value_metrics(values, returns, value_loss)
         loss = actor_loss + value_coef * value_loss - entropy_coef * entropy
 
-        loss.backward()
-        # Clip + step only when we actually update, so clipping doesn't repeatedly
-        # squash the accumulating gradient across the 8-game accumulation window.
-        if update:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+        # Backward is unconditional here: gradients accumulate across the 8-game window;
+        # clip + step fire only when update=True so clipping doesn't repeatedly squash
+        # the accumulating gradient. AMP (self._scaler set) scales the backward and
+        # unscales before clipping; default (scaler None) is byte-identical to before.
+        if self._scaler is not None:
+            self._scaler.scale(loss).backward()
+            if update:
+                self._scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self._scaler.step(self.optimizer)
+                self._scaler.update()
+                self.optimizer.zero_grad()
+        else:
+            loss.backward()
+            if update:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
         self.clear_history()
         return loss.item()
@@ -202,7 +249,8 @@ class NeuralNetAgentPG(Agent):
         tensors = [board_to_tensor_from_gamestate(gs) for gs in gamestates]
         batch = torch.stack(tensors).to(self.device)   # (B, 7, 9, 9)
 
-        policy_logits, values_batch = self.model.forward_both(batch)
+        with self._autocast():
+            policy_logits, values_batch = self._fb(batch)
         # forward_both squeezes when B=1 (designed for single-game select_move).
         # Re-expand so indexing policy_logits[i] always gives shape (81,), not a scalar.
         if policy_logits.dim() == 1:
@@ -375,9 +423,16 @@ class NeuralNetAgentPG(Agent):
 
         if update:
             self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
+            if self._scaler is not None:
+                self._scaler.scale(loss).backward()
+                self._scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self._scaler.step(self.optimizer)
+                self._scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
 
         return loss.item()
 
@@ -392,7 +447,8 @@ class NeuralNetAgentPG(Agent):
         -> with unchanged weights this reproduces the collection-time terms exactly. That is what
         makes verify_recompute_parity.py a true equivalence test of the (state,action)<->reward
         alignment rather than an approximation."""
-        logits, values = self.model.forward_both(state_batch)
+        with self._autocast():
+            logits, values = self._fb(state_batch)
         if logits.dim() == 1:
             logits = logits.unsqueeze(0)
         if values.dim() == 0:
@@ -473,8 +529,8 @@ class NeuralNetAgentPG(Agent):
         state_batch = torch.stack(states).to(self.device)   # (N, 7, 9, 9)
 
         # Full-batch advantage (PPO-style): one no-grad baseline forward over all N states.
-        with torch.no_grad():
-            _, base_values = self.model.forward_both(state_batch)
+        with torch.no_grad(), self._autocast():
+            _, base_values = self._fb(state_batch)
             if base_values.dim() == 0:
                 base_values = base_values.unsqueeze(0)
         advantage = returns - base_values
@@ -508,9 +564,16 @@ class NeuralNetAgentPG(Agent):
                 first_components = {**comp, "N": N}
             if update:
                 self.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                self.optimizer.step()
+                if self._scaler is not None:
+                    self._scaler.scale(loss).backward()
+                    self._scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self._scaler.step(self.optimizer)
+                    self._scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
             total_loss += loss.item()
             n_steps += 1
 

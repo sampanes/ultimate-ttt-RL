@@ -657,6 +657,8 @@ def main():
     ap.add_argument("--recompute",       action=argparse.BooleanOptionalAction, default=False, help="Batched path only (--parallel>0): use the collect-then-recompute learn step (THROUGHPUT.md Part C) instead of the in-graph learn_from_trajectories. Stores detached (state,action,reward) during self-play and runs single-epoch minibatch SGD with fresh forwards, so the number of gradient steps is set by --minibatch_size, not the self-play batch (--parallel) -- fixes the 'big batch starves updates' stall AND the OOM. DEFAULT OFF (byte-identical to today). VALIDATE FIRST: python -m scripts.verify_recompute_parity (must PASS) + home_batch --phase recompute, before trusting it in a long run.")
     ap.add_argument("--minibatch_size",  type=int,   default=0,               help="With --recompute: SGD minibatch size over collected transitions (0 = one minibatch = the whole self-play batch = a single full-batch step, numerically equivalent to the in-graph path). Smaller = more gradient steps per self-play batch (the point of the decouple). No effect without --recompute.")
     ap.add_argument("--batch_opponents", action=argparse.BooleanOptionalAction, default=False, help="Batched path only (--parallel>0): batch the OPPONENT forward passes too, not just the active agent's. NN opponents (clones, archives, nn_big8, lottery) are deterministic argmax at eval time, so grouping them by weight and running one batched forward per group is byte-identical in outcome to the per-slot loop -- it just removes an unbatched Python-driven forward per opponent move. DEFAULT OFF. VALIDATE FIRST: python -m scripts.verify_opponent_batch_parity (must PASS) before trusting it in a long run.")
+    ap.add_argument("--amp",             action=argparse.BooleanOptionalAction, default=False, help="Mixed precision: fp16 autocast around the hot forwards + a GradScaler on the backward. DEFAULT OFF. Experimental -- CHANGES numerics, so there is no exact parity oracle (unlike --batch_opponents/--recompute); the model is tiny and the GPU is not the bottleneck (THROUGHPUT.md), so measure with scripts.bench_throughput and validate convergence before trusting it in a long run.")
+    ap.add_argument("--compile",         action=argparse.BooleanOptionalAction, default=False, help="torch.compile the forward_both callable used by self-play + learn. DEFAULT OFF. Compiles a separate callable (NOT self.model), so state_dict/clone/save/load/ONNX-export are untouched. Numerically ~identical; pays a one-time warmup compile. Experimental -- measure the wall-clock effect with scripts.bench_throughput (tiny net + GPU-idle workload means the win may be small or negative).")
     ap.add_argument("--seed",            type=int,   default=None,            help="Seed torch/numpy/random for reproducible runs (weight init, opponent sampling, action sampling). Default None = unseeded (existing behavior). Use for N-seed repeats so a good seed can be reproduced; note CUDA kernels are not fully deterministic even when seeded.")
     ap.add_argument("--value_tanh",      action=argparse.BooleanOptionalAction, default=False, help="Apply tanh to the value head output (calibrates to [-1, 1]). Default OFF for backward compat with existing checkpoints. Enable for new AlphaZero runs: fixes the MCTS value-scale mismatch (see agents/mcts.py docstring). Existing checkpoints are incompatible -- start fresh or retrain.")
     ap.add_argument("--tactical",        action="store_true",                 help="Eval only (--eval): enable 1-ply tactical lookahead (take an immediate win / avoid an immediate loss) on top of the policy argmax. Lets you measure the lookahead's strength gain. No effect on training.")
@@ -770,6 +772,18 @@ def main():
         league.set_stage(0)
         print("Fresh start without --curriculum -- beginning at stage 0 to avoid a "
               "cold-start wall (pass --curriculum for automatic stage advancement).")
+
+    # Optional perf toggles -- enable AFTER any resume/seed load so compile sees final
+    # weights. Both default OFF (byte-identical); benchmark them via scripts.bench_throughput.
+    if args.amp:
+        active.enable_amp()
+        print("[perf] AMP ON (fp16 autocast + GradScaler) -- experimental, changes numerics.")
+    if args.compile:
+        active.enable_compile()
+        print("[perf] torch.compile ON (forward_both) -- first chunk pays a warmup compile.")
+    if args.parallel > 0 and args.batch_opponents:
+        print("[perf] batch_opponents ON -- opponent forwards batched by weight "
+              "[validate via: python -m scripts.verify_opponent_batch_parity]")
 
     log_metrics = not args.no_metrics
     if log_metrics:
