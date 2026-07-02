@@ -43,6 +43,10 @@ models/arena/
 home_batch_report.md
 loss_logs/home_batch/
 
+# bench_throughput.py outputs -- same paste-back-only convention, see BENCH_THROUGHPUT_PLAN.md
+bench_throughput_report.md
+loss_logs/bench_throughput/
+
 # Claude lol
 .claudeignore
 CLAUDE.md

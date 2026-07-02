@@ -4,6 +4,20 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
+## Throughput benchmark harness — plan ready, not yet implemented
+
+See `BENCH_THROUGHPUT_PLAN.md` in full. Goal: before committing weeks of GPU time
+to a long training run, measure which existing throughput levers (`--parallel`,
+`--recompute`+`--minibatch_size`, `--network` size, AlphaZero `--wave_size`,
+`--n_sims`) actually help on the RTX 3080, instead of guessing. Spec calls for a
+new `scripts/bench_throughput.py` that requires ZERO changes to `train_league.py`
+/ `train_alphazero.py` (pure subprocess timing, no regression risk to the real
+run), isolated from the live dashboard (`--no_metrics`, scratch model dirs), self
+contained (one command, one report file, `bench_throughput_report.md`, gitignored).
+Next: hand the plan to an implementer, then run on the home box.
+
+---
+
 ## Home-box runs (needs torch + `.pt` models)
 
 Runs 1-4 and 6 done on the RTX 3080, 2026-06-30 -- results in `RESULT_HOME_QUEUE.md`.
