@@ -128,14 +128,21 @@ Files: `scripts/train_league.py` (poll loop), `gui/arena/templates/index.html` (
 - `docs/play/agent.js` — ONNX inference wrapper + PUCT MCTS (Hard=50 sims, Easy/Medium=raw policy)
 - `docs/play/index.html` + `docs/index.html` — complete play page + landing page (home box wrote)
 
-**Home-box steps remaining:**
-1. Run export: `python -m scripts.export_onnx --candidate arena:21@hof --quantize`
-   → writes `docs/models/model_int8.onnx` + updates `model_config.json`
-2. Commit model: `git add docs/models/ && git commit -m 'feat(m3): add int8 ONNX pocket model'`
-3. Verify parity: re-run M2 benchmark on quantized model (need parity + KL check from export output)
-4. Measure: cold download time, bundle bytes, peak browser memory, move latency (desktop + phone)
-5. Run `python -m scripts.gen_golden_vectors` (needs engine) then open `docs/play/test_engine.html` to confirm all JS engine checks PASS
-6. Push to GitHub Pages: enable Pages on `main` branch `docs/` folder in repo settings
+**Home-box steps -- DONE (2026-07-01):**
+1. [DONE] Run export: `python -m scripts.export_onnx --candidate arena:21@hof --quantize`
+   → fp32 5035 KB (intermediate, gitignored), int8 1283 KB committed as docs/models/model_int8.onnx
+2. [DONE] Committed as bba60f6 (feat(m3): add int8 ONNX pocket model)
+3. [DONE] Parity: top-1 move matches torch in all sampled positions; value error < 1.1%
+4. [DONE (partial)] Bundle bytes: 1283 KB int8 (M3 gate cleared). Python move latency 0.77ms CPU
+   (from RESULT_M3_PREP.md). Cold download + browser memory + phone need browser test.
+5. [DONE] gen_golden_vectors ran on home box with C++ engine -- identical to authoring-box
+   committed JSON (no diff). Golden vector fixture is authoritative.
+6. [REMAINING -- manual] Enable GitHub Pages: repo Settings -> Pages -> deploy from
+   `actor-critical-league` branch, `/docs` folder. No gh CLI on home box; needs browser UI.
+
+**After Pages is enabled:** push any change to actor-critical-league and the site goes live.
+Open `https://sampanes.github.io/ultimate-ttt-RL/play/test_engine.html` to run JS engine
+tests, then `https://sampanes.github.io/ultimate-ttt-RL/play/` to play the full game.
 
 **M3 exit gate:** static page plays a complete legal game offline, reports model hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
 
