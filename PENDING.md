@@ -24,12 +24,16 @@ levers built this pass — `--batch_opponents` and `--compile`/`--amp`.
 
 **Home-box steps (in order):**
 ```
-python -m scripts.verify_opponent_batch_parity          # must print PARITY PASS
 python -m scripts.bench_throughput --quick              # fast smoke of the whole matrix
 python -m scripts.bench_throughput                      # the real ~5-min/candidate run
+python -m scripts.home_batch --phase perf               # A/B: batch_opponents/amp/compile
 ```
-Then read `bench_throughput_report.md`, pick the fastest safe config, and use it for the
-long run. Paste the report back.
+`bench_throughput` measures raw speed across the whole candidate matrix. `home_batch --phase perf`
+is the turnkey **A/B for the three throughput levers** -- it runs the batch_opponents parity gate,
+then plays the same seed/budget with each lever on vs off, reporting BOTH games/sec AND convergence
+(peak ELO / WR / EV) in one `home_batch_report.md`. Use it to settle the AMP/compile question that
+has no static oracle ("faster, and does it still learn?"). Read both reports, pick the fastest safe
+config, use it for the long run, paste the reports back.
 
 ---
 
@@ -115,9 +119,9 @@ it as a fixture if you want a standing GOLD set.
 | `--value_coef` | train_league | EV sweep picks winner | surface as `_DEFAULT_VALUE_COEF = N` |
 | `--value_tanh` | train_alphazero | AZ run validates | default ON for AZ script, keep `--no-value_tanh` |
 | `--wave_size` | train_alphazero / benchmark_vs_mcts | benchmark confirms sweet spot | surface as `_WAVE_SIZE = N` |
-| `--batch_opponents` | train_league | `verify_opponent_batch_parity` PASS + bench shows a win | default ON, keep `--no-batch_opponents` |
-| `--compile` | train_league | bench shows a wall-clock win (Windows+CUDA compile can be flaky) | default ON if it helps, else leave OFF |
-| `--amp` | train_league | bench win AND a real run's convergence unharmed (no exact oracle) | default ON only if both hold |
+| `--batch_opponents` | train_league | `home_batch --phase perf`: parity PASS + speedup > ~1.05x | default ON, keep `--no-batch_opponents` |
+| `--compile` | train_league | `home_batch --phase perf`: wall-clock win (Windows+CUDA compile can be flaky; short A/B understates warmup) | default ON if it helps, else leave OFF |
+| `--amp` | train_league | `home_batch --phase perf`: faster AND convergence (peak ELO/WR/EV) not worse -- no exact oracle | default ON only if both hold |
 
 Low-priority (ready now, no gate needed):
 - `--lr 1e-4` → `_DEFAULT_LR = 1e-4` in train_league (and `1e-3` in train_alphazero)

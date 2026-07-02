@@ -5,6 +5,7 @@ ONE command, it captures everything into `home_batch_report.md`, and you paste
 that file back. No authoring at home.
 
     python -m scripts.home_batch                 # default: probe + sweep + seeds (the cheap answers)
+    python -m scripts.home_batch --phase perf    # throughput A/B: batch_opponents / amp / compile
     python -m scripts.home_batch --phase run     # just the long strength run (watch the dashboard)
     python -m scripts.home_batch --phase all     # cheap answers, then the long run
 
@@ -16,6 +17,11 @@ Phases:
          "is 0.5 still right after the 0c .mean() switch?" (RESULT_0c ask #3).
   seeds  N reproducible repeats at a fixed budget -- pins the 1477-vs-1728 spread
          (is it luck or real variance?).  (RESULT_0c ask #2 / GOAT_NEXT #2)
+  perf   throughput levers, each an A/B at equal games budget measuring BOTH speed
+         (games/sec) and convergence (peak ELO / WR / EV): --batch_opponents (with
+         its exact parity gate), --amp, --compile, and all combined. Answers the
+         AMP/compile question that has no static oracle -- "faster, and does it
+         still learn?" -- by just running it and measuring.
   run    the long batched strength run (--save_best --patience), streamed live so
          the dashboard Training tab shows it; exercises --restore_best as a side
          effect if it peaks-then-drifts.  (GOAT_NEXT #3)
@@ -76,6 +82,18 @@ def run_parity(games, network):
     p = subprocess.run(
         [sys.executable, "-m", "scripts.verify_recompute_parity",
          "--games", str(games), "--network", network],
+        cwd=REPO, env=_CHILD_ENV, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
+    return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
+
+
+def run_opp_parity(games, network, stage, seed):
+    """Run the opponent-batching parity check (byte-identity of the batched
+    opponent forward vs the per-slot loop). Returns (passed, captured_output)."""
+    p = subprocess.run(
+        [sys.executable, "-m", "scripts.verify_opponent_batch_parity",
+         "--games", str(games), "--network", network, "--stage", str(stage),
+         "--seed", str(seed)],
         cwd=REPO, env=_CHILD_ENV, capture_output=True, text=True,
         encoding="utf-8", errors="replace")
     return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
@@ -321,6 +339,85 @@ def phase_recompute(network, parity_games, ab_chunks, ab_games, baseline_paralle
     return {"recompute": {"parity_pass": True, "smoke_ok": smoke_ok, "ab": ab_rows}}
 
 
+def phase_perf(network, parity_games, parity_stage, ab_chunks, ab_games, parallel, seed):
+    emit("## Phase: perf (throughput levers -- batch_opponents / amp / compile)\n")
+    emit("Answers the throughput question these levers raise without a static oracle: are they "
+         "FASTER on this GPU, and (for the numeric-changing ones) does the model still LEARN? "
+         "Each config runs the SAME seed / chunks / games / --parallel, so wall-clock differences "
+         "are the speed signal and the convergence columns (peak ELO / final WR / mean EV) are the "
+         "correctness signal.\n"
+         "- **batch_opponents** has an EXACT oracle (NN opponents are deterministic argmax = "
+         "reorder-invariant), so it gets a parity gate first; its A/B convergence should match "
+         "baseline to the digit.\n"
+         "- **amp** changes numerics (fp16) so there is NO exact oracle -- the only honest test is "
+         "this empirical A/B: faster AND convergence not worse.\n"
+         "- **compile** doesn't change numerics but pays a one-time warmup on chunk 1, so a short "
+         "A/B UNDER-states it; if it looks close here, rerun with more --perf_ab_chunks.\n")
+
+    # 1. batch_opponents parity gate -- the one lever with an exact oracle.
+    emit("### 1. batch_opponents parity gate")
+    par_ok, par_out = run_opp_parity(parity_games, network, parity_stage, seed)
+    emit(f"- verify_opponent_batch_parity (--games {parity_games} --network {network} "
+         f"--stage {parity_stage}): **{'PASS' if par_ok else 'FAIL'}**")
+    emit("```")
+    emit("\n".join(par_out.strip().splitlines()[-14:]))
+    emit("```")
+    if not par_ok:
+        emit("\n**batch_opponents parity FAILED -- do NOT enable --batch_opponents.** "
+             "(The amp/compile A/B below still runs; they don't depend on this.)\n")
+    emit("")
+
+    # 2. A/B matrix at equal budget -- speed + convergence, single seed, directional.
+    emit("### 2. A/B at equal games budget (speed + convergence, single seed -- directional)")
+    configs = [
+        ("baseline", []),
+        ("batch_opponents", ["--batch_opponents"]),
+        ("amp", ["--amp"]),
+        ("compile", ["--compile"]),
+        ("all", ["--batch_opponents", "--amp", "--compile"]),
+    ]
+    rows = []
+    for name, cfg in configs:
+        extra = (["--chunks", str(ab_chunks), "--chunk_games", str(ab_games),
+                  "--parallel", str(parallel)] + cfg +
+                 ["--network", network, "--seed_model", "", "--seed", str(seed),
+                  "--curriculum", "--patience", "0", "--model_dir", _scratch("perf_ab_" + name)])
+        t0 = time.time()
+        rc, out, err = run_train(extra)
+        dt = time.time() - t0
+        m = read_metrics() or {}
+        gps = round(ab_chunks * ab_games / dt, 1) if dt > 0 and rc == 0 else None
+        rows.append({"config": name, "rc": rc, "secs": round(dt, 1), "games_per_s": gps, **m})
+        emit(f"- {name}: exit {rc} | {dt:.1f}s | {gps} games/s | "
+             f"final_stage={m.get('final_stage')} peak_elo={m.get('peak_elo')} "
+             f"final_wr={m.get('final_winrate')} mean_EV={m.get('mean_explained_var')}")
+        if rc != 0:
+            emit("```")
+            emit((err or out or "")[-1200:])
+            emit("```")
+    emit("")
+
+    base_gps = next((r["games_per_s"] for r in rows
+                     if r["config"] == "baseline" and r.get("games_per_s")), None)
+    emit("| config | secs | games/s | speedup | final stage | peak ELO | final WR | mean EV |")
+    emit("|---|---|---|---|---|---|---|---|")
+    for r in rows:
+        sp = (round(r["games_per_s"] / base_gps, 2)
+              if base_gps and r.get("games_per_s") else None)
+        emit(f"| {r['config']} | {r.get('secs')} | {r.get('games_per_s')} | "
+             f"{('%.2fx' % sp) if sp else '-'} | {r.get('final_stage')} | {r.get('peak_elo')} | "
+             f"{r.get('final_winrate')} | {r.get('mean_explained_var')} |")
+    emit("\n**Read (per lever, vs the baseline row):**\n"
+         "- `batch_opponents`: enable if parity PASSED and speedup > ~1.05x. Convergence must "
+         "match baseline (it's byte-identical); a divergence here would contradict the oracle -> flag it.\n"
+         "- `amp`: enable ONLY if faster AND peak ELO / final WR / mean EV are not worse than baseline. "
+         "Faster-but-EV-sags = leave OFF (the fp16 numerics hurt learning).\n"
+         "- `compile`: enable if faster; remember chunk-1 warmup understates a short A/B. No numeric risk.\n"
+         "- `all`: the shipping combo if each accepted lever holds together. Bake the winners as the "
+         "defaults in the flag-hardening table (PENDING.md).\n")
+    return {"perf": {"batch_opponents_parity": par_ok, "ab": rows}}
+
+
 def phase_sweep(value_coefs, chunks, games, parallel, seed):
     emit("## Phase: sweep (value-weight)\n")
     emit(f"Fixed seed {seed}, {chunks} chunks x {games} games, --parallel {parallel}, "
@@ -423,9 +520,10 @@ def phase_run(network, parallel, chunks, chunk_games, patience, seed):
 def main():
     ap = argparse.ArgumentParser(description="Turnkey home harness for UTTT-RL.")
     ap.add_argument("--phase", default="cheap",
-                    choices=["probe", "sweep", "seeds", "cheap", "run", "recompute", "all"],
+                    choices=["probe", "sweep", "seeds", "cheap", "run", "recompute", "perf", "all"],
                     help="cheap = probe+sweep+seeds (default); all = cheap+run; "
-                         "recompute = THROUGHPUT Part C validation (parity + smoke + A/B).")
+                         "recompute = THROUGHPUT Part C validation (parity + smoke + A/B); "
+                         "perf = throughput A/B for batch_opponents/amp/compile (speed + convergence).")
     # sweep
     ap.add_argument("--value_coefs", default="0.25,0.5,1.0")
     ap.add_argument("--sweep_chunks", type=int, default=3)
@@ -462,6 +560,19 @@ def main():
     ap.add_argument("--rc_minibatch", type=int, default=64,
                     help="SGD minibatch for the recompute A/B leg (sets #gradient-steps).")
     ap.add_argument("--rc_seed", type=int, default=0)
+    # perf (throughput-lever A/B -- small net so big batches are VRAM-safe)
+    ap.add_argument("--perf_network", default="small")
+    ap.add_argument("--perf_parity_games", type=int, default=80,
+                    help="Games for the batch_opponents parity gate.")
+    ap.add_argument("--perf_parity_stage", type=int, default=4,
+                    help="Curriculum stage for parity (higher = more archive/clone opponents = "
+                         "more of the batched path exercised).")
+    ap.add_argument("--perf_ab_chunks", type=int, default=5,
+                    help="Chunks per A/B leg. Keep >=5 so torch.compile's chunk-1 warmup is amortized "
+                         "instead of dominating the measurement.")
+    ap.add_argument("--perf_ab_games", type=int, default=1024)
+    ap.add_argument("--perf_parallel", type=int, default=64)
+    ap.add_argument("--perf_seed", type=int, default=0)
     args = ap.parse_args()
 
     os.makedirs(SCRATCH, exist_ok=True)
@@ -493,6 +604,11 @@ def main():
             summary.update(phase_recompute(args.rc_network, args.rc_parity_games, args.rc_ab_chunks,
                                            args.rc_ab_games, args.rc_baseline_parallel,
                                            args.rc_big_parallel, args.rc_minibatch, args.rc_seed))
+            flush_report()
+        if do == "perf":
+            summary.update(phase_perf(args.perf_network, args.perf_parity_games,
+                                      args.perf_parity_stage, args.perf_ab_chunks,
+                                      args.perf_ab_games, args.perf_parallel, args.perf_seed))
             flush_report()
     except KeyboardInterrupt:
         emit("\n_(interrupted)_")
