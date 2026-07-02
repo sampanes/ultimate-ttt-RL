@@ -349,6 +349,10 @@ def main():
                     epsilon=float('nan'),
                     winrate=wr if not np.isnan(wr) else 0.0,
                     value_loss=avg_val,
+                    t=time.time(),
+                    policy_loss=avg_pol,
+                    games_total=(iteration + 1) * args.games_per_iter,
+                    buffer=len(buffer),
                 )
 
             wr_str = f"{wr*100:.1f}%" if not (isinstance(wr, float) and np.isnan(wr)) else "--"

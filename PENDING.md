@@ -96,30 +96,20 @@ Low-priority (ready now, no gate needed):
 
 ## Pending code (author on this box, torch-free)
 
-### MCTS batched leaf eval (do before M4 long run)
-Collect N leaves per MCTS step, batch into one NN forward pass, expand all.
-~5-10x speedup for deep-search oracle runs -- cuts M4 wall time significantly.
-File: `agents/mcts.py` -- add `wave_size` param to `MCTS.search()`.
-Also expose `wave_size` in `scripts/train_alphazero.py` as `--wave_size N`.
+### MCTS batched leaf eval  [DONE -- already shipped]
+`agents/mcts.py` already has full `wave_size` support (virtual loss, leaf dedup,
+one batched forward pass per wave) and `scripts/train_alphazero.py` already
+exposes `--wave_size N`. No action needed; PENDING previously had two stale
+entries for this.
 
-### AlphaZero richer logging (do before M4 long run)
-The AZ dopamine dashboard (`gui/alphazero/index.html`) already handles these
-fields gracefully when present (shows "--" when absent). Add to train_alphazero.py:
-
-1. Pass `t=time.time()` in every `append_metrics(...)` call.
-   Enables: wall-clock elapsed, days-running counter, iters/hr throughput.
-
-2. Pass `policy_loss=avg_pol` in every `append_metrics(...)` call.
-   Already supported by `append_metrics`; just not plumbed through yet.
-
-3. Pass `games_total=iteration * args.games_per_iter` for games-played counter.
-   (Add `games_total` key to `append_metrics` the same way `elo` was added.)
-
-4. Pass `buffer=len(buffer)` for buffer-fill display.
-   (Same pattern as above.)
-
-With these 4 additions, the dashboard goes from "iter count + loss" to:
-  "Day 14, 762k games, 74% WR, 23 iters/hr, buffer 48k/50k"
+### AlphaZero richer logging  [DONE]
+`scripts/trainer_base.append_metrics` gained `t`, `policy_loss`, `games_total`,
+`buffer` (additive/optional, byte-identical for legacy callers). Wired into
+`scripts/train_alphazero.py`'s per-iteration `append_metrics(...)` call:
+`t=time.time()`, `policy_loss=avg_pol`, `games_total=(iteration+1)*args.games_per_iter`,
+`buffer=len(buffer)`. py_compile clean; runtime display verification is a home-box
+step (start a short AZ run, confirm the dashboard shows elapsed/throughput/games/buffer
+instead of "--").
 
 ### Gregory curriculum integration
 Wire `GregoryAgent` into `league_manager.py` stage 5-6 as an external anchor.
@@ -130,10 +120,6 @@ File: `arena/league_manager.py` around line 217+ (stage-weighted opponent mix).
 Surface `total_games` and `best_elo` from `arena_state.json` as stat cards in the dashboard.
 Files: `gui/arena/templates/index.html`, `gui/arena/arena.js`.
 See `gui/BACKLOG.md` for full backlog.
-
-### MCTS batched leaf eval (Phase 6 prerequisite)
-Collect N leaves, run one NN forward, expand all. ~5-10x speedup for deep-MCTS oracle runs and Phase 6 architecture search.
-File: `agents/mcts.py` — add `wave_size` parameter to `MCTS.search()`.
 
 ### Part B: training throttle/pause knob
 File-based `loss_logs/control.json` → trainer polls between games and sleeps to target rate.
@@ -162,13 +148,12 @@ Files: `scripts/train_league.py` (poll loop), `gui/arena/templates/index.html` (
    (from RESULT_M3_PREP.md). Cold download + browser memory + phone need browser test.
 5. [DONE] gen_golden_vectors ran on home box with C++ engine -- identical to authoring-box
    committed JSON (no diff). Golden vector fixture is authoritative.
-6. [REMAINING -- manual] Enable GitHub Pages: repo Settings -> Pages -> deploy from
-   `actor-critical-league` branch, `/docs` folder. No gh CLI on home box; needs browser UI.
+6. [DONE] GitHub Pages enabled and live -- confirmed tested by user directly on GitHub.
 
-**After Pages is enabled:** push any change to actor-critical-league and the site goes live.
-Open `https://sampanes.github.io/ultimate-ttt-RL/play/test_engine.html` to run JS engine
-tests, then `https://sampanes.github.io/ultimate-ttt-RL/play/` to play the full game.
+Live at `https://sampanes.github.io/ultimate-ttt-RL/play/` (and `/play/test_engine.html`
+for the JS engine golden-vector suite).
 
-**M3 exit gate:** static page plays a complete legal game offline, reports model hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
+**M3 exit gate: CLEARED.** Static page plays a complete legal game offline, reports model
+hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
 
 See `SHIP_PLAN.md` M3 section for full exit gate.

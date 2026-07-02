@@ -17,7 +17,8 @@ LOG_FILE = "loss_logs/metrics_log.jsonl"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 def append_metrics(loss: float, epsilon: float, winrate: float,
-                   stage=None, elo=None, value_loss=None, explained_var=None):
+                   stage=None, elo=None, value_loss=None, explained_var=None,
+                   t=None, policy_loss=None, games_total=None, buffer=None):
     entry = {
         "loss": loss,
         "epsilon": epsilon,
@@ -35,6 +36,16 @@ def append_metrics(loss: float, epsilon: float, winrate: float,
         entry["value_loss"] = round(value_loss, 5)
     if explained_var is not None:
         entry["explained_var"] = round(explained_var, 4)
+    # AlphaZero dashboard fields: wall-clock timestamp (throughput/elapsed), policy-only
+    # loss, and progress counters (total games played, replay buffer fill).
+    if t is not None:
+        entry["t"] = t
+    if policy_loss is not None:
+        entry["policy_loss"] = round(policy_loss, 5)
+    if games_total is not None:
+        entry["games_total"] = games_total
+    if buffer is not None:
+        entry["buffer"] = buffer
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
