@@ -777,7 +777,10 @@ def main():
     # weights. Both default OFF (byte-identical); benchmark them via scripts.bench_throughput.
     if args.amp:
         active.enable_amp()
-        print("[perf] AMP ON (fp16 autocast + GradScaler) -- experimental, changes numerics.")
+        if torch.cuda.is_available():
+            print("[perf] AMP ON (fp16 autocast + GradScaler) -- experimental, changes numerics.")
+        else:
+            print("[perf] --amp requested but no CUDA -- AMP is inert (fp32), no effect.")
     if args.compile:
         active.enable_compile()
         print("[perf] torch.compile ON (forward_both) -- first chunk pays a warmup compile.")

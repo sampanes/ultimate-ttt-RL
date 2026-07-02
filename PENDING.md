@@ -4,17 +4,32 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
-## Throughput benchmark harness — plan ready, not yet implemented
+## Throughput benchmark harness — IMPLEMENTED, needs a home-box run
 
-See `BENCH_THROUGHPUT_PLAN.md` in full. Goal: before committing weeks of GPU time
-to a long training run, measure which existing throughput levers (`--parallel`,
-`--recompute`+`--minibatch_size`, `--network` size, AlphaZero `--wave_size`,
-`--n_sims`) actually help on the RTX 3080, instead of guessing. Spec calls for a
-new `scripts/bench_throughput.py` that requires ZERO changes to `train_league.py`
-/ `train_alphazero.py` (pure subprocess timing, no regression risk to the real
-run), isolated from the live dashboard (`--no_metrics`, scratch model dirs), self
-contained (one command, one report file, `bench_throughput_report.md`, gitignored).
-Next: hand the plan to an implementer, then run on the home box.
+`scripts/bench_throughput.py` is built (see `BENCH_THROUGHPUT_PLAN.md` for the full spec).
+One command, one gitignored report; runs `train_league.py`/`train_alphazero.py` as timed
+black-box subprocesses (zero changes to them) with `--no_metrics` + scratch model dirs so
+it never disturbs the dashboard or a real run. Candidates: `--parallel` sweep, `--recompute`
+x `--minibatch_size`, `--network` size, AlphaZero `--wave_size`/`--n_sims`, PLUS the two new
+levers built this pass — `--batch_opponents` and `--compile`/`--amp`.
+
+**New levers built (default OFF, benchmark them, then gate before trusting in a long run):**
+- `--batch_opponents` (train_league, commit `ee60478`): batches the opponent forward passes
+  in `ParallelGameRunner` (was unbatched per-slot). Highest-value lever — the Python loop is
+  the bottleneck, not the GPU. GATE: `python -m scripts.verify_opponent_batch_parity` (proves
+  it's byte-identical to the per-slot loop) must PASS.
+- `--compile` / `--amp` (train_league, commit `5b45fa4`): torch.compile a separate
+  forward_both callable (state_dict/clone/ONNX untouched) / fp16 autocast + GradScaler.
+  Experimental; AMP has no exact oracle (changes numerics) — validate convergence.
+
+**Home-box steps (in order):**
+```
+python -m scripts.verify_opponent_batch_parity          # must print PARITY PASS
+python -m scripts.bench_throughput --quick              # fast smoke of the whole matrix
+python -m scripts.bench_throughput                      # the real ~5-min/candidate run
+```
+Then read `bench_throughput_report.md`, pick the fastest safe config, and use it for the
+long run. Paste the report back.
 
 ---
 
@@ -100,6 +115,9 @@ it as a fixture if you want a standing GOLD set.
 | `--value_coef` | train_league | EV sweep picks winner | surface as `_DEFAULT_VALUE_COEF = N` |
 | `--value_tanh` | train_alphazero | AZ run validates | default ON for AZ script, keep `--no-value_tanh` |
 | `--wave_size` | train_alphazero / benchmark_vs_mcts | benchmark confirms sweet spot | surface as `_WAVE_SIZE = N` |
+| `--batch_opponents` | train_league | `verify_opponent_batch_parity` PASS + bench shows a win | default ON, keep `--no-batch_opponents` |
+| `--compile` | train_league | bench shows a wall-clock win (Windows+CUDA compile can be flaky) | default ON if it helps, else leave OFF |
+| `--amp` | train_league | bench win AND a real run's convergence unharmed (no exact oracle) | default ON only if both hold |
 
 Low-priority (ready now, no gate needed):
 - `--lr 1e-4` → `_DEFAULT_LR = 1e-4` in train_league (and `1e-3` in train_alphazero)
@@ -124,6 +142,13 @@ entries for this.
 `buffer=len(buffer)`. py_compile clean; runtime display verification is a home-box
 step (start a short AZ run, confirm the dashboard shows elapsed/throughput/games/buffer
 instead of "--").
+
+### Throughput levers: opponent batching + AMP/compile  [DONE -- author box, home-gated]
+`--batch_opponents` (ParallelGameRunner groups NN opponents by weight, one batched
+argmax forward per group; parity oracle `verify_opponent_batch_parity.py`), plus opt-in
+`--amp`/`--compile` on train_league. All default OFF (byte-identical). `batch_select_moves_eval`
+added to the three NN agent classes. Commits `ee60478` (batching) + `5b45fa4` (amp/compile).
+Benchmark + gate at home (see the throughput-harness section above), then bake defaults.
 
 ### Gregory curriculum integration
 Wire `GregoryAgent` into `league_manager.py` stage 5-6 as an external anchor.

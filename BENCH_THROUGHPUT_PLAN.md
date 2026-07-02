@@ -1,9 +1,23 @@
-# Throughput benchmark harness — spec for implementation
+# Throughput benchmark harness — spec + status
 
-**Status: PLAN ONLY, nothing built yet.** Authored torch-free on the sandbox box by
-surveying the current codebase (file:line references below are verified against
-`actor-critical-league` @ `67c58f4`, not guessed). Handed off for an implementer
-(Opus/Fable) to build and for the home box (torch + GPU) to run.
+**Status: IMPLEMENTED.** `scripts/bench_throughput.py` is built and py_compile/`--help`
+verified on the authoring box; the timed runs need torch + GPU (home box). The two levers
+this plan originally listed as "out of scope, needs new code" — opponent-side batching and
+`torch.compile`/AMP — were ALSO built and are now benchmarked candidates (see §6). What
+remains is running it at home and reading the report.
+
+Run it:
+```
+python -m scripts.bench_throughput                     # both suites, ~5 min/candidate
+python -m scripts.bench_throughput --quick             # fast smoke of the whole matrix
+python -m scripts.bench_throughput --only "batch_opponents|compile|amp"  # just new levers
+```
+Before enabling anything the benchmark likes, gate the correctness-sensitive levers:
+`python -m scripts.verify_opponent_batch_parity` (must PASS) for `--batch_opponents`, and
+`python -m scripts.verify_recompute_parity` for `--recompute`. AMP/compile have no exact
+oracle (AMP changes numerics) — validate convergence on a real run.
+
+_Original plan below; file:line references were verified against `actor-critical-league`._
 
 **Why this exists:** before committing weeks of GPU time to a long training run
 (league or AlphaZero), find out which of the throughput levers already sitting in
@@ -165,7 +179,25 @@ Fixed baseline settings: `--no_metrics --network medium --n_sims 100`.
 
 ---
 
-## 6. Explicitly out of scope for v1 (list them so they don't get silently dropped)
+## 6a. Levers that WERE out of scope and are now BUILT
+
+The original plan (§6b below) listed opponent batching and torch.compile/AMP as follow-up
+code, not v1 candidates. They have since been implemented and are benchmarked candidates:
+
+- **Opponent batching** — `--batch_opponents` on `train_league.py` (commit `ee60478`).
+  `ParallelGameRunner` groups NN opponents by weight identity and runs one batched argmax
+  forward per group instead of one `select_move` per opponent move. Every NN opponent is
+  deterministic argmax at eval time, so it's outcome-identical to the per-slot loop —
+  certified by `scripts/verify_opponent_batch_parity.py` (GATE before enabling). This is the
+  highest-value lever: it removes an unbatched, Python-driven forward per opponent move, and
+  per the project's own finding the Python loop (not the GPU) is the bottleneck.
+- **`--compile` / `--amp`** on `train_league.py` (commit `5b45fa4`). `--compile` compiles a
+  separate `forward_both` callable (state_dict untouched → clone/save/load/ONNX-export safe).
+  `--amp` is fp16 autocast + GradScaler. Both default OFF, both experimental — AMP changes
+  numerics (no exact oracle; validate convergence), and both optimize the GPU forward, which
+  may be marginal on a tiny net. That's what the benchmark is for.
+
+## 6b. Still out of scope (original notes)
 
 - **C++ engine vs Python engine A/B.** Per survey: the C++ engine (`engine/cpp/`)
   is not built on this authoring box at all (`engine/cpp/build/` doesn't exist
@@ -179,23 +211,11 @@ Fixed baseline settings: `--no_metrics --network medium --n_sims 100`.
   is it buying us") but not worth the sweep's time budget in v1 — do it last, if
   at all, and only as a single before/after data point rather than a full
   repeats-and-average measurement.
-- **Batching the opponent's forward pass in `ParallelGameRunner`.** Confirmed by
-  survey: `scripts/train_league.py:369-382` batches only the *active* agent's
-  moves; the opponent side is a plain per-slot Python loop, unbatched. This is a
-  real, probably-substantial lever, but it requires writing new code (the
-  batching logic itself) before there's anything to benchmark — it's a follow-up
-  implementation task, not a same-day config sweep. Already listed separately in
-  `PENDING.md`'s "Pending code" section; don't duplicate it into this benchmark
-  plan's scope.
-- **`torch.compile()` and AMP/autocast+bf16.** Confirmed by survey: neither is
-  used anywhere in the repo today. Both are plausible wins on an Ampere card but
-  each needs a small opt-in flag added to the training scripts first (e.g.
-  `--compile` wrapping `agent.model = torch.compile(agent.model)`, `--amp`
-  wrapping the learn step in `torch.autocast` + `GradScaler`). If there's time
-  after the Tier-1 sweeps above (which need zero script changes), these are the
-  next-best use of it — but they're a "Tier 2" addition, not part of the
-  zero-risk v1 scope. Call this out to whoever implements the plan as an
-  explicit "if you want to go further" option, not a requirement.
+- **Batching the opponent's forward pass in `ParallelGameRunner`.** ~~Out of scope~~
+  → **BUILT, see §6a** (`--batch_opponents`, parity-gated). Left here as a record of the
+  original scoping call.
+- **`torch.compile()` and AMP.** ~~Out of scope~~ → **BUILT, see §6a** (`--compile`,
+  `--amp`, both opt-in/experimental). Left here as a record of the original scoping call.
 
 ## 7. Rough time budget
 
