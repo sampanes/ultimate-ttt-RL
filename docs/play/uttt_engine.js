@@ -161,7 +161,11 @@ class GameState {
     const next = getNextMini(cell);
     this.constraint = (this.miniWinner[next] !== EMPTY) ? -1 : next;
 
-    this.player = (this.player === X) ? O : X;
+    // Mirror Python: player is NOT switched on the terminal move (game.py early-returns
+    // before the switch when a winner is found). Terminal state keeps the winning player.
+    if (this.winner === null) {
+      this.player = (this.player === X) ? O : X;
+    }
     return true;
   }
 }
