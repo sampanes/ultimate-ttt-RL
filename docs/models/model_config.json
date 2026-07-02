@@ -1,18 +1,27 @@
 {
-  "_status": "PENDING: run `python -m scripts.export_onnx --candidate arena:21@hof --quantize` on the home box to populate this file and copy model_int8.onnx here.",
-  "_swap_guide": "To swap the agent: re-run scripts/export_onnx.py with the new checkpoint. This file is rewritten automatically. The play page reads only name/file/outputs — nothing else needs changing.",
-  "name": "pending",
-  "version": "m3-r0",
-  "description": "Placeholder — export not yet run.",
+  "_swap_guide": "To deploy a new model: run scripts/export_onnx.py --candidate <new> [--quantize]. This file is rewritten automatically. Only name/version/file ever change.",
+  "name": "arena:21@hof",
+  "version": "m3-r1",
+  "description": "Policy-gradient self-play, 1-ply tactical overlay at eval.",
   "file": "./model_int8.onnx",
-  "fp32_kb": null,
-  "int8_kb": null,
+  "fp32_kb": 5035,
+  "int8_kb": 1283,
   "input": {
     "name": "input",
-    "shape": [1, 7, 9, 9],
+    "shape": [
+      1,
+      7,
+      9,
+      9
+    ],
     "channels": [
-      "x_pieces", "o_pieces", "current_player",
-      "valid_moves", "mini_winners", "last_move", "bias"
+      "x_pieces",
+      "o_pieces",
+      "current_player",
+      "valid_moves",
+      "mini_winners",
+      "last_move",
+      "bias"
     ]
   },
   "outputs": {
