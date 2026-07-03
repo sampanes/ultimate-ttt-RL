@@ -4,15 +4,25 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
-## Throughput benchmark harness — DONE (home box, 2026-07-02)
+## Throughput benchmark harness — DONE + FIXES BAKED (home box, 2026-07-02/03)
 
-**All three steps ran; full results + bug reports in `RESULT_PERF_BENCH.md`. TL;DR:**
-- `--batch_opponents`: parity PASS + 1.09x A/B (1.19x in-bench) -> **bake default ON**
-- `--wave_size`: ~20x AZ self-play at 64 vs 1 (2.3 vs 0.1 games/s) -> **bake 64**; not
+**All three steps ran; full results + bug reports in `RESULT_PERF_BENCH.md`. The
+authoring-box follow-ups were then done ON the home box (user-approved one-off):**
+- `--batch_opponents`: parity PASS + 1.11x A/B (1.19x in-bench) -> **BAKED default ON**
+  (`--no-batch_opponents` to disable)
+- `--wave_size`: ~20x AZ self-play at 64 vs 1 (2.3 vs 0.1 games/s) -> **BAKED 64**; not
   yet saturated, consider benching 128
-- `--compile`: DEAD on Windows (TritonMissing) -- remove from gates / degrade gracefully
-- `--amp`: BUG, crashes at first backward ("Found dtype Float but expected Half",
-  neural_net_agent_pg.py:427) -- fp32 term in the autocast loss; fix before it can be gated
+- `--parallel`: **BAKED default 64** (hardware-confirmed; 256 starves updates)
+- `--compile`: TritonMissing on Windows -> enable_compile() now checks Triton up front
+  and DEGRADES GRACEFULLY (eager forward + warning, run continues). Still default OFF.
+- `--amp`: dtype crash FIXED (loss now built in fp32 across all three learn paths --
+  autocast graph tensors are fp16, mse_loss needs matching dtypes at backward; .float()
+  keeps the graph, no-op when AMP off). Re-gated: **0.99x, no speed win** (tiny net, GPU
+  not the bottleneck) with convergence fine -> stays default OFF, re-gate on new hardware.
+- `home_batch --phase perf`: A/B rows now pin every lever explicitly (an empty baseline
+  would inherit the new batch_opponents default and compare the lever against itself).
+- Both parity oracles re-run PASS after the edits (recompute worst delta 2.6e-08;
+  opponent-batch 80/80 byte-identical).
 
 Original queue text kept below for reference.
 
@@ -132,15 +142,15 @@ it as a fixture if you want a standing GOLD set.
 | `--minibatch_size` | train_league | A/B confirms best value | surface as `_DEFAULT_MINIBATCH = N` |
 | `--value_coef` | train_league | EV sweep picks winner | surface as `_DEFAULT_VALUE_COEF = N` |
 | `--value_tanh` | train_alphazero | AZ run validates | default ON for AZ script, keep `--no-value_tanh` |
-| `--wave_size` | train_alphazero / benchmark_vs_mcts | benchmark confirms sweet spot | surface as `_WAVE_SIZE = N` |
-| `--batch_opponents` | train_league | `home_batch --phase perf`: parity PASS + speedup > ~1.05x | default ON, keep `--no-batch_opponents` |
-| `--compile` | train_league | `home_batch --phase perf`: wall-clock win (Windows+CUDA compile can be flaky; short A/B understates warmup) | default ON if it helps, else leave OFF |
-| `--amp` | train_league | `home_batch --phase perf`: faster AND convergence (peak ELO/WR/EV) not worse -- no exact oracle | default ON only if both hold |
+| `--wave_size` | train_alphazero / benchmark_vs_mcts | [DONE 2026-07-03] ~20x at 64, monotonic | BAKED default 64 |
+| `--batch_opponents` | train_league | [DONE 2026-07-03] parity PASS + 1.11x A/B | BAKED default ON, `--no-batch_opponents` kept |
+| `--compile` | train_league | [CLOSED 2026-07-03] Triton has no Windows build | stays OFF; enable_compile() now degrades gracefully instead of crashing |
+| `--amp` | train_league | [DONE 2026-07-03] dtype bug fixed; A/B 0.99x, convergence fine | stays OFF (no speed win on RTX 3080); re-gate on new hardware |
 
-Low-priority (ready now, no gate needed):
-- `--lr 1e-4` → `_DEFAULT_LR = 1e-4` in train_league (and `1e-3` in train_alphazero)
-- `--parallel 0` default → `64` in train_league (hardware-confirmed best for RTX 3080)
-- `--keep_versions 5` → `_DEFAULT_KEEP_VERSIONS = 5`
+Low-priority (all settled as of 2026-07-03):
+- `--lr` defaults were already 1e-4 (train_league) / 1e-3 (train_alphazero)
+- `--parallel` default 0 -> 64 in train_league [BAKED 2026-07-03]
+- `--keep_versions` default was already 5
 
 ---
 

@@ -106,6 +106,44 @@ Triton (not available on Windows), ignoring" instead of crashing mid-run.
 
 ---
 
+## ADDENDUM 2026-07-03: fixes applied + AMP re-gated (home box, user-approved one-off)
+
+The authoring-box follow-ups above were done here (user asked to scope-creep them in):
+
+1. **AMP dtype bug FIXED** (`agents/neural_net_agent_pg.py`): loss is now built in fp32
+   in all three learn paths (`learn`, `learn_from_trajectories`, recompute). Root cause
+   confirmed: autocast self-play forwards store fp16 graph tensors, returns are fp32,
+   `F.mse_loss` requires matching dtypes at backward. `.float()` keeps the graph
+   (grads cast back on the way down) and is a no-op returning the same tensor when AMP
+   is off -- both parity oracles re-ran PASS after the edit (recompute worst delta
+   2.6e-08; opponent-batch 80/80).
+2. **--compile degrades gracefully**: `enable_compile()` checks for Triton up front on
+   CUDA (the old failure was lazy -- TritonMissing on the FIRST FORWARD, mid-run) and
+   returns False; train_league prints a warning and continues eagerly.
+3. **Defaults baked**: `--batch_opponents` ON, `--parallel 64` (train_league);
+   `--wave_size 64` (train_alphazero). `--lr`/`--keep_versions` already matched.
+4. **home_batch perf A/B de-contaminated**: baseline row now pins
+   `--no-batch_opponents --no-amp --no-compile` explicitly (an empty baseline would
+   inherit the new default and compare batch_opponents against itself).
+
+Re-run of `home_batch --phase perf` with everything runnable (same seed/budget):
+
+| config | secs | games/s | speedup | peak ELO | final WR | mean EV |
+|---|--:|--:|--:|--:|--:|--:|
+| baseline | 321.6 | 15.9 | 1.00x | 808.7 | 0.3633 | 0.0026 |
+| batch_opponents | 291.4 | 17.6 | 1.11x | 808.7 | 0.3545 | 0.0010 |
+| amp | 325.1 | 15.7 | 0.99x | 808.7 | 0.3662 | 0.0023 |
+| compile (eager fallback) | 321.3 | 15.9 | 1.00x | 808.7 | 0.3584 | 0.0025 |
+| all | 297.9 | 17.2 | 1.08x | 808.7 | 0.3701 | 0.0010 |
+
+**AMP final verdict: fixed but NOT worth enabling here.** 0.99x -- convergence is fine
+(WR/EV within run-to-run noise) but there is no speed to gain: the net is tiny and the
+GPU is not the bottleneck (THROUGHPUT.md called it). Stays default OFF; re-gate via
+`home_batch --phase perf` if the hardware or network size ever changes materially.
+
+`all` (1.08x) confirms amp adds nothing on top of batch_opponents; batch_opponents alone
+(1.11x) is the shipping config and is now the default.
+
 ## Recommended M4 long-run config (this box)
 
 ```

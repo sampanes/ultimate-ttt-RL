@@ -369,11 +369,14 @@ def phase_perf(network, parity_games, parity_stage, ab_chunks, ab_games, paralle
 
     # 2. A/B matrix at equal budget -- speed + convergence, single seed, directional.
     emit("### 2. A/B at equal games budget (speed + convergence, single seed -- directional)")
+    # Every lever is pinned explicitly in every row: batch_opponents is default ON
+    # (baked 2026-07-03 after this phase's own gate passed), so an empty baseline
+    # would silently inherit it and the A/B would compare a lever against itself.
     configs = [
-        ("baseline", []),
-        ("batch_opponents", ["--batch_opponents"]),
-        ("amp", ["--amp"]),
-        ("compile", ["--compile"]),
+        ("baseline", ["--no-batch_opponents", "--no-amp", "--no-compile"]),
+        ("batch_opponents", ["--batch_opponents", "--no-amp", "--no-compile"]),
+        ("amp", ["--no-batch_opponents", "--amp", "--no-compile"]),
+        ("compile", ["--no-batch_opponents", "--no-amp", "--compile"]),
         ("all", ["--batch_opponents", "--amp", "--compile"]),
     ]
     rows = []

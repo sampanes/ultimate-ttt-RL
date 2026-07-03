@@ -74,12 +74,23 @@ class NeuralNetAgentPG(Agent):
         if torch.cuda.is_available():
             self._scaler = torch.amp.GradScaler("cuda", enabled=True)
 
-    def enable_compile(self):
+    def enable_compile(self) -> bool:
         """torch.compile the forward_both callable that the hot self-play + learn
         forwards route through. Compiles a SEPARATE callable, NOT self.model, so
         state_dict keys stay unprefixed and clone/save/load/ONNX-export are unaffected.
-        Opt-in via train_league --compile. Call AFTER any checkpoint load."""
+        Opt-in via train_league --compile. Call AFTER any checkpoint load.
+
+        Returns True if compiled, False if unavailable (kept eager). On CUDA the
+        inductor backend requires Triton, which has no Windows build -- without this
+        guard the failure is LAZY (TritonMissing on the first forward, mid-run), so
+        check up front and degrade to the eager callable instead of crashing."""
+        if self.device.type == "cuda":
+            try:
+                import triton  # noqa: F401
+            except ImportError:
+                return False
         self._fb = torch.compile(self.model.forward_both)
+        return True
 
     def _autocast(self):
         """fp16 autocast context when AMP is on and CUDA is present; else a no-op."""
@@ -170,8 +181,10 @@ class NeuralNetAgentPG(Agent):
             G = self.last_rewards[t] + gamma * G
             returns[t] = G
 
-        log_probs = torch.stack(self.log_probs)
-        values = torch.stack(self.values)
+        # fp32 loss under --amp: stored graph tensors are fp16 from autocast forwards;
+        # see learn_from_trajectories for the full note. No-op when AMP is off.
+        log_probs = torch.stack(self.log_probs).float()
+        values = torch.stack(self.values).float()
 
         advantage = returns - values.detach()
 
@@ -191,7 +204,7 @@ class NeuralNetAgentPG(Agent):
             #     they're inherited verbatim from the batched path, not re-tuned.
             actor_loss = -(log_probs * advantage).mean()
             value_loss = F.mse_loss(values, returns)
-            entropy = torch.stack(self.entropies).mean()
+            entropy = torch.stack(self.entropies).float().mean()
         else:
             # Advantage: normalize after subtracting baseline
             if T > 1: # Apparently also checking advantage slows us down, but I remember having to add it for some reason... if T > 1  and advantage.std().item() > 1e-3:
@@ -202,7 +215,7 @@ class NeuralNetAgentPG(Agent):
 
             # Real policy entropy: sum of per-step full-distribution entropies recorded
             # at selection time (NOT the entropy of just the chosen actions).
-            entropy = torch.stack(self.entropies).sum()
+            entropy = torch.stack(self.entropies).float().sum()
 
         self._record_value_metrics(values, returns, value_loss)
         loss = actor_loss + value_coef * value_loss - entropy_coef * entropy
@@ -390,8 +403,13 @@ class NeuralNetAgentPG(Agent):
         if not all_log_probs:
             return 0.0
 
-        log_probs = torch.stack(all_log_probs)          # (N_total,)
-        values    = torch.stack(all_values)              # (N_total,)
+        # Build the loss in fp32. Under --amp the stored graph tensors are fp16 (the
+        # self-play forwards ran inside autocast) while returns are fp32; mse_loss
+        # requires matching dtypes at backward ("Found dtype Float but expected Half").
+        # .float() keeps the autograd graph (grads are cast back to fp16 on the way
+        # down) and is a no-op returning the same tensor when AMP is off.
+        log_probs = torch.stack(all_log_probs).float()   # (N_total,)
+        values    = torch.stack(all_values).float()      # (N_total,)
         returns   = torch.cat(all_returns)               # (N_total,)
 
         # advantage normalized across the full batch
@@ -404,7 +422,7 @@ class NeuralNetAgentPG(Agent):
 
         # Real policy entropy averaged across steps (full-distribution entropies
         # gathered at selection time), not the entropy of the chosen actions.
-        entropy = (torch.stack(all_entropies).mean()
+        entropy = (torch.stack(all_entropies).float().mean()
                    if all_entropies else torch.zeros((), device=self.device))
 
         self._record_value_metrics(values, returns, value_loss)
@@ -453,6 +471,11 @@ class NeuralNetAgentPG(Agent):
             logits = logits.unsqueeze(0)
         if values.dim() == 0:
             values = values.unsqueeze(0)
+        # fp32 loss under --amp: autocast yields fp16 logits/values but returns_mb /
+        # advantage_mb are fp32 (see learn_from_trajectories). Also keeps log_softmax
+        # in fp32. No-op when AMP is off.
+        logits = logits.float()
+        values = values.float()
 
         log_probs_sel, ent_list = [], []
         for i in range(logits.shape[0]):
@@ -533,6 +556,9 @@ class NeuralNetAgentPG(Agent):
             _, base_values = self._fb(state_batch)
             if base_values.dim() == 0:
                 base_values = base_values.unsqueeze(0)
+        # fp32 for the advantage math and _record_value_metrics' mse under --amp
+        # (no grad here, purely a dtype fix). No-op when AMP is off.
+        base_values = base_values.float()
         advantage = returns - base_values
         if advantage.numel() > 1:
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)

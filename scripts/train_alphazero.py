@@ -34,7 +34,7 @@ Examples:
   python -m scripts.train_alphazero \\
     --checkpoint models/league_pg/best.pt \\
     --network medium --value_tanh \\
-    --n_sims 200 --wave_size 8 \\
+    --n_sims 200 --wave_size 64 \\
     --games_per_iter 100 --buffer_size 50000 \\
     --train_steps 200 --batch_size 256 \\
     --iters 0
@@ -199,8 +199,10 @@ def main():
                     help="Self-play games per iteration.")
     ap.add_argument("--n_sims", type=int, default=100,
                     help="MCTS simulations per move during self-play.")
-    ap.add_argument("--wave_size", type=int, default=1,
-                    help="Batched leaf-eval wave size (1=serial; 8+ speeds up GPU).")
+    ap.add_argument("--wave_size", type=int, default=64,
+                    help="Batched leaf-eval wave size. DEFAULT 64 (gated 2026-07-02: ~20x "
+                         "self-play throughput vs 1 on RTX 3080, monotonic 1<4<8<16<32<64 -- "
+                         "RESULT_PERF_BENCH.md). 1 = serial leaf eval.")
     ap.add_argument("--c_puct", type=float, default=1.5)
     ap.add_argument("--dir_alpha", type=float, default=0.3,
                     help="Dirichlet alpha for root noise (~0.3 for UTTT).")
