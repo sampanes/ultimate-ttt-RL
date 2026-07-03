@@ -32,20 +32,64 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       min-height: 100vh;
       padding: 1.1rem;
+      position: relative;
+      overflow-x: hidden;
+    }
+    /* animated aurora backdrop */
+    body::before {
+      content: "";
+      position: fixed; inset: -40%;
+      background:
+        radial-gradient(ellipse 40% 30% at 20% 10%, rgba(59,158,255,0.09), transparent 60%),
+        radial-gradient(ellipse 35% 30% at 85% 20%, rgba(167,139,250,0.08), transparent 60%),
+        radial-gradient(ellipse 45% 35% at 60% 90%, rgba(34,211,238,0.06), transparent 60%);
+      animation: aurora 24s ease-in-out infinite alternate;
+      pointer-events: none; z-index: 0;
+    }
+    @keyframes aurora {
+      0%   { transform: translate(0, 0) scale(1); }
+      50%  { transform: translate(3%, -2%) scale(1.06); }
+      100% { transform: translate(-3%, 2%) scale(1); }
+    }
+    body > * { position: relative; z-index: 1; }
+
+    /* record celebration: edge glow */
+    #edge-glow {
+      position: fixed; inset: 0; pointer-events: none; z-index: 50;
+      opacity: 0; transition: opacity 0.4s;
+      box-shadow: inset 0 0 120px rgba(245,158,11,0.55);
+    }
+    #edge-glow.on { opacity: 1; animation: edgepulse 0.9s ease-in-out 3; }
+    @keyframes edgepulse {
+      0%, 100% { box-shadow: inset 0 0 80px  rgba(245,158,11,0.35); }
+      50%      { box-shadow: inset 0 0 160px rgba(245,158,11,0.65); }
     }
 
-    /* ── header ── */
+    #confetti-canvas {
+      position: fixed; inset: 0; pointer-events: none; z-index: 60;
+    }
+
+    /* ==== header ==== */
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
       flex-wrap: wrap;
-      margin-bottom: 1.1rem;
+      margin-bottom: 0.8rem;
     }
-    .header-left { display: flex; align-items: center; gap: 0.8rem; }
-    .header-title { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.01em; }
-    .header-title span { color: var(--accent); }
+    .header-left { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+    .header-title {
+      font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em;
+      background: linear-gradient(90deg, var(--text), var(--accent), var(--cyan), var(--text));
+      background-size: 300% 100%;
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: titleshine 8s linear infinite;
+    }
+    @keyframes titleshine {
+      0% { background-position: 0% 0; } 100% { background-position: 300% 0; }
+    }
     .pulse-ring {
       display: inline-block; width: 8px; height: 8px; border-radius: 50%;
       background: var(--cyan);
@@ -58,8 +102,27 @@
     }
     .live-badge {
       display: flex; align-items: center; gap: 0.4rem;
-      font-size: 0.75rem; color: var(--muted);
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+      padding: 0.2rem 0.6rem; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--muted);
     }
+    .live-badge.live    { color: var(--green);  border-color: rgba(34,197,94,0.5); }
+    .live-badge.live .pulse-ring { background: var(--green); }
+    .live-badge.stalled { color: var(--red);    border-color: rgba(239,68,68,0.5); }
+    .live-badge.stalled .pulse-ring { background: var(--red); animation: none; }
+
+    .level-chip {
+      display: flex; align-items: center; gap: 0.45rem;
+      font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
+      padding: 0.2rem 0.65rem; border-radius: 999px;
+      background: linear-gradient(90deg, rgba(167,139,250,0.18), rgba(236,72,153,0.14));
+      border: 1px solid rgba(167,139,250,0.45);
+      color: var(--purple);
+      text-transform: uppercase;
+    }
+    .level-chip .lv-num { color: var(--pink); }
+
     .header-right { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
     .btn {
       background: var(--surface2); color: var(--text);
@@ -68,11 +131,46 @@
       cursor: pointer; transition: border-color 0.15s;
     }
     .btn:hover { border-color: var(--accent); }
+    .btn.active { border-color: var(--accent); color: var(--accent); }
 
-    /* ── stat cards ── */
+    /* ==== hype banner ==== */
+    .hype {
+      margin-bottom: 1rem;
+      padding: 0.65rem 1rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background:
+        linear-gradient(90deg, rgba(59,158,255,0.10), rgba(34,211,238,0.06), rgba(167,139,250,0.10));
+      display: flex; align-items: center; gap: 0.8rem;
+      overflow: hidden; position: relative;
+    }
+    .hype::after {
+      content: ""; position: absolute; top: 0; bottom: 0; width: 40%;
+      background: linear-gradient(105deg, transparent, rgba(230,237,243,0.05), transparent);
+      animation: shimmer 5s linear infinite;
+    }
+    @keyframes shimmer { 0% { left: -45%; } 100% { left: 105%; } }
+    .hype-tag {
+      flex: 0 0 auto;
+      font-size: 0.6rem; font-weight: 800; letter-spacing: 0.12em;
+      color: var(--cyan); border: 1px solid rgba(34,211,238,0.45);
+      border-radius: 4px; padding: 0.12rem 0.45rem; text-transform: uppercase;
+    }
+    .hype-text {
+      font-size: 0.95rem; font-weight: 700; letter-spacing: -0.01em;
+      transition: opacity 0.4s;
+    }
+    .hype-text.fade { opacity: 0; }
+    .hype.record {
+      border-color: var(--yellow);
+      background: linear-gradient(90deg, rgba(245,158,11,0.18), rgba(236,72,153,0.10));
+    }
+    .hype.record .hype-tag { color: var(--yellow); border-color: rgba(245,158,11,0.6); }
+
+    /* ==== stat cards ==== */
     .stat-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 0.7rem;
       margin-bottom: 1rem;
     }
@@ -81,6 +179,14 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 0.8rem 1rem;
+      position: relative; overflow: hidden;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    .stat-card.bump { animation: bump 0.55s ease; }
+    @keyframes bump {
+      0%   { transform: scale(1); }
+      30%  { transform: scale(1.035); box-shadow: 0 0 18px rgba(59,158,255,0.25); }
+      100% { transform: scale(1); }
     }
     .stat-label {
       font-size: 0.65rem; font-weight: 600; letter-spacing: 0.07em;
@@ -88,9 +194,11 @@
     }
     .stat-value {
       font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+      font-variant-numeric: tabular-nums;
     }
     .stat-sub {
       font-size: 0.65rem; color: var(--muted); margin-top: 0.3rem;
+      font-variant-numeric: tabular-nums;
     }
     .stat-card.accent  .stat-value { color: var(--accent); }
     .stat-card.green   .stat-value { color: var(--green); }
@@ -98,8 +206,23 @@
     .stat-card.yellow  .stat-value { color: var(--yellow); }
     .stat-card.cyan    .stat-value { color: var(--cyan); }
     .stat-card.purple  .stat-value { color: var(--purple); }
+    .stat-card.pink    .stat-value { color: var(--pink); }
 
-    /* ── chart grid ── */
+    /* mini progress bar inside stat cards */
+    .mini-bar {
+      margin-top: 0.45rem; height: 5px; border-radius: 3px;
+      background: var(--surface2); overflow: hidden;
+    }
+    .mini-bar > div {
+      height: 100%; width: 0%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, var(--purple), var(--pink));
+      transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .mini-bar.gold > div { background: linear-gradient(90deg, var(--yellow), var(--pink)); }
+    .mini-bar.aqua > div { background: linear-gradient(90deg, var(--accent), var(--cyan)); }
+
+    /* ==== chart grid ==== */
     .chart-grid {
       display: grid;
       grid-template-columns: 2fr 1fr;
@@ -108,8 +231,11 @@
     }
     .chart-grid-2 {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       gap: 0.7rem;
+    }
+    @media (max-width: 1100px) {
+      .chart-grid-2 { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 860px) {
       .chart-grid, .chart-grid-2 { grid-template-columns: 1fr; }
@@ -141,7 +267,7 @@
     .chart-short .chart-wrap { height: 200px; }
     .chart-mid   .chart-wrap { height: 260px; }
 
-    /* ── milestone bar ── */
+    /* ==== milestone bar ==== */
     .milestone-row {
       display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap;
     }
@@ -155,8 +281,27 @@
       background: color-mix(in srgb, var(--green) 15%, var(--surface2));
       border-color: var(--green); color: var(--green);
     }
+    .milestone.reached::before { content: "[OK] "; font-weight: 700; }
 
-    /* ── recent log ── */
+    /* next-milestone progress bar under WR chart */
+    .next-milestone { margin-top: 0.55rem; }
+    .next-milestone .nm-label {
+      display: flex; justify-content: space-between;
+      font-size: 0.62rem; color: var(--muted); margin-bottom: 0.25rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .nm-bar {
+      height: 8px; border-radius: 4px; background: var(--surface2);
+      overflow: hidden; border: 1px solid var(--border);
+    }
+    .nm-bar > div {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--green), var(--cyan));
+      transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 0 8px rgba(34,197,94,0.5);
+    }
+
+    /* ==== recent log ==== */
     .log-box {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -172,13 +317,44 @@
     .log-box .log-line { display: block; }
     .log-box .log-line:last-child { color: var(--text); }
 
-    /* ── footer ── */
+    /* ==== highlight reel ==== */
+    .reel-box {
+      height: 180px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 0.3rem;
+      padding-right: 0.2rem;
+    }
+    .reel-item {
+      display: flex; align-items: baseline; gap: 0.5rem;
+      font-size: 0.68rem;
+      padding: 0.3rem 0.55rem;
+      border-radius: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .reel-item .reel-iter {
+      flex: 0 0 auto; font-family: "Consolas", monospace;
+      font-size: 0.62rem; color: var(--muted); opacity: 0.8;
+    }
+    .reel-item.kind-record  { border-color: rgba(245,158,11,0.5); color: var(--yellow); }
+    .reel-item.kind-mile    { border-color: rgba(34,197,94,0.5);  color: var(--green); }
+    .reel-item.kind-games   { border-color: rgba(59,158,255,0.5); color: var(--accent); }
+    .reel-item.kind-loss    { border-color: rgba(34,211,238,0.5); color: var(--cyan); }
+    .reel-item.kind-level   { border-color: rgba(167,139,250,0.5); color: var(--purple); }
+    .reel-item:first-child  { animation: reelin 0.5s ease; }
+    @keyframes reelin {
+      from { transform: translateY(-6px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+
+    /* ==== footer ==== */
     .footer {
       margin-top: 0.8rem;
       font-size: 0.68rem; color: var(--muted); text-align: center;
     }
 
-    /* ── no-data banner ── */
+    /* ==== no-data banner ==== */
     #no-data {
       display: none;
       padding: 3rem 1rem; text-align: center;
@@ -193,11 +369,18 @@
 </head>
 <body>
 
-<!-- ── header ────────────────────────────────────────────────────────────── -->
+<div id="edge-glow"></div>
+<canvas id="confetti-canvas"></canvas>
+
+<!-- ==== header ==== -->
 <div class="header">
   <div class="header-left">
-    <div class="header-title">AlphaZero <span>Training</span></div>
-    <div class="live-badge"><span class="pulse-ring"></span> Live &middot; 5s</div>
+    <div class="header-title">AlphaZero Training</div>
+    <div class="live-badge" id="live-badge"><span class="pulse-ring"></span><span id="live-text">Live &middot; 5s</span></div>
+    <div class="level-chip" id="level-chip" style="display:none;">
+      <span>LVL <span class="lv-num" id="lv-num">1</span></span>
+      <span id="lv-title">TRAINING WHEELS</span>
+    </div>
   </div>
   <div class="header-right">
     <span id="run-elapsed" style="font-size:0.75rem; color:var(--muted);">--</span>
@@ -206,7 +389,7 @@
   </div>
 </div>
 
-<!-- ── no-data state ─────────────────────────────────────────────────────── -->
+<!-- ==== no-data state ==== -->
 <div id="no-data">
   No training data yet.<br>
   Start a run with:<br>
@@ -214,41 +397,71 @@
   This page auto-refreshes every 5 seconds.
 </div>
 
-<!-- ── stat cards ────────────────────────────────────────────────────────── -->
+<div id="main-content" style="display:none;">
+
+<!-- ==== hype banner ==== -->
+<div class="hype" id="hype">
+  <div class="hype-tag" id="hype-tag">STATUS</div>
+  <div class="hype-text" id="hype-text">Crunching the numbers...</div>
+</div>
+
+<!-- ==== stat cards ==== -->
 <div class="stat-row" id="stat-row">
-  <div class="stat-card accent">
+  <div class="stat-card accent" id="card-iter">
     <div class="stat-label">Iteration</div>
     <div class="stat-value" id="s-iter">--</div>
     <div class="stat-sub" id="s-iter-sub">&nbsp;</div>
   </div>
-  <div class="stat-card red">
+  <div class="stat-card pink" id="card-games">
+    <div class="stat-label">Games played</div>
+    <div class="stat-value" id="s-games">--</div>
+    <div class="stat-sub" id="s-games-sub">&nbsp;</div>
+    <div class="mini-bar" title="XP to next level"><div id="xp-bar"></div></div>
+  </div>
+  <div class="stat-card green" id="card-gph">
+    <div class="stat-label">Games / hour</div>
+    <div class="stat-value" id="s-gph">--</div>
+    <div class="stat-sub" id="s-gph-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card red" id="card-loss">
     <div class="stat-label">Loss (now)</div>
     <div class="stat-value" id="s-loss">--</div>
     <div class="stat-sub" id="s-loss-sub">&nbsp;</div>
   </div>
-  <div class="stat-card cyan">
+  <div class="stat-card cyan" id="card-vloss">
     <div class="stat-label">Value loss</div>
     <div class="stat-value" id="s-vloss">--</div>
     <div class="stat-sub" id="s-vloss-sub">&nbsp;</div>
   </div>
-  <div class="stat-card green">
+  <div class="stat-card green" id="card-wr">
     <div class="stat-label">Win rate (now)</div>
     <div class="stat-value" id="s-wr">--</div>
     <div class="stat-sub" id="s-wr-sub">&nbsp;</div>
   </div>
-  <div class="stat-card yellow">
+  <div class="stat-card yellow" id="card-best-wr">
     <div class="stat-label">Best WR ever</div>
     <div class="stat-value" id="s-best-wr">--</div>
     <div class="stat-sub" id="s-best-wr-sub">&nbsp;</div>
   </div>
-  <div class="stat-card purple">
+  <div class="stat-card purple" id="card-loss-drop">
     <div class="stat-label">Loss reduction</div>
     <div class="stat-value" id="s-loss-drop">--</div>
     <div class="stat-sub" id="s-loss-drop-sub">&nbsp;</div>
   </div>
+  <div class="stat-card cyan" id="card-buffer">
+    <div class="stat-label">Replay buffer</div>
+    <div class="stat-value" id="s-buffer">--</div>
+    <div class="stat-sub" id="s-buffer-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card yellow" id="card-next">
+    <div class="stat-label">Next milestone</div>
+    <div class="stat-value" id="s-next">--</div>
+    <div class="stat-sub" id="s-next-sub">&nbsp;</div>
+    <div class="mini-bar gold" title="progress to next WR milestone"><div id="next-bar"></div></div>
+  </div>
 </div>
 
-<!-- ── charts row 1 ──────────────────────────────────────────────────────── -->
+<!-- ==== charts row 1 ==== -->
 <div class="chart-grid">
   <div class="card chart-tall">
     <div class="card-title">
@@ -269,10 +482,14 @@
       <div class="milestone" data-threshold="0.80" id="m80">WR 80%</div>
       <div class="milestone" data-threshold="0.90" id="m90">WR 90%</div>
     </div>
+    <div class="next-milestone" id="next-milestone" style="display:none;">
+      <div class="nm-label"><span id="nm-left">--</span><span id="nm-right">--</span></div>
+      <div class="nm-bar"><div id="nm-fill"></div></div>
+    </div>
   </div>
 </div>
 
-<!-- ── charts row 2 ──────────────────────────────────────────────────────── -->
+<!-- ==== charts row 2 ==== -->
 <div class="chart-grid-2">
   <div class="card chart-mid">
     <div class="card-title">Value loss</div>
@@ -292,7 +509,20 @@
       Throughput: <span id="s-throughput">--</span>
     </div>
   </div>
+  <div class="card chart-mid">
+    <div class="card-title">
+      Highlight reel
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0;">
+        newest first
+      </div>
+    </div>
+    <div class="reel-box" id="reel-box">
+      <div class="reel-item">Nothing yet -- go win some games</div>
+    </div>
+  </div>
 </div>
+
+</div><!-- /main-content -->
 
 <div class="footer" id="footer-info">
   Reads <code style="font-family:monospace; font-size:0.68rem;">loss_logs/metrics_log.jsonl</code>
@@ -300,7 +530,7 @@
 </div>
 
 <script>
-// ── Chart defaults ─────────────────────────────────────────────────────────
+// ==== Chart defaults =======================================================
 const GRID   = 'rgba(41,49,63,0.5)';
 const TICK   = '#64748b';
 const MAX_PTS = 4000;
@@ -345,7 +575,7 @@ function _mkDataset(label, color, dash) {
   };
 }
 
-// ── Loss chart ─────────────────────────────────────────────────────────────
+// ==== Loss chart ===========================================================
 const lossOpts = _baseOpts('loss', '#ef4444');
 lossOpts.scales.yRight = {
   position: 'right', grid: { drawOnChartArea: false },
@@ -362,10 +592,9 @@ const chartLoss = new Chart(document.getElementById('chart-loss'), {
   options: lossOpts,
 });
 
-// ── Win rate chart ─────────────────────────────────────────────────────────
+// ==== Win rate chart =======================================================
 const wrOpts = _baseOpts('win rate vs random', '#22c55e');
 wrOpts.scales.y.min = 0; wrOpts.scales.y.max = 1;
-// Best-WR annotation is drawn as a dataset (dashed line)
 const chartWr = new Chart(document.getElementById('chart-wr'), {
   type: 'line',
   data: { labels: [], datasets: [
@@ -375,7 +604,7 @@ const chartWr = new Chart(document.getElementById('chart-wr'), {
   options: wrOpts,
 });
 
-// ── Value loss chart ───────────────────────────────────────────────────────
+// ==== Value loss chart =====================================================
 const chartVloss = new Chart(document.getElementById('chart-vloss'), {
   type: 'line',
   data: { labels: [], datasets: [
@@ -384,7 +613,7 @@ const chartVloss = new Chart(document.getElementById('chart-vloss'), {
   options: _baseOpts('value loss', '#22d3ee'),
 });
 
-// ── State ──────────────────────────────────────────────────────────────────
+// ==== State ================================================================
 let _lastLen   = -1;
 let _inFlight  = false;
 let _smooth    = true;
@@ -392,9 +621,26 @@ let _logScale  = false;
 let _allData   = [];
 let _bestWR    = 0;
 let _bestWRIter = 0;
-let _startTs   = null;   // Unix seconds; set from first `t` field seen
+let _startTs   = null;      // Unix seconds; set from first `t` field seen
+let _firstLoad = true;      // suppress celebrations on initial page load
+let _hypeMsgs  = [];
+let _hypeIdx   = 0;
+let _prevLevel = null;
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+const WR_MILESTONES   = [0.50, 0.60, 0.70, 0.80, 0.90];
+const GAME_MILESTONES = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000,
+                         100000, 250000, 500000, 1000000];
+const TITLES = [
+  [0.95, 'GOAT CANDIDATE'],
+  [0.90, 'GRANDMASTER'],
+  [0.80, 'DOMINATOR'],
+  [0.70, 'CHALLENGER'],
+  [0.60, 'CONTENDER'],
+  [0.50, 'COIN BEATER'],
+  [0.00, 'TRAINING WHEELS'],
+];
+
+// ==== Helpers ==============================================================
 function _ma(arr, w) {
   const out = [];
   for (let i = 0; i < arr.length; i++) {
@@ -437,7 +683,108 @@ function _fmtElapsed(secs) {
   return `${m}m`;
 }
 
-// ── Toggle handlers ────────────────────────────────────────────────────────
+function _fmtBig(n) {
+  if (!isFinite(n)) return '--';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'k';
+  return Math.round(n).toLocaleString();
+}
+
+// Animated count-up: tween displayed value toward the new one.
+const _prevVals = {};
+function _setStat(id, value, fmtFn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!isFinite(value)) { el.textContent = fmtFn(value); return; }
+  const prev = _prevVals[id];
+  _prevVals[id] = value;
+  if (prev === undefined || prev === value || !isFinite(prev) || _firstLoad) {
+    el.textContent = fmtFn(value);
+    return;
+  }
+  // bump the parent card
+  const card = el.closest('.stat-card');
+  if (card) { card.classList.remove('bump'); void card.offsetWidth; card.classList.add('bump'); }
+  const t0 = performance.now(), dur = 650;
+  function step(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - p, 3);   // ease-out cubic
+    el.textContent = fmtFn(prev + (value - prev) * e);
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// ==== Level / XP ===========================================================
+// Level n requires 100*n^2 cumulative games: 10k games -> lvl 10, 1M -> lvl 100.
+function _levelInfo(games) {
+  const lvl  = Math.max(1, Math.floor(Math.sqrt(games / 100)));
+  const cur  = 100 * lvl * lvl;
+  const next = 100 * (lvl + 1) * (lvl + 1);
+  const frac = Math.max(0, Math.min(1, (games - cur) / (next - cur)));
+  return { lvl, next, frac };
+}
+
+function _titleFor(bestWR) {
+  for (const [thr, name] of TITLES) if (bestWR >= thr && (thr > 0 || true)) {
+    if (bestWR >= thr) return name;
+  }
+  return 'TRAINING WHEELS';
+}
+
+// ==== Confetti (pure canvas, no deps) ======================================
+const _cCanvas = document.getElementById('confetti-canvas');
+const _cCtx = _cCanvas.getContext('2d');
+let _cParts = [], _cRunning = false;
+const _cColors = ['#3b9eff', '#22d3ee', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#ef4444'];
+
+function _confetti(count) {
+  _cCanvas.width = window.innerWidth;
+  _cCanvas.height = window.innerHeight;
+  for (let i = 0; i < count; i++) {
+    _cParts.push({
+      x: Math.random() * _cCanvas.width,
+      y: -20 - Math.random() * _cCanvas.height * 0.3,
+      vx: (Math.random() - 0.5) * 3,
+      vy: 2 + Math.random() * 3.5,
+      w: 5 + Math.random() * 6,
+      h: 3 + Math.random() * 4,
+      rot: Math.random() * Math.PI * 2,
+      vr: (Math.random() - 0.5) * 0.25,
+      color: _cColors[Math.floor(Math.random() * _cColors.length)],
+      life: 0,
+      maxLife: 160 + Math.random() * 80,
+    });
+  }
+  if (!_cRunning) { _cRunning = true; requestAnimationFrame(_cTick); }
+}
+
+function _cTick() {
+  _cCtx.clearRect(0, 0, _cCanvas.width, _cCanvas.height);
+  _cParts = _cParts.filter(p => p.life < p.maxLife && p.y < _cCanvas.height + 30);
+  for (const p of _cParts) {
+    p.life++; p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+    p.vy += 0.04; p.vx *= 0.995;
+    const fade = p.life > p.maxLife - 40 ? (p.maxLife - p.life) / 40 : 1;
+    _cCtx.save();
+    _cCtx.globalAlpha = Math.max(0, fade);
+    _cCtx.translate(p.x, p.y); _cCtx.rotate(p.rot);
+    _cCtx.fillStyle = p.color;
+    _cCtx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    _cCtx.restore();
+  }
+  if (_cParts.length) requestAnimationFrame(_cTick);
+  else { _cRunning = false; _cCtx.clearRect(0, 0, _cCanvas.width, _cCanvas.height); }
+}
+
+function _celebrate(big) {
+  _confetti(big ? 220 : 90);
+  const glow = document.getElementById('edge-glow');
+  glow.classList.remove('on'); void glow.offsetWidth; glow.classList.add('on');
+  setTimeout(() => glow.classList.remove('on'), 3000);
+}
+
+// ==== Toggle handlers ======================================================
 function _toggleSmooth() {
   _smooth = !_smooth;
   document.getElementById('btn-smooth').classList.toggle('active', _smooth);
@@ -447,9 +794,9 @@ function _toggleSmooth() {
 document.getElementById('btn-log-scale').addEventListener('click', () => {
   _logScale = !_logScale;
   document.getElementById('btn-log-scale').classList.toggle('active', _logScale);
-  chartLoss.options.scales.y.type    = _logScale ? 'logarithmic' : 'linear';
+  chartLoss.options.scales.y.type      = _logScale ? 'logarithmic' : 'linear';
   chartLoss.options.scales.yRight.type = _logScale ? 'logarithmic' : 'linear';
-  chartVloss.options.scales.y.type   = _logScale ? 'logarithmic' : 'linear';
+  chartVloss.options.scales.y.type     = _logScale ? 'logarithmic' : 'linear';
   _redraw();
 });
 
@@ -457,7 +804,7 @@ function _resetZoom() {
   [chartLoss, chartWr, chartVloss].forEach(c => c.resetZoom());
 }
 
-// ── Redraw ─────────────────────────────────────────────────────────────────
+// ==== Redraw ===============================================================
 function _redraw() {
   const data = _allData;
   if (!data.length) return;
@@ -470,7 +817,7 @@ function _redraw() {
 
   const smLoss   = _ds(_smooth ? _ma(losses, W)   : losses, MAX_PTS);
   const smVloss  = _ds(_smooth ? _ma(vlosses, W)  : vlosses, MAX_PTS);
-  const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR — milestone detection uses raw
+  const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR -- milestone detection uses raw
   const labels   = _dsLabels(n, MAX_PTS);
   const bestLine = smWr.map(() => _bestWR > 0 ? _bestWR : NaN);
 
@@ -489,33 +836,83 @@ function _redraw() {
   chartVloss.update('none');
 }
 
-// ── Stat cards ─────────────────────────────────────────────────────────────
+// ==== Throughput math ======================================================
+// Returns {iph, gph, gps} or nulls, from recent timestamped rows.
+function _throughput(data) {
+  const withTs = data.filter(d => d.t);
+  if (withTs.length < 2) return { iph: null, gph: null, gps: null };
+  const recent = withTs.slice(-Math.min(withTs.length, 100));
+  const dt = recent[recent.length - 1].t - recent[0].t;
+  if (dt <= 0) return { iph: null, gph: null, gps: null };
+  const iph = recent.length / dt * 3600;
+  let gph = null, gps = null;
+  const g0 = recent[0].games_total, g1 = recent[recent.length - 1].games_total;
+  if (isFinite(g0) && isFinite(g1) && g1 > g0) {
+    gph = (g1 - g0) / dt * 3600;
+    gps = (g1 - g0) / dt;
+  }
+  return { iph, gph, gps };
+}
+
+// ==== Stat cards ===========================================================
 function _updateCards(data) {
-  const n    = data.length;
-  const last = data[n - 1];
+  const n     = data.length;
+  const last  = data[n - 1];
   const first = data[0];
+  const tp    = _throughput(data);
 
   // iter
-  document.getElementById('s-iter').textContent = n.toLocaleString();
+  _setStat('s-iter', n, v => Math.round(v).toLocaleString());
   const gamesTotal = last.games_total ?? null;
   document.getElementById('s-iter-sub').textContent =
     gamesTotal ? (gamesTotal).toLocaleString() + ' games' : 'iter ' + n;
 
+  // games played + XP bar
+  if (gamesTotal) {
+    _setStat('s-games', gamesTotal, v => _fmtBig(v));
+    const li = _levelInfo(gamesTotal);
+    document.getElementById('s-games-sub').textContent =
+      'LVL ' + li.lvl + ' -- ' + _fmtBig(li.next - gamesTotal) + ' games to LVL ' + (li.lvl + 1);
+    document.getElementById('xp-bar').style.width = (li.frac * 100).toFixed(1) + '%';
+    // level chip in header
+    const chip = document.getElementById('level-chip');
+    chip.style.display = '';
+    document.getElementById('lv-num').textContent = li.lvl;
+    document.getElementById('lv-title').textContent = _titleFor(_bestWR);
+    if (_prevLevel !== null && li.lvl > _prevLevel && !_firstLoad) _celebrate(true);
+    _prevLevel = li.lvl;
+  } else {
+    document.getElementById('s-games').textContent = '--';
+    document.getElementById('s-games-sub').textContent = 'add games_total field';
+  }
+
+  // games/hour
+  if (tp.gph !== null) {
+    _setStat('s-gph', tp.gph, v => _fmtBig(v));
+    document.getElementById('s-gph-sub').textContent =
+      tp.gps.toFixed(2) + ' games/sec live';
+  } else if (tp.iph !== null) {
+    document.getElementById('s-gph').textContent = '--';
+    document.getElementById('s-gph-sub').textContent = tp.iph.toFixed(1) + ' iters/hr';
+  } else {
+    document.getElementById('s-gph').textContent = '--';
+    document.getElementById('s-gph-sub').textContent = 'needs t + games_total';
+  }
+
   // loss
-  document.getElementById('s-loss').textContent  = _fmt(last.loss, 3);
+  _setStat('s-loss', last.loss, v => _fmt(v, 3));
   const lossFirst = first.loss;
   const lossDelta = isFinite(lossFirst) && isFinite(last.loss) ? last.loss - lossFirst : null;
   document.getElementById('s-loss-sub').textContent =
     lossDelta !== null ? (lossDelta < 0 ? '' : '+') + lossDelta.toFixed(3) + ' vs start' : '';
 
   // value loss
-  document.getElementById('s-vloss').textContent = _fmt(last.value_loss, 4);
+  _setStat('s-vloss', last.value_loss, v => _fmt(v, 4));
   document.getElementById('s-vloss-sub').textContent = 'MSE';
 
   // win rate
   const wr = isFinite(last.winrate) && last.winrate > 0 ? last.winrate : NaN;
-  document.getElementById('s-wr').textContent  = _fmtWR(wr);
-  // find last 20 WR readings
+  _setStat('s-wr', wr, v => _fmtWR(v));
   const recentWrs = data.slice(-20).map(d => d.winrate).filter(v => isFinite(v) && v > 0);
   const trend = recentWrs.length >= 2
     ? recentWrs[recentWrs.length - 1] - recentWrs[0]
@@ -524,7 +921,7 @@ function _updateCards(data) {
     trend !== null ? (trend >= 0 ? '+' : '') + (trend * 100).toFixed(1) + '% last 20 evals' : 'vs random';
 
   // best WR
-  document.getElementById('s-best-wr').textContent    = _fmtWR(_bestWR);
+  _setStat('s-best-wr', _bestWR > 0 ? _bestWR : NaN, v => _fmtWR(v));
   document.getElementById('s-best-wr-sub').textContent =
     _bestWRIter > 0 ? 'at iter ' + _bestWRIter.toLocaleString() : '';
 
@@ -536,18 +933,191 @@ function _updateCards(data) {
     drop !== null ? (drop * 100).toFixed(0) + '%' : '--';
   document.getElementById('s-loss-drop-sub').textContent =
     drop !== null ? _fmt(lossFirst, 2) + ' -> ' + _fmt(last.loss, 2) : 'start loss unknown';
+
+  // replay buffer
+  if (isFinite(last.buffer)) {
+    _setStat('s-buffer', last.buffer, v => _fmtBig(v));
+    document.getElementById('s-buffer-sub').textContent = 'positions stored';
+  } else {
+    document.getElementById('s-buffer').textContent = '--';
+    document.getElementById('s-buffer-sub').textContent = 'no buffer field';
+  }
+
+  // next milestone card + progress bar under WR chart
+  _updateNextMilestone(data, tp, trend, recentWrs.length);
 }
 
-// ── Milestones ─────────────────────────────────────────────────────────────
+// ==== Next milestone / ETA =================================================
+function _updateNextMilestone(data, tp, trend, trendN) {
+  const nextThr = WR_MILESTONES.find(t => _bestWR < t);
+  const nmWrap = document.getElementById('next-milestone');
+  if (!nextThr) {
+    document.getElementById('s-next').textContent = 'ALL CLEAR';
+    document.getElementById('s-next-sub').textContent = '90%+ reached -- GOAT territory';
+    document.getElementById('next-bar').style.width = '100%';
+    nmWrap.style.display = 'none';
+    return;
+  }
+  const cur  = _bestWR;
+  const frac = Math.max(0, Math.min(1, cur / nextThr));
+  document.getElementById('s-next').textContent = 'WR ' + (nextThr * 100).toFixed(0) + '%';
+  document.getElementById('next-bar').style.width = (frac * 100).toFixed(1) + '%';
+
+  // ETA from recent trend (per-eval slope) + iters/hr
+  let eta = null;
+  if (trend !== null && trend > 0 && trendN >= 2 && tp.iph) {
+    const slopePerIter = trend / (trendN - 1);
+    const itersNeeded  = (nextThr - cur) / slopePerIter;
+    if (itersNeeded > 0 && isFinite(itersNeeded)) {
+      const hrs = itersNeeded / tp.iph;
+      eta = hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + 'm'
+          : hrs < 48 ? hrs.toFixed(1) + 'h'
+          : (hrs / 24).toFixed(1) + 'd';
+    }
+  }
+  document.getElementById('s-next-sub').textContent =
+    eta ? 'ETA ~' + eta + ' at current trend'
+        : (trend !== null && trend <= 0 ? 'trend flat -- grind on' : 'gathering trend...');
+
+  nmWrap.style.display = '';
+  document.getElementById('nm-left').textContent =
+    'next: WR ' + (nextThr * 100).toFixed(0) + '% (best ' + _fmtWR(cur) + ')';
+  document.getElementById('nm-right').textContent =
+    (frac * 100).toFixed(0) + '%' + (eta ? ' -- ETA ~' + eta : '');
+}
+
+// ==== Milestones ===========================================================
 function _updateMilestones(data) {
   const maxWR = Math.max(...data.map(d => d.winrate).filter(v => isFinite(v) && v > 0), 0);
   document.querySelectorAll('.milestone').forEach(el => {
     const t = parseFloat(el.dataset.threshold);
-    el.classList.toggle('reached', maxWR >= t);
+    const was = el.classList.contains('reached');
+    const now = maxWR >= t;
+    el.classList.toggle('reached', now);
+    if (now && !was && !_firstLoad) _celebrate(true);
   });
 }
 
-// ── Log box ────────────────────────────────────────────────────────────────
+// ==== Highlight reel =======================================================
+function _deriveEvents(data) {
+  const events = [];
+  let best = 0, lossStart = null;
+  const wrHit = new Set(), gameHit = new Set(), lossHit = new Set();
+  const lvlSeen = new Set();
+
+  data.forEach((d, i) => {
+    const iter = i + 1;
+    if (lossStart === null && isFinite(d.loss)) lossStart = d.loss;
+
+    // best-WR records
+    if (isFinite(d.winrate) && d.winrate > 0 && d.winrate > best) {
+      best = d.winrate;
+      events.push({ iter, kind: 'record', text: 'NEW BEST WR ' + _fmtWR(best) });
+    }
+    // WR milestones
+    for (const t of WR_MILESTONES) {
+      if (!wrHit.has(t) && isFinite(d.winrate) && d.winrate >= t) {
+        wrHit.add(t);
+        events.push({ iter, kind: 'mile', text: 'crossed WR ' + (t * 100).toFixed(0) + '% vs random' });
+      }
+    }
+    // games milestones + level-ups
+    if (isFinite(d.games_total)) {
+      for (const g of GAME_MILESTONES) {
+        if (!gameHit.has(g) && d.games_total >= g) {
+          gameHit.add(g);
+          events.push({ iter, kind: 'games', text: _fmtBig(g) + ' games played' });
+        }
+      }
+      const lvl = _levelInfo(d.games_total).lvl;
+      if (lvl >= 2 && !lvlSeen.has(lvl)) {
+        lvlSeen.add(lvl);
+        events.push({ iter, kind: 'level', text: 'LEVEL UP -> LVL ' + lvl });
+      }
+    }
+    // loss fractions of start
+    if (lossStart !== null && isFinite(d.loss)) {
+      for (const f of [0.75, 0.5, 0.25]) {
+        if (!lossHit.has(f) && d.loss <= lossStart * f) {
+          lossHit.add(f);
+          events.push({ iter, kind: 'loss',
+            text: 'loss down ' + ((1 - f) * 100).toFixed(0) + '% from start (' + d.loss.toFixed(3) + ')' });
+        }
+      }
+    }
+  });
+  return events;
+}
+
+function _updateReel(data) {
+  const events = _deriveEvents(data);
+  const box = document.getElementById('reel-box');
+  if (!events.length) {
+    box.innerHTML = '<div class="reel-item">Nothing yet -- go win some games</div>';
+    return;
+  }
+  // records can be numerous early on; keep the reel punchy
+  const records = events.filter(e => e.kind === 'record').slice(-6);
+  const others  = events.filter(e => e.kind !== 'record');
+  const show = others.concat(records)
+    .sort((a, b) => b.iter - a.iter)
+    .slice(0, 14);
+  box.innerHTML = show.map(e =>
+    `<div class="reel-item kind-${e.kind}"><span class="reel-iter">iter ${e.iter.toLocaleString()}</span>${e.text}</div>`
+  ).join('');
+}
+
+// ==== Hype banner ==========================================================
+function _buildHype(data) {
+  const n = data.length;
+  const last = data[n - 1], first = data[0];
+  const tp = _throughput(data);
+  const msgs = [];
+
+  const games = last.games_total;
+  if (isFinite(games)) msgs.push(_fmtBig(games) + ' games in the books and counting');
+  if (tp.gph !== null) msgs.push('churning ' + _fmtBig(tp.gph) + ' games/hour -- the 3080 is earning its keep');
+  if (_bestWR > 0) msgs.push('best win rate so far: ' + _fmtWR(_bestWR) + ' at iter ' + _bestWRIter.toLocaleString());
+  if (isFinite(first.loss) && isFinite(last.loss) && first.loss > 0) {
+    const drop = (first.loss - last.loss) / first.loss;
+    if (drop > 0.01) msgs.push('loss carved down ' + (drop * 100).toFixed(0) + '% since iter 1');
+  }
+  if (isFinite(games)) {
+    const li = _levelInfo(games);
+    msgs.push('LVL ' + li.lvl + ' ' + _titleFor(_bestWR) + ' -- ' + (li.frac * 100).toFixed(0) + '% to LVL ' + (li.lvl + 1));
+  }
+  const nextThr = WR_MILESTONES.find(t => _bestWR < t);
+  if (nextThr) msgs.push('hunting the WR ' + (nextThr * 100).toFixed(0) + '% milestone');
+  else if (_bestWR > 0) msgs.push('all WR milestones cleared -- GOAT territory');
+  msgs.push(n.toLocaleString() + ' iterations of pure self-play grind');
+
+  return msgs;
+}
+
+function _rotateHype() {
+  if (!_hypeMsgs.length) return;
+  const el = document.getElementById('hype-text');
+  el.classList.add('fade');
+  setTimeout(() => {
+    _hypeIdx = (_hypeIdx + 1) % _hypeMsgs.length;
+    el.textContent = _hypeMsgs[_hypeIdx];
+    el.classList.remove('fade');
+  }, 400);
+}
+setInterval(_rotateHype, 7000);
+
+function _flashRecord(text) {
+  const hype = document.getElementById('hype');
+  hype.classList.add('record');
+  document.getElementById('hype-tag').textContent = 'RECORD';
+  document.getElementById('hype-text').textContent = text;
+  setTimeout(() => {
+    hype.classList.remove('record');
+    document.getElementById('hype-tag').textContent = 'STATUS';
+  }, 12000);
+}
+
+// ==== Log box ==============================================================
 function _updateLog(data) {
   const n     = data.length;
   const last5 = data.slice(-5);
@@ -562,19 +1132,50 @@ function _updateLog(data) {
   box.innerHTML = lines.map(l => `<span class="log-line">${l}</span>`).join('\n');
   box.scrollTop = box.scrollHeight;
 
-  // throughput: if timestamps available
-  const withTs = data.filter(d => d.t);
-  if (withTs.length >= 2) {
-    const recent = withTs.slice(-Math.min(withTs.length, 100));
-    const dt = recent[recent.length - 1].t - recent[0].t;
-    const iph = dt > 0 ? (recent.length / dt * 3600).toFixed(1) : null;
-    document.getElementById('s-throughput').textContent = iph ? iph + ' iters/hr' : '--';
+  const tp = _throughput(data);
+  if (tp.iph !== null) {
+    let s = tp.iph.toFixed(1) + ' iters/hr';
+    if (tp.gps !== null) s += ' &middot; ' + tp.gps.toFixed(2) + ' games/sec';
+    document.getElementById('s-throughput').innerHTML = s;
   } else {
     document.getElementById('s-throughput').textContent = 'add t= field for throughput';
   }
 }
 
-// ── Elapsed time ───────────────────────────────────────────────────────────
+// ==== Live / stalled badge =================================================
+function _updateLiveBadge(data) {
+  const badge = document.getElementById('live-badge');
+  const text  = document.getElementById('live-text');
+  const withTs = data.filter(d => d.t);
+  badge.classList.remove('live', 'stalled');
+  if (withTs.length < 2) { text.textContent = 'Live &middot; 5s'.replace('&middot;', String.fromCharCode(183)); return; }
+
+  // median iteration interval over the recent window
+  const recent = withTs.slice(-30);
+  const gaps = [];
+  for (let i = 1; i < recent.length; i++) gaps.push(recent[i].t - recent[i-1].t);
+  gaps.sort((a, b) => a - b);
+  const med = gaps[Math.floor(gaps.length / 2)] || 60;
+  const age = Date.now() / 1000 - withTs[withTs.length - 1].t;
+  const limit = Math.max(600, med * 3);
+
+  if (age < limit) {
+    badge.classList.add('live');
+    text.textContent = 'LIVE -- last iter ' + _fmtAge(age) + ' ago';
+  } else {
+    badge.classList.add('stalled');
+    text.textContent = 'STALLED? last iter ' + _fmtAge(age) + ' ago';
+  }
+}
+
+function _fmtAge(secs) {
+  if (secs < 90) return Math.round(secs) + 's';
+  if (secs < 5400) return Math.round(secs / 60) + 'm';
+  if (secs < 172800) return (secs / 3600).toFixed(1) + 'h';
+  return (secs / 86400).toFixed(1) + 'd';
+}
+
+// ==== Elapsed time =========================================================
 function _updateElapsed(data) {
   const withTs = data.filter(d => d.t);
   if (withTs.length >= 1) {
@@ -583,23 +1184,28 @@ function _updateElapsed(data) {
     document.getElementById('run-elapsed').textContent =
       _fmtElapsed(lastTs - _startTs) + ' running';
   } else {
-    // Approximate from iter count (no timestamps)
     document.getElementById('run-elapsed').textContent =
       data.length.toLocaleString() + ' iters total';
   }
 }
 
-// ── Best WR tracker ────────────────────────────────────────────────────────
+// ==== Best WR tracker ======================================================
 function _trackBestWR(data) {
+  let improved = false;
   data.forEach((d, i) => {
     if (isFinite(d.winrate) && d.winrate > _bestWR) {
       _bestWR = d.winrate;
       _bestWRIter = i + 1;
+      improved = true;
     }
   });
+  if (improved && !_firstLoad) {
+    _celebrate(false);
+    _flashRecord('NEW BEST WIN RATE: ' + _fmtWR(_bestWR) + ' at iter ' + _bestWRIter.toLocaleString());
+  }
 }
 
-// ── Main fetch loop ────────────────────────────────────────────────────────
+// ==== Main fetch loop ======================================================
 async function _fetch() {
   if (_inFlight) return;
   _inFlight = true;
@@ -607,14 +1213,14 @@ async function _fetch() {
     const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
     if (!res.ok) { _showNoData(); return; }
     const text = await res.text();
-    if (text.length === _lastLen) return;
+    if (text.length === _lastLen) { _updateLiveBadge(_allData); return; }
     _lastLen = text.length;
 
     const lines = text.trim().split('\n').filter(Boolean);
     if (!lines.length) { _showNoData(); return; }
 
-    document.getElementById('no-data').style.display  = 'none';
-    document.getElementById('stat-row').style.display = '';
+    document.getElementById('no-data').style.display      = 'none';
+    document.getElementById('main-content').style.display = '';
 
     const data = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
     _allData = data;
@@ -624,7 +1230,18 @@ async function _fetch() {
     _updateMilestones(data);
     _updateLog(data);
     _updateElapsed(data);
+    _updateLiveBadge(data);
+    _updateReel(data);
     _redraw();
+
+    _hypeMsgs = _buildHype(data);
+    if (_firstLoad && _hypeMsgs.length) {
+      document.getElementById('hype-text').textContent = _hypeMsgs[0];
+      _hypeIdx = 0;
+      // welcome-back pop if a record landed in the last 20 iters
+      if (_bestWRIter > 0 && data.length - _bestWRIter < 20) _confetti(70);
+    }
+    _firstLoad = false;
 
   } catch (e) {
     console.warn('fetch error:', e);
@@ -634,14 +1251,14 @@ async function _fetch() {
 }
 
 function _showNoData() {
-  document.getElementById('no-data').style.display  = 'block';
-  document.getElementById('stat-row').style.display = 'none';
+  document.getElementById('no-data').style.display      = 'block';
+  document.getElementById('main-content').style.display = 'none';
 }
 
 _fetch();
 setInterval(_fetch, 5000);
 
-// Live clock — ticks the elapsed display every second when timestamps present
+// Live clock -- ticks elapsed + badge every second when timestamps present
 setInterval(() => {
   if (_startTs && _allData.length) {
     const withTs = _allData.filter(d => d.t);
@@ -650,6 +1267,7 @@ setInterval(() => {
       document.getElementById('run-elapsed').textContent =
         _fmtElapsed(lastTs - _startTs) + ' running';
     }
+    _updateLiveBadge(_allData);
   }
 }, 1000);
 </script>
