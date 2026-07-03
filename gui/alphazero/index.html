@@ -1222,7 +1222,17 @@ async function _fetch() {
     document.getElementById('no-data').style.display      = 'none';
     document.getElementById('main-content').style.display = '';
 
-    const data = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    // Python's json.dumps emits bare NaN/Infinity (invalid JSON) for non-finite
+    // floats -- sanitize to null, then convert nulls to NaN so isFinite() checks
+    // treat them as missing (isFinite(null) is true; isFinite(NaN) is false).
+    const data = lines.map(l => {
+      try {
+        const obj = JSON.parse(l.replace(/-?\bNaN\b/g, 'null').replace(/-?\bInfinity\b/g, 'null'));
+        for (const k in obj) if (obj[k] === null) obj[k] = NaN;
+        return obj;
+      } catch { return null; }
+    }).filter(Boolean);
+    if (!data.length) { _showNoData(); return; }
     _allData = data;
 
     _trackBestWR(data);

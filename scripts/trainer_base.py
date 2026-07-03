@@ -46,6 +46,10 @@ def append_metrics(loss: float, epsilon: float, winrate: float,
         entry["games_total"] = games_total
     if buffer is not None:
         entry["buffer"] = buffer
+    # json.dumps emits bare NaN/Infinity for non-finite floats, which is NOT
+    # valid JSON -- JSON.parse in the dashboard rejects the whole line.
+    entry = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+             for k, v in entry.items()}
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
