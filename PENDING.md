@@ -4,6 +4,20 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
+## Throughput benchmark harness — DONE (home box, 2026-07-02)
+
+**All three steps ran; full results + bug reports in `RESULT_PERF_BENCH.md`. TL;DR:**
+- `--batch_opponents`: parity PASS + 1.09x A/B (1.19x in-bench) -> **bake default ON**
+- `--wave_size`: ~20x AZ self-play at 64 vs 1 (2.3 vs 0.1 games/s) -> **bake 64**; not
+  yet saturated, consider benching 128
+- `--compile`: DEAD on Windows (TritonMissing) -- remove from gates / degrade gracefully
+- `--amp`: BUG, crashes at first backward ("Found dtype Float but expected Half",
+  neural_net_agent_pg.py:427) -- fp32 term in the autocast loss; fix before it can be gated
+
+Original queue text kept below for reference.
+
+---
+
 ## Throughput benchmark harness — IMPLEMENTED, needs a home-box run
 
 `scripts/bench_throughput.py` is built (see `BENCH_THROUGHPUT_PLAN.md` for the full spec).
