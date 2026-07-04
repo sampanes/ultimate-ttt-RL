@@ -131,7 +131,10 @@
       cursor: pointer; transition: border-color 0.15s;
     }
     .btn:hover { border-color: var(--accent); }
-    .btn.active { border-color: var(--accent); color: var(--accent); }
+    .btn.active {
+      border-color: var(--accent); color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+    }
 
     /* ==== hype banner ==== */
     .hype {
@@ -260,7 +263,12 @@
       border-radius: 4px; cursor: pointer; color: var(--muted);
       transition: color 0.12s, border-color 0.12s;
     }
-    .mini-btn:hover, .mini-btn.active { color: var(--accent); border-color: var(--accent); }
+    .mini-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .mini-btn.active {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+      font-weight: 700;
+    }
 
     .chart-wrap { position: relative; }
     .chart-tall  .chart-wrap { height: 320px; }
@@ -384,7 +392,7 @@
   </div>
   <div class="header-right">
     <span id="run-elapsed" style="font-size:0.75rem; color:var(--muted);">--</span>
-    <button class="btn" id="btn-log-scale">Log scale</button>
+    <button class="btn" id="btn-log-scale">Log scale: OFF</button>
     <button class="btn" onclick="_resetZoom()">Reset zoom</button>
   </div>
 </div>
@@ -467,7 +475,7 @@
     <div class="card-title">
       Loss curve
       <div class="card-title-actions">
-        <button class="mini-btn active" id="btn-smooth" onclick="_toggleSmooth()">Smooth</button>
+        <button class="mini-btn active" id="btn-smooth" onclick="_toggleSmooth()">Smooth: ON</button>
       </div>
     </div>
     <div class="chart-wrap"><canvas id="chart-loss"></canvas></div>
@@ -787,13 +795,17 @@ function _celebrate(big) {
 // ==== Toggle handlers ======================================================
 function _toggleSmooth() {
   _smooth = !_smooth;
-  document.getElementById('btn-smooth').classList.toggle('active', _smooth);
+  const b = document.getElementById('btn-smooth');
+  b.classList.toggle('active', _smooth);
+  b.textContent = _smooth ? 'Smooth: ON' : 'Smooth: OFF';
   _redraw();
 }
 
 document.getElementById('btn-log-scale').addEventListener('click', () => {
   _logScale = !_logScale;
-  document.getElementById('btn-log-scale').classList.toggle('active', _logScale);
+  const b = document.getElementById('btn-log-scale');
+  b.classList.toggle('active', _logScale);
+  b.textContent = _logScale ? 'Log scale: ON' : 'Log scale: OFF';
   chartLoss.options.scales.y.type      = _logScale ? 'logarithmic' : 'linear';
   chartLoss.options.scales.yRight.type = _logScale ? 'logarithmic' : 'linear';
   chartVloss.options.scales.y.type     = _logScale ? 'logarithmic' : 'linear';
