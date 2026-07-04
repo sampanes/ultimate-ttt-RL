@@ -3,10 +3,23 @@
 Core loop per iteration:
   1. Self-play: play `--games_per_iter` games using MCTS with Dirichlet noise.
      Each move records (board_tensor, visit_pi, outcome_z).
+     A `--opp_mix` slice of games is played vs diverse opponents (past-self
+     pool / win-block bot / random) instead of the net's own twin -- the
+     league-training insight; pure twin self-play is draw-heavy and narrow.
+     With `--tactics` (default on), provable ultimate win-in-1 moves become
+     sharp one-hot targets (no search) and moves that hand the opponent an
+     immediate game win are zeroed out of targets (engine/tactics.py).
   2. Add examples to a fixed-size replay buffer.
   3. Train: sample random minibatches, optimize
        policy_loss (cross-entropy vs visit pi) + value_coef * value_loss (MSE vs z).
-  4. Checkpoint + log metrics.
+  4. Checkpoint + log metrics (+ wall-clock-paced gauntlet eval, see Gauntlet).
+
+Background (2026-07-04): the first long M4 run plateaued -- diagnostics showed
+the net was fitting its MCTS visit targets near-optimally, but the targets
+themselves were close to uniform (weak value head -> unfocused search -> soft
+targets -> uniform policy, a self-sealing loop). The tactics injection, the
+diverse-opponent slice, dir_eps 0.25->0.15, and temperature_moves 20->10 all
+exist to break that loop. models/alphazero_m4_flat holds the plateaued run.
 
 Policy target: MCTS visit count distribution (not the sampled action).
 Value target: game outcome from that position's player perspective
@@ -28,16 +41,16 @@ value_tanh recommendation:
 
 Examples:
   # Fresh AZ run, small net, verify it runs before long commitment:
-  python -m scripts.train_alphazero --network small --value_tanh --iters 3 --games_per_iter 10
+  python -m scripts.train_alphazero --network small --iters 3 --games_per_iter 10
 
-  # Full run seeded from a league checkpoint:
+  # Full fresh run (M4b config):
   python -m scripts.train_alphazero \\
-    --checkpoint models/league_pg/best.pt \\
-    --network medium --value_tanh \\
-    --n_sims 200 --wave_size 64 \\
-    --games_per_iter 100 --buffer_size 50000 \\
-    --train_steps 200 --batch_size 256 \\
-    --iters 0
+    --network medium --n_sims 300 --wave_size 64 \\
+    --games_per_iter 50 --iters 0
+
+  # CAUTION: --checkpoint with an UNTANHED checkpoint (e.g. league best.pt)
+  # under the value_tanh default produces garbage -- pass --no-value_tanh
+  # for legacy checkpoints, or start fresh.
 """
 
 import argparse
@@ -55,11 +68,13 @@ import torch.nn.functional as F
 
 from agents.agent_base import ModelConfigCNN, board_to_tensor_from_gamestate
 from agents.deterministics import WinBlockAgent
+from agents.random_agent import RandomAgent
 from agents.neural_net_agent_pg import NeuralNetAgentPG
 from agents.mcts import MCTS, MCTSAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW
 from engine.rules import rule_utl_valid_moves
+from engine.tactics import winning_moves, losing_moves
 from scripts.train_league import NETWORK_CONFIGS, prune_versions, DEFAULT_ELO
 from scripts.trainer_base import append_metrics, clear_metrics_log
 
@@ -84,23 +99,94 @@ class ReplayBuffer:
         return len(self._buf)
 
 
+def _tactical_target(state, valid):
+    """If an immediate ULTIMATE win exists, return (one-hot-ish pi, move to play).
+
+    Ground truth from engine/tactics.py -- no search needed, and the sharp
+    target injects provable signal into otherwise soft MCTS visit targets.
+    Mini-board wins are deliberately NOT forced (they can be bad in UTTT --
+    see the tactics module docstring); those must be learned from outcomes.
+    """
+    wins = winning_moves(state, valid)
+    if not wins:
+        return None, None
+    pi = np.zeros(81, dtype=np.float32)
+    for m in wins:
+        pi[m] = 1.0 / len(wins)
+    return pi, random.choice(wins)
+
+
+def _filter_losing(pi, state, valid):
+    """Zero out moves that hand the opponent an immediate game win; renormalize.
+
+    Provably-bad moves (depth-2 ultimate loss) should carry zero target mass.
+    If EVERY legal move loses, the position is lost -- leave pi untouched.
+    """
+    losers = losing_moves(state, valid)
+    if not losers or len(losers) >= len(valid):
+        return pi
+    pi = pi.copy()
+    for m in losers:
+        pi[m] = 0.0
+    s = pi.sum()
+    if s > 1e-8:
+        return pi / s
+    safe = [m for m in valid if m not in set(losers)]
+    pi = np.zeros(81, dtype=np.float32)
+    for m in safe:
+        pi[m] = 1.0 / len(safe)
+    return pi
+
+
 @torch.no_grad()
 def collect_game(model, device, n_sims: int, c_puct: float,
                  dir_alpha: float, dir_eps: float,
-                 wave_size: int, temperature_moves: int) -> List[Example]:
-    """Play one self-play game using MCTS; return a list of (x, pi, z) examples."""
+                 wave_size: int, temperature_moves: int,
+                 use_tactics: bool = True,
+                 opponent_fn=None) -> Tuple[List[Example], int]:
+    """Play one training game; returns (examples, winner).
+
+    Pure self-play when opponent_fn is None (both sides use MCTS, both sides'
+    positions are recorded). With opponent_fn, the net takes a random color,
+    the opponent plays its own policy, and ONLY the net's positions are
+    recorded (opponent moves have no MCTS target behind them). Diverse
+    opponents widen the position/outcome distribution the way the league did
+    for PG training -- twin self-play alone is draw-heavy and narrow.
+    """
     mcts = MCTS(model, device, n_sims=n_sims, c_puct=c_puct,
                 add_dirichlet_at_root=True, dir_alpha=dir_alpha, dir_eps=dir_eps,
                 wave_size=wave_size)
+
+    net_side = None
+    if opponent_fn is not None:
+        net_side = X if random.random() < 0.5 else O
 
     state = GameState()
     trajectory = []  # (tensor, pi, player)
     move_num = 0
 
     while not state.is_over():
-        pi, _ = mcts.search(state)
+        if net_side is not None and state.player != net_side:
+            state.make_move(opponent_fn(state))
+            move_num += 1
+            continue
 
-        x = board_to_tensor_from_gamestate(state).cpu()
+        valid = rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
+
+        if use_tactics:
+            forced_pi, forced_move = _tactical_target(state, valid)
+            if forced_pi is not None:
+                x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
+                trajectory.append((x, forced_pi, state.player))
+                state.make_move(forced_move)
+                move_num += 1
+                continue
+
+        pi, _ = mcts.search(state)
+        if use_tactics:
+            pi = _filter_losing(pi, state, valid)
+
+        x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
         trajectory.append((x, pi.copy(), state.player))
 
         if move_num < temperature_moves:
@@ -129,7 +215,7 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             z = -1.0
         examples.append((x, pi, z))
 
-    return examples
+    return examples, winner
 
 
 def train_on_examples(model, optimizer, examples: List[Example],
@@ -167,11 +253,9 @@ def train_on_examples(model, optimizer, examples: List[Example],
 
 
 def _eval_winrate(agent: NeuralNetAgentPG, n_games: int = 50) -> float:
-    """Quick winrate vs random to track learning progress."""
-    from agents.random_agent import RandomAgent
-    from engine.constants import X, O, DRAW
+    """Quick score vs random (draws = 0.5) to track learning progress."""
     rand = RandomAgent()
-    wins = 0
+    wins = 0.0
     for g in range(n_games):
         state = GameState()
         agent_side = X if g % 2 == 0 else O
@@ -181,20 +265,81 @@ def _eval_winrate(agent: NeuralNetAgentPG, n_games: int = 50) -> float:
             move = mover.select_move(state)
             state.make_move(move)
         if state.winner == agent_side:
-            wins += 1
+            wins += 1.0
+        elif state.winner == DRAW:
+            wins += 0.5
     agent.set_eval(False)
     return wins / n_games
 
 
+class OpponentPool:
+    """Diverse opponents for a slice of self-play games (the league insight:
+    a population of different enemies beats training against your own twin).
+
+    Mix: past-self snapshots (raw policy + ultimate win/block filter),
+    WinBlockAgent (punishes hanging mini-boards), RandomAgent (keeps the
+    distribution wide). Snapshots are in-memory cpu state_dicts, refreshed
+    every `pool_every` iterations, capped at `cap` (oldest kept as an anchor,
+    second-oldest evicted first to preserve a strength spread).
+    """
+
+    def __init__(self, cfg, device, cap: int, sample_moves: int = 6):
+        self.device = device
+        self.cap = cap
+        self.sample_moves = sample_moves
+        self.snaps = []  # list of (iteration, cpu state_dict)
+        self.heur = WinBlockAgent()
+        self.rand = RandomAgent()
+        self.shell = NeuralNetAgentPG(cfg=cfg, model_path=None)
+        self.shell.model.to(device)
+        self.shell.device = device
+        self.shell.model.eval()
+
+    def maybe_add(self, model, iteration: int, every: int):
+        if every <= 0 or iteration % every != 0:
+            return
+        sd = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        self.snaps.append((iteration, sd))
+        if len(self.snaps) > self.cap:
+            self.snaps.pop(1)
+
+    def _net_move(self, state, move_num: int) -> int:
+        valid = rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
+        wins = winning_moves(state, valid)
+        if wins:
+            return random.choice(wins)
+        losers = losing_moves(state, valid)
+        if losers and len(losers) < len(valid):
+            valid = [m for m in valid if m not in set(losers)]
+        return _policy_move_from_valid(self.shell.model, self.device, state, valid,
+                                       self.sample_moves, move_num)
+
+    def sample_opponent_fn(self):
+        """Returns (label, fn(state) -> move) for one game."""
+        r = random.random()
+        if self.snaps and r < 0.5:
+            it, sd = random.choice(self.snaps)
+            self.shell.model.load_state_dict(sd)
+            counter = {"n": 0}
+            def fn(state):
+                mv = self._net_move(state, counter["n"])
+                counter["n"] += 1
+                return mv
+            return f"pool_i{it}", fn
+        if r < 0.8:
+            return "winblock", lambda s: self.heur.select_move(s)
+        return "random", lambda s: self.rand.select_move(s)
+
+
 @torch.no_grad()
-def _policy_move(model, device, state, sample_moves: int, move_num: int) -> int:
-    """Raw-net move: masked policy over legal moves.
+def _policy_move_from_valid(model, device, state, valid, sample_moves: int,
+                            move_num: int) -> int:
+    """Raw-net move restricted to `valid`: masked policy, sampled early.
 
     First `sample_moves` plies are sampled from the softmax (so repeated games
     between deterministic nets differ); after that, argmax.
     """
-    valid = rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
-    x = board_to_tensor_from_gamestate(state, v_computed=valid).unsqueeze(0).to(device)
+    x = board_to_tensor_from_gamestate(state, v_computed=None).unsqueeze(0).to(device)
     logits, _ = model.forward_both(x)
     logits = logits.reshape(-1)
     mask = torch.full((81,), float("-inf"), device=logits.device)
@@ -205,6 +350,12 @@ def _policy_move(model, device, state, sample_moves: int, move_num: int) -> int:
         probs = F.softmax(logits, dim=-1)
         return int(torch.multinomial(probs, 1).item())
     return int(torch.argmax(logits).item())
+
+
+def _policy_move(model, device, state, sample_moves: int, move_num: int) -> int:
+    """Raw-net move over all legal moves (gauntlet protocol)."""
+    valid = rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
+    return _policy_move_from_valid(model, device, state, valid, sample_moves, move_num)
 
 
 def _play_match(move_fn_a, move_fn_b, n_games: int) -> float:
@@ -364,10 +515,11 @@ def main():
                          "Load a league checkpoint to jump-start policy quality.")
     ap.add_argument("--network", type=str, default="small", choices=list(NETWORK_CONFIGS),
                     help="Network architecture (small/medium/large).")
-    ap.add_argument("--value_tanh", action=argparse.BooleanOptionalAction, default=False,
-                    help="Apply tanh to value head (strongly recommended). "
+    ap.add_argument("--value_tanh", action=argparse.BooleanOptionalAction, default=True,
+                    help="Apply tanh to value head. DEFAULT ON (2026-07-04). "
                          "Calibrates output to [-1,1], fixing the MCTS value-scale mismatch. "
-                         "Start from a fresh model or a --value_tanh checkpoint.")
+                         "Start from a fresh model or a --value_tanh checkpoint; pass "
+                         "--no-value_tanh only for legacy untanhed checkpoints.")
     ap.add_argument("--iters", type=int, default=0,
                     help="Training iterations (0 = run forever until Ctrl+C).")
     ap.add_argument("--games_per_iter", type=int, default=50,
@@ -381,11 +533,28 @@ def main():
     ap.add_argument("--c_puct", type=float, default=1.5)
     ap.add_argument("--dir_alpha", type=float, default=0.3,
                     help="Dirichlet alpha for root noise (~0.3 for UTTT).")
-    ap.add_argument("--dir_eps", type=float, default=0.25,
-                    help="Dirichlet mixing weight (AlphaZero uses 0.25).")
-    ap.add_argument("--temperature_moves", type=int, default=20,
+    ap.add_argument("--dir_eps", type=float, default=0.15,
+                    help="Dirichlet mixing weight. DEFAULT 0.15 (2026-07-04, was 0.25: "
+                         "the M4 plateau diagnostic showed near-uniform visit targets; "
+                         "less root noise keeps targets sharper).")
+    ap.add_argument("--temperature_moves", type=int, default=10,
                     help="Number of moves to sample proportionally (exploration); "
-                         "after this, use argmax (exploitation).")
+                         "after this, use argmax. DEFAULT 10 (2026-07-04, was 20: "
+                         "UTTT games run ~40-60 plies; 20 sampled plies made "
+                         "self-play too random).")
+    ap.add_argument("--tactics", action=argparse.BooleanOptionalAction, default=True,
+                    help="Inject provable ultimate win-in-1 targets and zero out "
+                         "hand-opponent-the-game moves in training targets "
+                         "(engine/tactics.py ground truth). DEFAULT ON.")
+    ap.add_argument("--opp_mix", type=float, default=0.30,
+                    help="Fraction of games per iteration played vs a diverse opponent "
+                         "(past-self pool / win-block bot / random) instead of pure "
+                         "self-play. Only the net's own positions are recorded. "
+                         "0 = pure self-play. DEFAULT 0.30 (2026-07-04).")
+    ap.add_argument("--pool_every", type=int, default=25,
+                    help="Snapshot current weights into the opponent pool every N iters.")
+    ap.add_argument("--pool_cap", type=int, default=10,
+                    help="Max snapshots in the opponent pool (oldest kept as anchor).")
     ap.add_argument("--buffer_size", type=int, default=100_000,
                     help="Maximum replay buffer size (examples, not games).")
     ap.add_argument("--train_steps", type=int, default=100,
@@ -526,6 +695,9 @@ def main():
     if not args.no_metrics and not args.resume:
         clear_metrics_log()
 
+    pool = OpponentPool(cfg=cfg, device=device, cap=args.pool_cap,
+                        sample_moves=args.gauntlet_sample_moves)
+
     gauntlet = Gauntlet(
         agent=agent, cfg=cfg, device=device, model_dir=args.model_dir,
         every_min=args.gauntlet_every_min, games=args.gauntlet_games,
@@ -542,6 +714,9 @@ def main():
           f"n_sims={args.n_sims} wave={args.wave_size} | value_tanh={args.value_tanh}")
     print(f"  games_per_iter={args.games_per_iter} | train_steps={args.train_steps} | "
           f"batch_size={args.batch_size} | buffer_size={args.buffer_size}")
+    print(f"  tactics={'on' if args.tactics else 'off'} | opp_mix={args.opp_mix:g} "
+          f"(pool: every {args.pool_every} iters, cap {args.pool_cap}) | "
+          f"dir_eps={args.dir_eps:g} | temp_moves={args.temperature_moves}")
     if args.gauntlet_every_min > 0:
         print(f"  gauntlet: every {args.gauntlet_every_min:g} min | "
               f"{args.gauntlet_games} games/opponent | "
@@ -564,11 +739,15 @@ def main():
         while args.iters == 0 or iteration < args.iters:
             t0 = time.perf_counter()
 
-            # --- Self-play ---
+            # --- Self-play (with a diverse-opponent slice) ---
             agent.model.eval()
             new_examples: List[Example] = []
+            sp_draws = 0
             for g in range(args.games_per_iter):
-                exs = collect_game(
+                opponent_fn = None
+                if args.opp_mix > 0 and random.random() < args.opp_mix:
+                    _, opponent_fn = pool.sample_opponent_fn()
+                exs, winner = collect_game(
                     model=agent.model,
                     device=device,
                     n_sims=args.n_sims,
@@ -577,9 +756,14 @@ def main():
                     dir_eps=args.dir_eps,
                     wave_size=args.wave_size,
                     temperature_moves=args.temperature_moves,
+                    use_tactics=args.tactics,
+                    opponent_fn=opponent_fn,
                 )
                 new_examples.extend(exs)
+                if winner == DRAW:
+                    sp_draws += 1
             buffer.extend(new_examples)
+            pool.maybe_add(agent.model, iteration, args.pool_every)
 
             # --- Train ---
             total_loss = policy_loss_sum = value_loss_sum = 0.0
@@ -623,6 +807,9 @@ def main():
 
             # --- Metrics ---
             games_total += args.games_per_iter
+            extra = {"sp_draws": round(sp_draws / args.games_per_iter, 3)}
+            if gres:
+                extra.update(gres)
             if not args.no_metrics:
                 append_metrics(
                     loss=avg_loss,
@@ -633,7 +820,7 @@ def main():
                     policy_loss=avg_pol,
                     games_total=games_total,
                     buffer=len(buffer),
-                    extra=gres,
+                    extra=extra,
                 )
 
             wr_str = f"{wr*100:.1f}%" if not (isinstance(wr, float) and np.isnan(wr)) else "--"
@@ -642,6 +829,7 @@ def main():
                 f"buf={len(buffer):6d} | "
                 f"loss={avg_loss:.4f} (pol={avg_pol:.4f} val={avg_val:.4f}) | "
                 f"wr_vs_rand={wr_str} | "
+                f"draws={sp_draws}/{args.games_per_iter} | "
                 f"{elapsed:.1f}s"
             )
             if gres:

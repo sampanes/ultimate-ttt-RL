@@ -1243,7 +1243,8 @@ function _updateLog(data) {
     const vl   = isFinite(d.value_loss) ? ` vl=${d.value_loss.toFixed(4)}` : '';
     const buf  = d.buffer ? ` buf=${d.buffer.toLocaleString()}` : '';
     const g    = isFinite(d.wr_anchor) ? ` day1=${(d.wr_anchor*100).toFixed(0)}%` : '';
-    return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}${g}`;
+    const dr   = isFinite(d.sp_draws) ? ` d=${(d.sp_draws*100).toFixed(0)}%` : '';
+    return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}${dr}${g}`;
   });
   const box = document.getElementById('log-box');
   box.innerHTML = lines.map(l => `<span class="log-line">${l}</span>`).join('\n');

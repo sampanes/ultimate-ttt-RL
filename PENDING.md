@@ -224,3 +224,31 @@ for the JS engine golden-vector suite).
 hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
 
 See `SHIP_PLAN.md` M3 section for full exit gate.
+
+## M4 — AlphaZero long run (home box)
+
+**M4a (2026-07-03): plateaued, archived to `models/alphazero_m4_flat/`.**
+15h / 77k games / ~1,500 iters with every yardstick flat (wr vs random pinned 54-57%,
+past-self gauntlet pinned 50%, win/block bot winning 95%+ vs the raw net).
+Diagnostic (CPU, vs version_1545): net policy entropy ~= uniform at every ply, BUT
+policy CE ~= target entropy -- the net fit its targets near-optimally; the MCTS visit
+targets themselves were near-uniform. Self-sealing loop: weak value head -> unfocused
+search -> soft targets -> uniform policy. Value head also miscalibrated (-0.98 on a
+bland random position).
+
+**M4b (2026-07-04): fresh run with loop-breaking changes (all in train_alphazero.py):**
+- `--tactics` (default ON): ultimate win-in-1 -> one-hot target, no search;
+  moves allowing an immediate opponent game-win zeroed from targets (engine/tactics
+  ground truth; mini-board tactics deliberately NOT forced, per tactics.py docstring)
+- `--opp_mix 0.30`: slice of games vs diverse opponents (past-self pool refreshed
+  every 25 iters cap 10 / WinBlockAgent / random); only net positions recorded.
+  Rationale: league-style enemy diversity; twin self-play was draw-heavy + narrow.
+- defaults retuned: dir_eps 0.25->0.15, temperature_moves 20->10, value_tanh ON
+- eval vs random now scores draws as 0.5; per-iter self-play draw rate logged (sp_draws)
+- also new since 7/3: wall-clock gauntlet eval (5 min: day-one anchor / past self /
+  win-block bot / MCTS-edge probe) + `--resume` (run_state.json + resume.pt)
+- launched: `--network medium --n_sims 300 --games_per_iter 50 --iters 0`
+
+Watch on the dashboard: wr_heur (win/block bot) rising is the primary signal the
+tactical blindness is fixed; past-self off 50% means real iteration-over-iteration
+growth; sp_draws falling means games are decisive enough to carry value signal.
