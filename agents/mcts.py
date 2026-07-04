@@ -32,11 +32,17 @@ KNOWN CAVEAT -- value SCALE mismatch (not a sign error; does NOT invert search):
 Batched leaf evaluation (wave_size > 1):
   When wave_size > 1, each round of the search loop collects `wave_size` leaf
   nodes via virtual loss, then evaluates all leaves in ONE batched forward pass.
-  Virtual loss temporarily adds N+1 / W-1 to visited nodes so each selection in
-  the same wave diverges to a different path. After the batch eval the VL is
-  undone and real backups are applied. wave_size=1 is the original serial path
+  Virtual loss temporarily adds N+1 / W+1 to visited nodes (W is stored from the
+  child's to-play perspective and selection scores -Q, so RAISING W penalizes
+  the path -- see the sign-bug comment in _run_wave) so each selection in the
+  same wave diverges to a different path. After the batch eval the VL is undone
+  and real backups are applied. wave_size=1 is the original serial path
   (byte-identical to previous behaviour). wave_size=8 is a good default for the
   oracle benchmark; 16-32 helps for AlphaZero self-play at high n_sims.
+  HISTORY: from its introduction until 2026-07-04 the VL sign was inverted
+  (W-1), which collapsed whole waves onto a single line and made wave>1 search
+  WEAKER than the raw policy -- it poisoned the M4a/M4b AlphaZero runs' visit
+  targets. agents/test_mcts.py now locks the wave path too.
 """
 
 import math
@@ -92,7 +98,13 @@ def _clone(state):
 
 
 class MCTS:
-    _VL = 1.0   # virtual loss magnitude (standard AlphaZero)
+    _VL = 1.0        # virtual loss magnitude (standard AlphaZero)
+    _MIN_WAVES = 16  # floor on waves per search: the tree only deepens between
+                     # waves (leaf expansion is deferred to the batched forward
+                     # pass), so wave_size ~ n_sims degenerates into a one-ply
+                     # breadth probe. Empirical (2026-07-04, edge vs raw net,
+                     # after the VL sign fix): 38 waves 0.95, 16 waves 0.80-0.925,
+                     # 10 waves 0.70-0.80, 5 waves 0.375-0.80, 1 wave 0.00.
 
     def __init__(self, model, device, n_sims=100, c_puct=1.5,
                  add_dirichlet_at_root=False, dir_alpha=0.3, dir_eps=0.25,
@@ -132,9 +144,11 @@ class MCTS:
 
                 self._backup(node, value)
         else:
+            # Clamp so every search gets at least _MIN_WAVES waves of depth.
+            eff_wave = max(1, min(self.wave_size, self.n_sims // self._MIN_WAVES))
             sims_done = 0
             while sims_done < self.n_sims:
-                wave = min(self.wave_size, self.n_sims - sims_done)
+                wave = min(eff_wave, self.n_sims - sims_done)
                 self._run_wave(root, root_state, wave)
                 sims_done += wave
 
@@ -168,8 +182,16 @@ class MCTS:
             while node.children and not node.is_terminal:
                 node = self._best_child(node)
                 state.make_move(node.move)
+                # Virtual loss. SIGN MATTERS: this tree stores W from the CHILD's
+                # to-play perspective and _best_child scores -c.Q(), so to make a
+                # visited path look BAD to the next sim we must RAISE the child's
+                # W (a virtual win for the child = a loss for the selecting
+                # parent). W -= VL here inverts that: Q -> -1, -Q -> +1, and the
+                # whole wave collapses onto one path (found 2026-07-04: made
+                # wave=64 search score 0.000 vs the raw league net; wave=1
+                # scored 0.875).
                 node.N += 1
-                node.W -= self._VL
+                node.W += self._VL
                 path.append(node)
                 if state.winner is not None:
                     node.is_terminal    = True
@@ -211,7 +233,7 @@ class MCTS:
         for node, state, path in pending:
             for n in path:
                 n.N -= 1
-                n.W += self._VL
+                n.W -= self._VL
 
             if node.is_terminal:
                 value = node.terminal_value

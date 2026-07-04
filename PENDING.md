@@ -264,3 +264,49 @@ metrics logged so the plateau's smoking gun is visible live, plus dashboard supp
 - `winrate` is now null (not 0.0) on non-eval iterations
 Graceful-stop note: taskkill /F skips the finally-block resume save; send Ctrl+C
 (GenerateConsoleCtrlEvent via AttachConsole) so resume.pt (optimizer + buffer) lands.
+(`scripts/send_ctrl_c.py` is now a repo utility; stop_goat.bat wraps it.)
+
+**M4 POSTMORTEM (2026-07-04): run killed; root cause found -- TWO MCTS WAVE BUGS.**
+M4b's outsider metrics stayed flat and raw play degraded BELOW the day-one anchor
+(0.325). Discriminator experiment: with search equalized, current = day-one (0.500)
+-- the visit targets themselves were poison. Cause (both in agents/mcts.py wave path,
+both FIXED + locked by agents/test_mcts.py, now 10/10):
+1. Virtual-loss SIGN inverted: this tree stores W from the child's to-play
+   perspective and selection scores -c.Q(), so VL must RAISE W. `W -= VL` turned
+   virtual loss into virtual WIN -> whole waves collapsed onto one line.
+   Evidence: MCTS(64 sims, wave 64) over league best.pt scored 0.000 (!) vs the raw
+   net it wrapped; after the sign fix + clamp, 0.800-0.925.
+2. No waves-per-search floor: leaf expansion is deferred to the end of each wave,
+   so the tree deepens by ONE PLY PER WAVE. wave_size ~ n_sims = a one-ply breadth
+   probe, not search. MCTS.search now clamps wave to n_sims // 16 (_MIN_WAVES).
+   Sweep (edge vs raw net, post-sign-fix): 38 waves 0.95, 16 waves 0.80-0.925,
+   10 waves 0.70-0.80, 5 waves 0.375-0.80, 1 wave 0.000.
+Every M4 self-play game and gauntlet probe ran wave=64; the 6/30 "MCTS crushes
+best.pt" benchmark predates wave batching (wave=1) -- that is why it was healthy.
+NOTE: bench_throughput's "wave 64 = 2.3 games/s" was measuring this degenerate
+shallow search; real AZ throughput after the clamp is lower. Re-bench if it matters.
+train_alphazero now HALTS on mcts_edge < 0.5 twice in a row (search invariant).
+The M4b net was NOT wasted: post-fix its edge is 0.95 -- weights in
+models/alphazero (version_463 + resume.pt) if ever wanted.
+
+---
+
+## M5 -- Expert iteration, "goat-train" (home box, live since 2026-07-04)
+
+New paradigm (scripts/expert_iter.py): stop bootstrapping from random weights;
+distill a PROVEN-strong teacher instead.
+- Teacher: MCTS(200 sims, fixed wave path) over models/league_pg/best.pt
+  (edge 0.875-0.925 vs its raw net). Self-play via train_alphazero.collect_game
+  (Dirichlet 0.10 root noise, temp 10 moves, tactics ground truth on targets).
+- Student: fresh medium net, tanh value head, supervised on (pi_visits, z):
+  data window 200k positions in RAM + disk shards (models/expert_iter/data/) so
+  --resume never loses a game.
+- Gates every 5 min (dashboard-compatible fields): winrate = raw vs random,
+  wr_heur = vs win/block bot, wr_anchor = vs CURRENT TEACHER raw,
+  mcts_edge = MCTS64(student) vs raw student (must stay >= 0.5).
+- PROMOTION every 30 min: MCTS64(student) vs MCTS64(teacher); >= 0.55 -> student
+  becomes teacher, gen++ (logged as teacher_gen; dashboard reel flags it).
+  The shipped artifact is always student + search at eval time.
+- Ops: start_goat.bat / stop_goat.bat (named window "goat-train", graceful
+  Ctrl+C stop, idempotent start). Watch: wr_anchor -> 50%+ means distillation
+  caught the teacher; first promotion is the milestone that matters.

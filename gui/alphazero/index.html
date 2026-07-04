@@ -476,7 +476,7 @@
     <div class="mini-bar gold" title="progress to next WR milestone"><div id="next-bar"></div></div>
   </div>
   <div class="stat-card purple" id="card-day1">
-    <div class="stat-label">vs day-one self</div>
+    <div class="stat-label">vs anchor net</div>
     <div class="stat-value" id="s-day1">--</div>
     <div class="stat-sub" id="s-day1-sub">&nbsp;</div>
   </div>
@@ -665,7 +665,7 @@ function _mkGDataset(label, color, dash) {
 const chartGauntlet = new Chart(document.getElementById('chart-gauntlet'), {
   type: 'line',
   data: { labels: [], datasets: [
-    _mkGDataset('vs day-one self', '#a78bfa'),
+    _mkGDataset('vs anchor (day-one / teacher)', '#a78bfa'),
     _mkGDataset('vs past self', '#3b9eff'),
     _mkGDataset('vs win/block bot', '#f59e0b'),
     _mkGDataset('MCTS edge over raw net', '#ec4899', [5,4]),
@@ -972,8 +972,9 @@ function _updateCards(data) {
   // iter
   _setStat('s-iter', n, v => Math.round(v).toLocaleString());
   const gamesTotal = last.games_total ?? null;
+  const genTag = isFinite(last.teacher_gen) ? ' -- teacher gen ' + last.teacher_gen : '';
   document.getElementById('s-iter-sub').textContent =
-    gamesTotal ? (gamesTotal).toLocaleString() + ' games' : 'iter ' + n;
+    (gamesTotal ? (gamesTotal).toLocaleString() + ' games' : 'iter ' + n) + genTag;
 
   // games played + XP bar
   if (gamesTotal) {
@@ -1153,6 +1154,7 @@ function _deriveEvents(data) {
   const lvlSeen = new Set();
   const anchorHit = new Set(), heurHit = new Set(), edgeHit = new Set();
   const sharpHit = new Set();
+  let genSeen = 0;
 
   data.forEach((d, i) => {
     const iter = i + 1;
@@ -1199,13 +1201,19 @@ function _deriveEvents(data) {
       if (!anchorHit.has(t) && isFinite(d.wr_anchor) && d.wr_anchor >= t) {
         anchorHit.add(t);
         events.push({ iter, kind: 'level',
-          text: 'beating day-one self ' + (t * 100).toFixed(0) + '%+' });
+          text: 'beating the anchor net ' + (t * 100).toFixed(0) + '%+' });
       }
       if (!heurHit.has(t) && isFinite(d.wr_heur) && d.wr_heur >= t) {
         heurHit.add(t);
         events.push({ iter, kind: 'mile',
           text: 'win/block bot down ' + (t * 100).toFixed(0) + '%+' });
       }
+    }
+    // teacher promotions (expert iteration): the headline event
+    if (isFinite(d.teacher_gen) && d.teacher_gen > genSeen) {
+      genSeen = d.teacher_gen;
+      events.push({ iter, kind: 'record',
+        text: 'PROMOTION -- student became teacher gen ' + genSeen });
     }
     // target sharpness crossings
     if (isFinite(d.pi_ent)) {
@@ -1285,8 +1293,8 @@ function _buildHype(data) {
     if (isFinite(data[i].wr_anchor)) { g = data[i]; break; }
   }
   if (g) {
-    if (g.wr_anchor >= 0.75) msgs.push('crushing day-one self ' + _fmtWR(g.wr_anchor) + ' -- the glow-up is real');
-    else msgs.push('scoring ' + _fmtWR(g.wr_anchor) + ' against day-one self');
+    if (g.wr_anchor >= 0.75) msgs.push('crushing the anchor net ' + _fmtWR(g.wr_anchor) + ' -- the glow-up is real');
+    else msgs.push('scoring ' + _fmtWR(g.wr_anchor) + ' against the anchor net');
     if (isFinite(g.wr_heur)) {
       msgs.push(g.wr_heur >= 0.6
         ? 'farming the win/block bot at ' + _fmtWR(g.wr_heur)
@@ -1332,7 +1340,7 @@ function _updateLog(data) {
     const wr   = isFinite(d.winrate) && d.winrate > 0 ? ` wr=${(d.winrate*100).toFixed(1)}%` : '';
     const vl   = isFinite(d.value_loss) ? ` vl=${d.value_loss.toFixed(4)}` : '';
     const buf  = d.buffer ? ` buf=${d.buffer.toLocaleString()}` : '';
-    const g    = isFinite(d.wr_anchor) ? ` day1=${(d.wr_anchor*100).toFixed(0)}%` : '';
+    const g    = isFinite(d.wr_anchor) ? ` anc=${(d.wr_anchor*100).toFixed(0)}%` : '';
     const dr   = isFinite(d.sp_draws) ? ` d=${(d.sp_draws*100).toFixed(0)}%` : '';
     return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}${dr}${g}`;
   });

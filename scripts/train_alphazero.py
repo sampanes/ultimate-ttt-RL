@@ -745,6 +745,7 @@ def main():
         print(f"Saved resume state ({len(buffer)} buffered examples) -> {resume_path}")
 
     iteration = start_iteration
+    edge_bad = 0   # consecutive gauntlet probes with mcts_edge < 0.5
     try:
         while args.iters == 0 or iteration < args.iters:
             t0 = time.perf_counter()
@@ -872,6 +873,19 @@ def main():
                 if "mcts_edge" in gres:
                     parts.append(f"mcts_edge={gres['mcts_edge']*100:.0f}%")
                 print(f"     gauntlet | {' | '.join(parts)} | {gres['gauntlet_secs']}s")
+
+            # --- Search invariant: MCTS over the net must not LOSE to the raw
+            # net. If it does, the visit targets are poison and training on
+            # them actively degrades the policy (this is exactly how the
+            # M4a/M4b wave-VL bug burned 20+ GPU-hours undetected).
+            if gres and "mcts_edge" in gres:
+                edge_bad = edge_bad + 1 if gres["mcts_edge"] < 0.5 else 0
+                if edge_bad >= 2:
+                    print("[X] HALT: mcts_edge < 0.5 on 2 consecutive probes.")
+                    print("    Search is losing to the raw policy it wraps -- the")
+                    print("    self-play visit targets are poisoned. Debug before")
+                    print("    burning more GPU (see agents/mcts.py wave-VL notes).")
+                    break
 
             iteration += 1
 

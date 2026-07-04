@@ -28,8 +28,10 @@ from agents.mcts import MCTS, MCTSNode, MCTSAgent
 # --------------------------------------------------------------------------- #
 class UniformZeroStub:
     def forward_both(self, x):
-        # MCTS._expand expects 1-D logits (81,) (it does scatter_ on dim 0) and a
-        # scalar value. Mirror ConvNet.forward_both's squeezed single-state output.
+        # Mirror ConvNet.forward_both: batched (K,7,9,9) input -> (K,81)/(K,)
+        # (used by the wave path), single input squeezed to (81,)/scalar.
+        if x.dim() == 4 and x.shape[0] > 1:
+            return torch.zeros(x.shape[0], 81), torch.zeros(x.shape[0])
         return torch.zeros(81), torch.tensor(0.0)
 
 
@@ -147,6 +149,60 @@ def test_agent_select_move_argmax():
 
     agent = MCTSAgent(_Wrap(), n_sims=100, temperature=0.0)
     assert agent.select_move(_state_one_move_from_x_win()) == 8
+
+
+# --------------------------------------------------------------------------- #
+# 7. Wave path (wave_size > 1). Locks two 2026-07-04 bugs:
+#    (a) virtual-loss SIGN: this tree stores W from the child's to-play
+#        perspective and selection scores -Q, so VL must RAISE W. The inverted
+#        sign turned virtual loss into virtual WIN and collapsed whole waves
+#        onto one line (search scored 0.000 vs the raw net it wrapped).
+#    (b) waves-per-search floor: leaf expansion is deferred to the end of each
+#        wave, so wave_size ~ n_sims degenerates to a one-ply breadth probe.
+#        search() must clamp wave_size to n_sims // _MIN_WAVES.
+# --------------------------------------------------------------------------- #
+def test_wave_finds_immediate_win():
+    state = _state_one_move_from_x_win()
+    for wave in (4, 8, 64):
+        mcts = MCTS(model=UniformZeroStub(), device="cpu", n_sims=100,
+                    c_puct=1.5, add_dirichlet_at_root=False, wave_size=wave)
+        pi, _ = mcts.search(state)
+        best = int(pi.argmax())
+        assert best == 8, f"wave={wave}: picked {best}, not the winning move 8"
+        assert pi[8] > 0.5, f"wave={wave}: winning move got only {pi[8]:.2f}"
+
+
+def test_wave_clamped_to_min_waves():
+    mcts = MCTS(model=UniformZeroStub(), device="cpu", n_sims=100, wave_size=64)
+    calls = []
+    orig = mcts._run_wave
+
+    def spy(root, root_state, wave):
+        calls.append(wave)
+        return orig(root, root_state, wave)
+
+    mcts._run_wave = spy
+    mcts.search(_state_one_move_from_x_win())
+    assert max(calls) <= 100 // MCTS._MIN_WAVES, \
+        f"wave not clamped: ran waves of {max(calls)} for n_sims=100"
+    assert sum(calls) == 100
+
+
+def test_virtual_loss_discourages_revisit():
+    # Two children, equal priors. Apply VL to one the way _run_wave does and
+    # check _best_child now prefers the OTHER -- the inverted sign made the
+    # VL'd child MORE attractive instead.
+    mcts = _mcts()
+    root = MCTSNode(to_play=X)
+    root.N = 2
+    a = MCTSNode(parent=root, prior=0.5, move=0, to_play=O)
+    b = MCTSNode(parent=root, prior=0.5, move=1, to_play=O)
+    root.children = {0: a, 1: b}
+
+    a.N += 1
+    a.W += MCTS._VL          # virtual loss as _run_wave applies it
+    assert mcts._best_child(root) is b, \
+        "virtual loss made the visited child MORE attractive (sign inverted?)"
 
 
 # --------------------------------------------------------------------------- #
