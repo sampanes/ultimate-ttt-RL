@@ -18,7 +18,8 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 def append_metrics(loss: float, epsilon: float, winrate: float,
                    stage=None, elo=None, value_loss=None, explained_var=None,
-                   t=None, policy_loss=None, games_total=None, buffer=None):
+                   t=None, policy_loss=None, games_total=None, buffer=None,
+                   extra=None):
     entry = {
         "loss": loss,
         "epsilon": epsilon,
@@ -46,6 +47,10 @@ def append_metrics(loss: float, epsilon: float, winrate: float,
         entry["games_total"] = games_total
     if buffer is not None:
         entry["buffer"] = buffer
+    # Free-form additive fields (e.g. gauntlet eval results). Only present on the
+    # lines that produced them; consumers must treat them as optional.
+    if extra:
+        entry.update({k: v for k, v in extra.items() if v is not None})
     # json.dumps emits bare NaN/Infinity for non-finite floats, which is NOT
     # valid JSON -- JSON.parse in the dashboard rejects the whole line.
     entry = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)

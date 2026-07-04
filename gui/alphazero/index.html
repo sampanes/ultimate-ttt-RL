@@ -467,6 +467,11 @@
     <div class="stat-sub" id="s-next-sub">&nbsp;</div>
     <div class="mini-bar gold" title="progress to next WR milestone"><div id="next-bar"></div></div>
   </div>
+  <div class="stat-card purple" id="card-day1">
+    <div class="stat-label">vs day-one self</div>
+    <div class="stat-value" id="s-day1">--</div>
+    <div class="stat-sub" id="s-day1-sub">&nbsp;</div>
+  </div>
 </div>
 
 <!-- ==== charts row 1 ==== -->
@@ -495,6 +500,17 @@
       <div class="nm-bar"><div id="nm-fill"></div></div>
     </div>
   </div>
+</div>
+
+<!-- ==== gauntlet row ==== -->
+<div class="card chart-mid" style="margin-bottom:0.7rem;">
+  <div class="card-title">
+    Gauntlet -- outsider view of growth
+    <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+      score, draws = 0.5 &middot; MCTS edge: lower = policy has internalized search
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="chart-gauntlet"></canvas></div>
 </div>
 
 <!-- ==== charts row 2 ==== -->
@@ -619,6 +635,26 @@ const chartVloss = new Chart(document.getElementById('chart-vloss'), {
     { ..._mkDataset('Value loss', '#22d3ee') },
   ]},
   options: _baseOpts('value loss', '#22d3ee'),
+});
+
+// ==== Gauntlet chart =======================================================
+// Sparse: only iterations where a gauntlet ran carry these fields -- spanGaps
+// connects the dots.
+const gauntletOpts = _baseOpts('score (draws = 0.5)', '#a78bfa');
+gauntletOpts.scales.y.min = 0; gauntletOpts.scales.y.max = 1;
+function _mkGDataset(label, color, dash) {
+  return { ..._mkDataset(label, color, dash), spanGaps: true, pointRadius: 2.5, pointHoverRadius: 5 };
+}
+const chartGauntlet = new Chart(document.getElementById('chart-gauntlet'), {
+  type: 'line',
+  data: { labels: [], datasets: [
+    _mkGDataset('vs day-one self', '#a78bfa'),
+    _mkGDataset('vs past self', '#3b9eff'),
+    _mkGDataset('vs win/block bot', '#f59e0b'),
+    _mkGDataset('MCTS edge over raw net', '#ec4899', [5,4]),
+    { ..._mkDataset('parity', '#4b5563', [2,4]), borderWidth: 1, pointRadius: 0, spanGaps: true },
+  ]},
+  options: gauntletOpts,
 });
 
 // ==== State ================================================================
@@ -813,7 +849,7 @@ document.getElementById('btn-log-scale').addEventListener('click', () => {
 });
 
 function _resetZoom() {
-  [chartLoss, chartWr, chartVloss].forEach(c => c.resetZoom());
+  [chartLoss, chartWr, chartVloss, chartGauntlet].forEach(c => c.resetZoom());
 }
 
 // ==== Redraw ===============================================================
@@ -846,6 +882,18 @@ function _redraw() {
   chartVloss.data.labels               = labels;
   chartVloss.data.datasets[0].data     = smVloss;
   chartVloss.update('none');
+
+  const gAnchor = _ds(data.map(d => isFinite(d.wr_anchor) ? d.wr_anchor : NaN), MAX_PTS);
+  const gPast   = _ds(data.map(d => isFinite(d.wr_past)   ? d.wr_past   : NaN), MAX_PTS);
+  const gHeur   = _ds(data.map(d => isFinite(d.wr_heur)   ? d.wr_heur   : NaN), MAX_PTS);
+  const gEdge   = _ds(data.map(d => isFinite(d.mcts_edge) ? d.mcts_edge : NaN), MAX_PTS);
+  chartGauntlet.data.labels           = labels;
+  chartGauntlet.data.datasets[0].data = gAnchor;
+  chartGauntlet.data.datasets[1].data = gPast;
+  chartGauntlet.data.datasets[2].data = gHeur;
+  chartGauntlet.data.datasets[3].data = gEdge;
+  chartGauntlet.data.datasets[4].data = labels.map(() => 0.5);
+  chartGauntlet.update('none');
 }
 
 // ==== Throughput math ======================================================
@@ -955,6 +1003,23 @@ function _updateCards(data) {
     document.getElementById('s-buffer-sub').textContent = 'no buffer field';
   }
 
+  // vs day-one self (latest gauntlet line)
+  let gLast = null;
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (isFinite(data[i].wr_anchor)) { gLast = data[i]; break; }
+  }
+  if (gLast) {
+    _setStat('s-day1', gLast.wr_anchor, v => _fmtWR(v));
+    const bits = [];
+    if (isFinite(gLast.wr_past)) bits.push('past ' + _fmtWR(gLast.wr_past));
+    if (isFinite(gLast.wr_heur)) bits.push('win/block ' + _fmtWR(gLast.wr_heur));
+    document.getElementById('s-day1-sub').textContent =
+      bits.length ? bits.join(' -- ') : 'gauntlet';
+  } else {
+    document.getElementById('s-day1').textContent = '--';
+    document.getElementById('s-day1-sub').textContent = 'waiting for first gauntlet';
+  }
+
   // next milestone card + progress bar under WR chart
   _updateNextMilestone(data, tp, trend, recentWrs.length);
 }
@@ -1016,6 +1081,7 @@ function _deriveEvents(data) {
   let best = 0, lossStart = null;
   const wrHit = new Set(), gameHit = new Set(), lossHit = new Set();
   const lvlSeen = new Set();
+  const anchorHit = new Set(), heurHit = new Set(), edgeHit = new Set();
 
   data.forEach((d, i) => {
     const iter = i + 1;
@@ -1055,6 +1121,26 @@ function _deriveEvents(data) {
           events.push({ iter, kind: 'loss',
             text: 'loss down ' + ((1 - f) * 100).toFixed(0) + '% from start (' + d.loss.toFixed(3) + ')' });
         }
+      }
+    }
+    // gauntlet crossings
+    for (const t of [0.6, 0.75, 0.9]) {
+      if (!anchorHit.has(t) && isFinite(d.wr_anchor) && d.wr_anchor >= t) {
+        anchorHit.add(t);
+        events.push({ iter, kind: 'level',
+          text: 'beating day-one self ' + (t * 100).toFixed(0) + '%+' });
+      }
+      if (!heurHit.has(t) && isFinite(d.wr_heur) && d.wr_heur >= t) {
+        heurHit.add(t);
+        events.push({ iter, kind: 'mile',
+          text: 'win/block bot down ' + (t * 100).toFixed(0) + '%+' });
+      }
+    }
+    for (const t of [0.9, 0.75, 0.6]) {
+      if (!edgeHit.has(t) && isFinite(d.mcts_edge) && d.mcts_edge <= t) {
+        edgeHit.add(t);
+        events.push({ iter, kind: 'loss',
+          text: 'MCTS edge below ' + (t * 100).toFixed(0) + '% -- policy internalizing search' });
       }
     }
   });
@@ -1103,6 +1189,24 @@ function _buildHype(data) {
   else if (_bestWR > 0) msgs.push('all WR milestones cleared -- GOAT territory');
   msgs.push(n.toLocaleString() + ' iterations of pure self-play grind');
 
+  // latest gauntlet line
+  let g = null;
+  for (let i = n - 1; i >= 0; i--) {
+    if (isFinite(data[i].wr_anchor)) { g = data[i]; break; }
+  }
+  if (g) {
+    if (g.wr_anchor >= 0.75) msgs.push('crushing day-one self ' + _fmtWR(g.wr_anchor) + ' -- the glow-up is real');
+    else msgs.push('scoring ' + _fmtWR(g.wr_anchor) + ' against day-one self');
+    if (isFinite(g.wr_heur)) {
+      msgs.push(g.wr_heur >= 0.6
+        ? 'farming the win/block bot at ' + _fmtWR(g.wr_heur)
+        : 'win/block bot still puts up a fight (' + _fmtWR(g.wr_heur) + ')');
+    }
+    if (isFinite(g.mcts_edge) && g.mcts_edge < 0.9) {
+      msgs.push('MCTS edge down to ' + _fmtWR(g.mcts_edge) + ' -- policy is internalizing search');
+    }
+  }
+
   return msgs;
 }
 
@@ -1138,7 +1242,8 @@ function _updateLog(data) {
     const wr   = isFinite(d.winrate) && d.winrate > 0 ? ` wr=${(d.winrate*100).toFixed(1)}%` : '';
     const vl   = isFinite(d.value_loss) ? ` vl=${d.value_loss.toFixed(4)}` : '';
     const buf  = d.buffer ? ` buf=${d.buffer.toLocaleString()}` : '';
-    return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}`;
+    const g    = isFinite(d.wr_anchor) ? ` day1=${(d.wr_anchor*100).toFixed(0)}%` : '';
+    return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}${g}`;
   });
   const box = document.getElementById('log-box');
   box.innerHTML = lines.map(l => `<span class="log-line">${l}</span>`).join('\n');

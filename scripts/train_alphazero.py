@@ -42,8 +42,10 @@ Examples:
 
 import argparse
 import collections
+import json
 import os
 import random
+import re
 import time
 from typing import List, Tuple
 
@@ -52,10 +54,12 @@ import torch
 import torch.nn.functional as F
 
 from agents.agent_base import ModelConfigCNN, board_to_tensor_from_gamestate
+from agents.deterministics import WinBlockAgent
 from agents.neural_net_agent_pg import NeuralNetAgentPG
-from agents.mcts import MCTS
+from agents.mcts import MCTS, MCTSAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW
+from engine.rules import rule_utl_valid_moves
 from scripts.train_league import NETWORK_CONFIGS, prune_versions, DEFAULT_ELO
 from scripts.trainer_base import append_metrics, clear_metrics_log
 
@@ -182,6 +186,177 @@ def _eval_winrate(agent: NeuralNetAgentPG, n_games: int = 50) -> float:
     return wins / n_games
 
 
+@torch.no_grad()
+def _policy_move(model, device, state, sample_moves: int, move_num: int) -> int:
+    """Raw-net move: masked policy over legal moves.
+
+    First `sample_moves` plies are sampled from the softmax (so repeated games
+    between deterministic nets differ); after that, argmax.
+    """
+    valid = rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
+    x = board_to_tensor_from_gamestate(state, v_computed=valid).unsqueeze(0).to(device)
+    logits, _ = model.forward_both(x)
+    logits = logits.reshape(-1)
+    mask = torch.full((81,), float("-inf"), device=logits.device)
+    for m in valid:
+        mask[m] = 0.0
+    logits = logits + mask
+    if move_num < sample_moves:
+        probs = F.softmax(logits, dim=-1)
+        return int(torch.multinomial(probs, 1).item())
+    return int(torch.argmax(logits).item())
+
+
+def _play_match(move_fn_a, move_fn_b, n_games: int) -> float:
+    """Score of A over `n_games` with alternating colors. Draws count 0.5.
+
+    move_fn(state, move_num) -> int. Returns score in [0, 1]; 0.5 = parity.
+    """
+    score = 0.0
+    for g in range(n_games):
+        a_side = X if g % 2 == 0 else O
+        state = GameState()
+        move_num = 0
+        while not state.is_over():
+            fn = move_fn_a if state.player == a_side else move_fn_b
+            state.make_move(fn(state, move_num))
+            move_num += 1
+        if state.winner == a_side:
+            score += 1.0
+        elif state.winner == DRAW:
+            score += 0.5
+    return score / n_games
+
+
+class Gauntlet:
+    """Wall-clock-paced eval vs stationary + historical opponents.
+
+    Every `every_min` minutes (checked between iterations) the current raw net
+    plays quick matches against:
+      * anchor    -- the run's day-one weights (saved once, kept across resume)
+      * past self -- a rolling snapshot refreshed every `lookback_min` minutes
+      * win/block -- WinBlockAgent (mini-board win/block, else random): a
+                     stationary 'attentive beginner' yardstick
+    and, every `mcts_probe_every`-th gauntlet, an MCTS(probe_sims) wrapper over
+    the CURRENT net plays the raw net ('mcts_edge'). Search edge near 1.0 means
+    the raw policy still leaves most of the search gain on the table; drifting
+    toward 0.5 means the policy has internalized what search finds.
+
+    All scores count draws as 0.5. Raw-net games sample the first
+    `sample_moves` plies for variety, argmax after.
+    """
+
+    def __init__(self, agent, cfg, device, model_dir, every_min, games,
+                 lookback_min, sample_moves, mcts_probe_every, mcts_probe_games,
+                 mcts_probe_sims, wave_size, start_iteration):
+        self.agent = agent
+        self.device = device
+        self.every_min = every_min
+        self.games = games
+        self.lookback_min = lookback_min
+        self.sample_moves = sample_moves
+        self.mcts_probe_every = mcts_probe_every
+        self.mcts_probe_games = mcts_probe_games
+        self.mcts_probe_sims = mcts_probe_sims
+        self.wave_size = wave_size
+
+        self.anchor_path = os.path.join(model_dir, "gauntlet_anchor.pt")
+        self.past_path = os.path.join(model_dir, "gauntlet_past.pt")
+        self.heur = WinBlockAgent()
+        self.last_run_t = 0.0     # 0 -> first gauntlet fires after the first iteration
+        self.n_gauntlets = 0
+
+        # Reusable opponent shell: weights swapped via load_state_dict (no deepcopy).
+        self.opp = NeuralNetAgentPG(cfg=cfg, model_path=None)
+        self.opp.model.to(device)
+        self.opp.device = device
+        self.opp.model.eval()
+
+        if os.path.isfile(self.anchor_path):
+            payload = torch.load(self.anchor_path, map_location=device)
+            self._anchor_sd = payload["state_dict"]
+        else:
+            self._anchor_sd = {k: v.detach().clone()
+                               for k, v in agent.model.state_dict().items()}
+            torch.save({"state_dict": self._anchor_sd, "iter": start_iteration},
+                       self.anchor_path)
+            print(f"[gauntlet] day-one anchor saved (iter {start_iteration})")
+
+        self._past_sd = None
+        self._past_iter = None
+        self._past_t = None
+        if os.path.isfile(self.past_path):
+            payload = torch.load(self.past_path, map_location=device)
+            self._past_sd = payload["state_dict"]
+            self._past_iter = payload.get("iter")
+            self._past_t = payload.get("t", time.time())
+
+    def _net_fn(self, model):
+        return lambda s, mn: _policy_move(model, self.device, s, self.sample_moves, mn)
+
+    def _refresh_past(self, iteration):
+        self._past_sd = {k: v.detach().clone()
+                         for k, v in self.agent.model.state_dict().items()}
+        self._past_iter = iteration
+        self._past_t = time.time()
+        torch.save({"state_dict": self._past_sd, "iter": iteration, "t": self._past_t},
+                   self.past_path)
+
+    @torch.no_grad()
+    def maybe_run(self, iteration):
+        """Returns a dict of gauntlet metrics, or None if not due yet."""
+        if self.every_min <= 0:
+            return None
+        if time.time() - self.last_run_t < self.every_min * 60:
+            return None
+        t0 = time.perf_counter()
+        res = {}
+        cur_fn = self._net_fn(self.agent.model)
+
+        # 1. stationary heuristic yardstick
+        res["wr_heur"] = round(_play_match(
+            cur_fn, lambda s, mn: self.heur.select_move(s), self.games), 4)
+
+        # 2. day-one anchor
+        self.opp.model.load_state_dict(self._anchor_sd)
+        res["wr_anchor"] = round(_play_match(
+            cur_fn, self._net_fn(self.opp.model), self.games), 4)
+
+        # 3. rolling past self
+        if self._past_sd is not None:
+            self.opp.model.load_state_dict(self._past_sd)
+            res["wr_past"] = round(_play_match(
+                cur_fn, self._net_fn(self.opp.model), self.games), 4)
+            res["past_iter"] = self._past_iter
+        if self._past_sd is None or time.time() - self._past_t >= self.lookback_min * 60:
+            self._refresh_past(iteration)
+
+        # 4. search-edge probe (MCTS over current net vs raw current net)
+        if self.mcts_probe_every > 0 and self.n_gauntlets % self.mcts_probe_every == 0:
+            probe = MCTSAgent(self.agent, n_sims=self.mcts_probe_sims,
+                              temperature=0.0, wave_size=self.wave_size)
+            res["mcts_edge"] = round(_play_match(
+                lambda s, mn: probe.select_move(s), cur_fn,
+                self.mcts_probe_games), 4)
+
+        self.n_gauntlets += 1
+        res["gauntlet_secs"] = round(time.perf_counter() - t0, 1)
+        self.last_run_t = time.time()
+        return res
+
+
+def _find_latest_version(model_dir):
+    """Returns (path, index) of the newest version_NNN.pt, or (None, -1)."""
+    best_idx, best_path = -1, None
+    if os.path.isdir(model_dir):
+        for name in os.listdir(model_dir):
+            m = re.fullmatch(r"version_(\d+)\.pt", name)
+            if m and int(m.group(1)) > best_idx:
+                best_idx = int(m.group(1))
+                best_path = os.path.join(model_dir, name)
+    return best_path, best_idx
+
+
 def main():
     ap = argparse.ArgumentParser(description="AlphaZero-style self-play training.")
     ap.add_argument("--checkpoint", type=str, default="",
@@ -229,6 +404,25 @@ def main():
                     help="Games vs random per eval (0 = skip eval).")
     ap.add_argument("--eval_every", type=int, default=5,
                     help="Evaluate every N iterations.")
+    ap.add_argument("--resume", action="store_true",
+                    help="Resume from --model_dir: newest version_NNN.pt weights, "
+                         "run_state.json counters, resume.pt optimizer+buffer if present. "
+                         "Does NOT clear the metrics log. Mutually exclusive with --checkpoint.")
+    ap.add_argument("--gauntlet_every_min", type=float, default=5.0,
+                    help="Wall-clock minutes between gauntlet evals (0 = off). Checked "
+                         "between iterations, so effective cadence is max(this, iter time).")
+    ap.add_argument("--gauntlet_games", type=int, default=20,
+                    help="Games per gauntlet opponent (raw-net matches, seconds each).")
+    ap.add_argument("--gauntlet_lookback_min", type=float, default=30.0,
+                    help="Age of the rolling 'past self' snapshot in minutes.")
+    ap.add_argument("--gauntlet_sample_moves", type=int, default=6,
+                    help="Plies sampled from the policy at the start of each gauntlet "
+                         "game (variety between deterministic nets); argmax after.")
+    ap.add_argument("--mcts_probe_every", type=int, default=4,
+                    help="Run the MCTS-edge probe every Nth gauntlet (0 = never). "
+                         "Costlier than the raw-net matches.")
+    ap.add_argument("--mcts_probe_games", type=int, default=10)
+    ap.add_argument("--mcts_probe_sims", type=int, default=64)
     ap.add_argument("--device", type=str, default="",
                     help="'cpu' / 'cuda' (default: auto).")
     ap.add_argument("--seed", type=int, default=None,
@@ -262,6 +456,9 @@ def main():
         model_dir=args.model_dir,
         value_tanh=args.value_tanh,
     )
+    if args.resume and args.checkpoint:
+        ap.error("--resume and --checkpoint are mutually exclusive")
+
     agent = NeuralNetAgentPG(cfg=cfg, model_path=None)
     if args.checkpoint:
         if not os.path.isfile(args.checkpoint):
@@ -273,19 +470,96 @@ def main():
     agent.device = device
     optimizer = torch.optim.Adam(agent.model.parameters(), lr=args.lr)
 
-    if not args.no_metrics:
-        clear_metrics_log()
-
     buffer = ReplayBuffer(args.buffer_size)
     version_idx = 0
     best_wr = 0.0
+    start_iteration = 0
+    games_total = 0
+
+    run_state_path = os.path.join(args.model_dir, "run_state.json")
+    resume_path = os.path.join(args.model_dir, "resume.pt")
+
+    if args.resume:
+        ver_path, ver_idx = _find_latest_version(args.model_dir)
+        if ver_path is None:
+            ap.error(f"--resume: no version_NNN.pt found in {args.model_dir}")
+        agent.seed_from_checkpoint(ver_path)
+        print(f"Resumed weights from {ver_path}")
+        if os.path.isfile(run_state_path):
+            with open(run_state_path) as f:
+                rs = json.load(f)
+            start_iteration = rs["iteration"]
+            version_idx = rs["version_idx"]
+            best_wr = rs.get("best_wr", 0.0)
+            games_total = rs.get("games_total", 0)
+            print(f"Resumed counters: iter={start_iteration} version={version_idx} "
+                  f"best_wr={best_wr:.3f} games={games_total}")
+        else:
+            # Legacy run (no run_state.json): estimate from the version index.
+            start_iteration = ver_idx + 1
+            version_idx = ver_idx + 1
+            games_total = start_iteration * args.games_per_iter
+            print(f"[!] no run_state.json -- estimated iter={start_iteration}, "
+                  f"games={games_total} from {os.path.basename(ver_path)}")
+        if os.path.isfile(resume_path):
+            # weights_only=False: our own file, contains numpy arrays (buffer pis)
+            # + optimizer state, which the torch>=2.6 safe loader rejects.
+            # map_location cpu: buffer examples live on cpu (train_on_examples
+            # stacks them with fresh cpu examples); optimizer.load_state_dict
+            # re-homes its state to the params' device on its own.
+            payload = torch.load(resume_path, map_location="cpu", weights_only=False)
+            try:
+                optimizer.load_state_dict(payload["optimizer"])
+                print("Resumed optimizer state")
+            except (ValueError, KeyError) as e:
+                print(f"[!] optimizer state incompatible, starting fresh: {e}")
+            if "buffer_x" in payload:
+                xs = payload["buffer_x"]
+                pis = payload["buffer_pi"]
+                zs = payload["buffer_z"]
+                buffer.extend([(xs[i], pis[i], float(zs[i]))
+                               for i in range(xs.shape[0])])
+                print(f"Resumed replay buffer: {len(buffer)} examples")
+        else:
+            print("[!] no resume.pt -- replay buffer starts empty (refills in a few iters)")
+
+    if not args.no_metrics and not args.resume:
+        clear_metrics_log()
+
+    gauntlet = Gauntlet(
+        agent=agent, cfg=cfg, device=device, model_dir=args.model_dir,
+        every_min=args.gauntlet_every_min, games=args.gauntlet_games,
+        lookback_min=args.gauntlet_lookback_min,
+        sample_moves=args.gauntlet_sample_moves,
+        mcts_probe_every=args.mcts_probe_every,
+        mcts_probe_games=args.mcts_probe_games,
+        mcts_probe_sims=args.mcts_probe_sims,
+        wave_size=args.wave_size,
+        start_iteration=start_iteration,
+    )
 
     print(f"AlphaZero training | net={args.network} | device={device} | "
           f"n_sims={args.n_sims} wave={args.wave_size} | value_tanh={args.value_tanh}")
     print(f"  games_per_iter={args.games_per_iter} | train_steps={args.train_steps} | "
           f"batch_size={args.batch_size} | buffer_size={args.buffer_size}")
+    if args.gauntlet_every_min > 0:
+        print(f"  gauntlet: every {args.gauntlet_every_min:g} min | "
+              f"{args.gauntlet_games} games/opponent | "
+              f"past-self lookback {args.gauntlet_lookback_min:g} min | "
+              f"MCTS probe every {args.mcts_probe_every} gauntlets")
 
-    iteration = 0
+    def _save_resume_state():
+        """Persist optimizer + replay buffer for --resume (called on exit)."""
+        payload = {"optimizer": optimizer.state_dict()}
+        if len(buffer) > 0:
+            examples = list(buffer._buf)
+            payload["buffer_x"] = torch.stack([e[0] for e in examples])
+            payload["buffer_pi"] = np.stack([e[1] for e in examples])
+            payload["buffer_z"] = np.array([e[2] for e in examples], dtype=np.float32)
+        torch.save(payload, resume_path)
+        print(f"Saved resume state ({len(buffer)} buffered examples) -> {resume_path}")
+
+    iteration = start_iteration
     try:
         while args.iters == 0 or iteration < args.iters:
             t0 = time.perf_counter()
@@ -344,7 +618,11 @@ def main():
                     best_path = os.path.join(args.model_dir, "best.pt")
                     agent.save(best_path)
 
+            # --- Gauntlet (wall-clock paced) ---
+            gres = gauntlet.maybe_run(iteration)
+
             # --- Metrics ---
+            games_total += args.games_per_iter
             if not args.no_metrics:
                 append_metrics(
                     loss=avg_loss,
@@ -353,8 +631,9 @@ def main():
                     value_loss=avg_val,
                     t=time.time(),
                     policy_loss=avg_pol,
-                    games_total=(iteration + 1) * args.games_per_iter,
+                    games_total=games_total,
                     buffer=len(buffer),
+                    extra=gres,
                 )
 
             wr_str = f"{wr*100:.1f}%" if not (isinstance(wr, float) and np.isnan(wr)) else "--"
@@ -365,13 +644,31 @@ def main():
                 f"wr_vs_rand={wr_str} | "
                 f"{elapsed:.1f}s"
             )
+            if gres:
+                parts = [f"heur={gres['wr_heur']*100:.0f}%",
+                         f"day1={gres['wr_anchor']*100:.0f}%"]
+                if "wr_past" in gres:
+                    parts.append(f"past(i{gres['past_iter']})={gres['wr_past']*100:.0f}%")
+                if "mcts_edge" in gres:
+                    parts.append(f"mcts_edge={gres['mcts_edge']*100:.0f}%")
+                print(f"     gauntlet | {' | '.join(parts)} | {gres['gauntlet_secs']}s")
 
             iteration += 1
+
+            # --- Run state (cheap, every iteration; enables --resume) ---
+            with open(run_state_path, "w") as f:
+                json.dump({"iteration": iteration, "version_idx": version_idx,
+                           "best_wr": best_wr, "games_total": games_total}, f)
 
     except KeyboardInterrupt:
         print("\nInterrupted. Saving final checkpoint...")
         agent.save(os.path.join(args.model_dir, "final.pt"))
         print("Saved.")
+    finally:
+        try:
+            _save_resume_state()
+        except Exception as e:  # never let the resume save mask the real exit
+            print(f"[!] failed to save resume state: {e}")
 
 
 if __name__ == "__main__":
