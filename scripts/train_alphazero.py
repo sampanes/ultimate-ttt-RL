@@ -143,8 +143,11 @@ def collect_game(model, device, n_sims: int, c_puct: float,
                  dir_alpha: float, dir_eps: float,
                  wave_size: int, temperature_moves: int,
                  use_tactics: bool = True,
-                 opponent_fn=None) -> Tuple[List[Example], int]:
-    """Play one training game; returns (examples, winner).
+                 opponent_fn=None) -> Tuple[List[Example], int, dict]:
+    """Play one training game; returns (examples, winner, stats).
+
+    stats: tac_wins (win-in-1 shortcuts taken), tac_dodges (positions where
+    the losing-move filter actually changed pi), moves (total game plies).
 
     Pure self-play when opponent_fn is None (both sides use MCTS, both sides'
     positions are recorded). With opponent_fn, the net takes a random color,
@@ -164,6 +167,8 @@ def collect_game(model, device, n_sims: int, c_puct: float,
     state = GameState()
     trajectory = []  # (tensor, pi, player)
     move_num = 0
+    tac_wins = 0
+    tac_dodges = 0
 
     while not state.is_over():
         if net_side is not None and state.player != net_side:
@@ -176,6 +181,7 @@ def collect_game(model, device, n_sims: int, c_puct: float,
         if use_tactics:
             forced_pi, forced_move = _tactical_target(state, valid)
             if forced_pi is not None:
+                tac_wins += 1
                 x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
                 trajectory.append((x, forced_pi, state.player))
                 state.make_move(forced_move)
@@ -184,7 +190,10 @@ def collect_game(model, device, n_sims: int, c_puct: float,
 
         pi, _ = mcts.search(state)
         if use_tactics:
-            pi = _filter_losing(pi, state, valid)
+            filtered = _filter_losing(pi, state, valid)
+            if filtered is not pi:  # _filter_losing returns pi unchanged when nothing to zero
+                tac_dodges += 1
+            pi = filtered
 
         x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
         trajectory.append((x, pi.copy(), state.player))
@@ -215,7 +224,8 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             z = -1.0
         examples.append((x, pi, z))
 
-    return examples, winner
+    stats = {"tac_wins": tac_wins, "tac_dodges": tac_dodges, "moves": move_num}
+    return examples, winner, stats
 
 
 def train_on_examples(model, optimizer, examples: List[Example],
@@ -743,11 +753,12 @@ def main():
             agent.model.eval()
             new_examples: List[Example] = []
             sp_draws = 0
+            tac_wins = tac_dodges = moves_total = 0
             for g in range(args.games_per_iter):
                 opponent_fn = None
                 if args.opp_mix > 0 and random.random() < args.opp_mix:
                     _, opponent_fn = pool.sample_opponent_fn()
-                exs, winner = collect_game(
+                exs, winner, gstats = collect_game(
                     model=agent.model,
                     device=device,
                     n_sims=args.n_sims,
@@ -760,8 +771,20 @@ def main():
                     opponent_fn=opponent_fn,
                 )
                 new_examples.extend(exs)
+                tac_wins += gstats["tac_wins"]
+                tac_dodges += gstats["tac_dodges"]
+                moves_total += gstats["moves"]
                 if winner == DRAW:
                     sp_draws += 1
+
+            # Mean entropy of this iteration's policy targets: the M4a plateau's
+            # smoking gun was near-uniform targets (max = ln(81) ~ 4.39 nats).
+            # Falling entropy = sharpening targets = the search is decisive.
+            pi_ent = float('nan')
+            if new_examples:
+                pis = np.stack([e[1] for e in new_examples])
+                pi_ent = float(-(pis * np.log(pis + 1e-12)).sum(axis=1).mean())
+
             buffer.extend(new_examples)
             pool.maybe_add(agent.model, iteration, args.pool_every)
 
@@ -807,14 +830,21 @@ def main():
 
             # --- Metrics ---
             games_total += args.games_per_iter
-            extra = {"sp_draws": round(sp_draws / args.games_per_iter, 3)}
+            gpi = args.games_per_iter
+            extra = {
+                "sp_draws": round(sp_draws / gpi, 3),
+                "tac_w": round(tac_wins / gpi, 2),
+                "tac_d": round(tac_dodges / gpi, 2),
+                "pi_ent": round(pi_ent, 3) if np.isfinite(pi_ent) else None,
+                "avg_len": round(moves_total / gpi, 1),
+            }
             if gres:
                 extra.update(gres)
             if not args.no_metrics:
                 append_metrics(
                     loss=avg_loss,
                     epsilon=float('nan'),
-                    winrate=wr if not np.isnan(wr) else 0.0,
+                    winrate=wr,  # NaN on non-eval iters -> null in the jsonl
                     value_loss=avg_val,
                     t=time.time(),
                     policy_loss=avg_pol,
@@ -830,6 +860,8 @@ def main():
                 f"loss={avg_loss:.4f} (pol={avg_pol:.4f} val={avg_val:.4f}) | "
                 f"wr_vs_rand={wr_str} | "
                 f"draws={sp_draws}/{args.games_per_iter} | "
+                f"ent={pi_ent:.2f} | "
+                f"tac={tac_wins}/{tac_dodges} | "
                 f"{elapsed:.1f}s"
             )
             if gres:

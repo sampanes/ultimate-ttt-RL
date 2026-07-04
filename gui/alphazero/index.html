@@ -234,11 +234,8 @@
     }
     .chart-grid-2 {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: 0.7rem;
-    }
-    @media (max-width: 1100px) {
-      .chart-grid-2 { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 860px) {
       .chart-grid, .chart-grid-2 { grid-template-columns: 1fr; }
@@ -461,6 +458,17 @@
     <div class="stat-value" id="s-buffer">--</div>
     <div class="stat-sub" id="s-buffer-sub">&nbsp;</div>
   </div>
+  <div class="stat-card pink" id="card-tac">
+    <div class="stat-label">Kill shots / game</div>
+    <div class="stat-value" id="s-tac">--</div>
+    <div class="stat-sub" id="s-tac-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card purple" id="card-sharp">
+    <div class="stat-label">Target sharpness</div>
+    <div class="stat-value" id="s-sharp">--</div>
+    <div class="stat-sub" id="s-sharp-sub">&nbsp;</div>
+    <div class="mini-bar aqua" title="1 - entropy/ln(81); higher = decisive search"><div id="sharp-bar"></div></div>
+  </div>
   <div class="stat-card yellow" id="card-next">
     <div class="stat-label">Next milestone</div>
     <div class="stat-value" id="s-next">--</div>
@@ -518,6 +526,15 @@
   <div class="card chart-mid">
     <div class="card-title">Value loss</div>
     <div class="chart-wrap"><canvas id="chart-vloss"></canvas></div>
+  </div>
+  <div class="card chart-mid">
+    <div class="card-title">
+      Self-play quality
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+        sharper targets + fewer draws = decisive games
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-quality"></canvas></div>
   </div>
   <div class="card chart-mid">
     <div class="card-title">
@@ -655,6 +672,28 @@ const chartGauntlet = new Chart(document.getElementById('chart-gauntlet'), {
     { ..._mkDataset('parity', '#4b5563', [2,4]), borderWidth: 1, pointRadius: 0, spanGaps: true },
   ]},
   options: gauntletOpts,
+});
+
+// ==== Self-play quality chart ==============================================
+// Target sharpness = 1 - pi_ent / ln(81): 0% = uniform MCTS targets (the M4a
+// plateau's smoking gun), 100% = one-hot. Draw rate falling = decisive games.
+const ENT_MAX = Math.log(81);
+const qualOpts = _baseOpts('rate', '#f59e0b');
+qualOpts.scales.y.min = 0; qualOpts.scales.y.max = 1;
+qualOpts.scales.yRight = {
+  position: 'right', grid: { drawOnChartArea: false },
+  ticks: { color: TICK, font: { size: 10 } },
+  title: { display: true, text: 'avg game length', color: '#8b97a8', font: { size: 10 } },
+  beginAtZero: false,
+};
+const chartQual = new Chart(document.getElementById('chart-quality'), {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { ..._mkDataset('draw rate', '#f59e0b'), spanGaps: true },
+    { ..._mkDataset('target sharpness', '#a78bfa'), spanGaps: true },
+    { ..._mkDataset('avg game length', '#64748b', [4,3]), yAxisID: 'yRight', spanGaps: true, borderWidth: 1.5 },
+  ]},
+  options: qualOpts,
 });
 
 // ==== State ================================================================
@@ -849,7 +888,7 @@ document.getElementById('btn-log-scale').addEventListener('click', () => {
 });
 
 function _resetZoom() {
-  [chartLoss, chartWr, chartVloss, chartGauntlet].forEach(c => c.resetZoom());
+  [chartLoss, chartWr, chartVloss, chartGauntlet, chartQual].forEach(c => c.resetZoom());
 }
 
 // ==== Redraw ===============================================================
@@ -894,6 +933,15 @@ function _redraw() {
   chartGauntlet.data.datasets[3].data = gEdge;
   chartGauntlet.data.datasets[4].data = labels.map(() => 0.5);
   chartGauntlet.update('none');
+
+  const draws = data.map(d => isFinite(d.sp_draws) ? d.sp_draws : NaN);
+  const sharp = data.map(d => isFinite(d.pi_ent) ? Math.max(0, 1 - d.pi_ent / ENT_MAX) : NaN);
+  const glen  = data.map(d => isFinite(d.avg_len) ? d.avg_len : NaN);
+  chartQual.data.labels           = labels;
+  chartQual.data.datasets[0].data = _ds(_smooth ? _ma(draws, W) : draws, MAX_PTS);
+  chartQual.data.datasets[1].data = _ds(_smooth ? _ma(sharp, W) : sharp, MAX_PTS);
+  chartQual.data.datasets[2].data = _ds(_smooth ? _ma(glen, W)  : glen,  MAX_PTS);
+  chartQual.update('none');
 }
 
 // ==== Throughput math ======================================================
@@ -1003,6 +1051,28 @@ function _updateCards(data) {
     document.getElementById('s-buffer-sub').textContent = 'no buffer field';
   }
 
+  // tactics: win-in-1 shortcuts taken + losing moves filtered, per game
+  if (isFinite(last.tac_w)) {
+    _setStat('s-tac', last.tac_w, v => _fmt(v, 2));
+    document.getElementById('s-tac-sub').textContent =
+      isFinite(last.tac_d) ? _fmt(last.tac_d, 2) + ' blunders dodged /game' : 'win-in-1 taken';
+  } else {
+    document.getElementById('s-tac').textContent = '--';
+    document.getElementById('s-tac-sub').textContent = 'needs tac_w field';
+  }
+
+  // target sharpness (1 - entropy/ln81)
+  if (isFinite(last.pi_ent)) {
+    const sharp = Math.max(0, 1 - last.pi_ent / ENT_MAX);
+    _setStat('s-sharp', sharp, v => (v * 100).toFixed(0) + '%');
+    document.getElementById('s-sharp-sub').textContent =
+      'target entropy ' + last.pi_ent.toFixed(2) + ' nats';
+    document.getElementById('sharp-bar').style.width = (sharp * 100).toFixed(1) + '%';
+  } else {
+    document.getElementById('s-sharp').textContent = '--';
+    document.getElementById('s-sharp-sub').textContent = 'needs pi_ent field';
+  }
+
   // vs day-one self (latest gauntlet line)
   let gLast = null;
   for (let i = data.length - 1; i >= 0; i--) {
@@ -1082,6 +1152,7 @@ function _deriveEvents(data) {
   const wrHit = new Set(), gameHit = new Set(), lossHit = new Set();
   const lvlSeen = new Set();
   const anchorHit = new Set(), heurHit = new Set(), edgeHit = new Set();
+  const sharpHit = new Set();
 
   data.forEach((d, i) => {
     const iter = i + 1;
@@ -1136,6 +1207,17 @@ function _deriveEvents(data) {
           text: 'win/block bot down ' + (t * 100).toFixed(0) + '%+' });
       }
     }
+    // target sharpness crossings
+    if (isFinite(d.pi_ent)) {
+      const sh = 1 - d.pi_ent / ENT_MAX;
+      for (const t of [0.3, 0.5, 0.7]) {
+        if (!sharpHit.has(t) && sh >= t) {
+          sharpHit.add(t);
+          events.push({ iter, kind: 'level',
+            text: 'target sharpness past ' + (t * 100).toFixed(0) + '% -- search is decisive' });
+        }
+      }
+    }
     for (const t of [0.9, 0.75, 0.6]) {
       if (!edgeHit.has(t) && isFinite(d.mcts_edge) && d.mcts_edge <= t) {
         edgeHit.add(t);
@@ -1183,6 +1265,14 @@ function _buildHype(data) {
   if (isFinite(games)) {
     const li = _levelInfo(games);
     msgs.push('LVL ' + li.lvl + ' ' + _titleFor(_bestWR) + ' -- ' + (li.frac * 100).toFixed(0) + '% to LVL ' + (li.lvl + 1));
+  }
+  if (isFinite(last.tac_w) && last.tac_w > 0) {
+    msgs.push(last.tac_w.toFixed(2) + ' kill shots per game -- never missing a win-in-1');
+  }
+  if (isFinite(last.pi_ent)) {
+    const sh = Math.max(0, 1 - last.pi_ent / ENT_MAX);
+    msgs.push('search targets ' + (sh * 100).toFixed(0) + '% sharp' +
+              (sh >= 0.5 ? ' -- decisive play' : ' and sharpening'));
   }
   const nextThr = WR_MILESTONES.find(t => _bestWR < t);
   if (nextThr) msgs.push('hunting the WR ' + (nextThr * 100).toFixed(0) + '% milestone');

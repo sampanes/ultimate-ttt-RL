@@ -1,10 +1,10 @@
-# Pending — what still needs to happen
+# Pending -- what still needs to happen
 
 Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
-## Throughput benchmark harness — DONE + FIXES BAKED (home box, 2026-07-02/03)
+## Throughput benchmark harness -- DONE + FIXES BAKED (home box, 2026-07-02/03)
 
 **All three steps ran; full results + bug reports in `RESULT_PERF_BENCH.md`. The
 authoring-box follow-ups were then done ON the home box (user-approved one-off):**
@@ -28,23 +28,23 @@ Original queue text kept below for reference.
 
 ---
 
-## Throughput benchmark harness — IMPLEMENTED, needs a home-box run
+## Throughput benchmark harness -- IMPLEMENTED, needs a home-box run
 
 `scripts/bench_throughput.py` is built (see `BENCH_THROUGHPUT_PLAN.md` for the full spec).
 One command, one gitignored report; runs `train_league.py`/`train_alphazero.py` as timed
 black-box subprocesses (zero changes to them) with `--no_metrics` + scratch model dirs so
 it never disturbs the dashboard or a real run. Candidates: `--parallel` sweep, `--recompute`
 x `--minibatch_size`, `--network` size, AlphaZero `--wave_size`/`--n_sims`, PLUS the two new
-levers built this pass — `--batch_opponents` and `--compile`/`--amp`.
+levers built this pass -- `--batch_opponents` and `--compile`/`--amp`.
 
 **New levers built (default OFF, benchmark them, then gate before trusting in a long run):**
 - `--batch_opponents` (train_league, commit `ee60478`): batches the opponent forward passes
-  in `ParallelGameRunner` (was unbatched per-slot). Highest-value lever — the Python loop is
+  in `ParallelGameRunner` (was unbatched per-slot). Highest-value lever -- the Python loop is
   the bottleneck, not the GPU. GATE: `python -m scripts.verify_opponent_batch_parity` (proves
   it's byte-identical to the per-slot loop) must PASS.
 - `--compile` / `--amp` (train_league, commit `5b45fa4`): torch.compile a separate
   forward_both callable (state_dict/clone/ONNX untouched) / fp16 autocast + GradScaler.
-  Experimental; AMP has no exact oracle (changes numerics) — validate convergence.
+  Experimental; AMP has no exact oracle (changes numerics) -- validate convergence.
 
 **Home-box steps (in order):**
 ```
@@ -66,7 +66,7 @@ config, use it for the long run, paste the reports back.
 Runs 1-4 and 6 done on the RTX 3080, 2026-06-30 -- results in `RESULT_HOME_QUEUE.md`.
 Run 5 (AlphaZero validation) executes separately. Commands kept for reproducibility.
 
-### 1. MCTS unit tests — lock the sign  [DONE: 7/7 PASS]
+### 1. MCTS unit tests -- lock the sign  [DONE: 7/7 PASS]
 ```
 python -m agents.test_mcts
 ```
@@ -189,26 +189,26 @@ Files: `gui/arena/templates/index.html`, `gui/arena/arena.js`.
 See `gui/BACKLOG.md` for full backlog.
 
 ### Part B: training throttle/pause knob
-File-based `loss_logs/control.json` → trainer polls between games and sleeps to target rate.
+File-based `loss_logs/control.json` -> trainer polls between games and sleeps to target rate.
 Zero = pause (holds in-memory state, resume instant).
 Files: `scripts/train_league.py` (poll loop), `gui/arena/templates/index.html` (Training tab button).
 
 ---
 
-## M3 — next milestone (torch + home box)
+## M3 -- next milestone (torch + home box)
 
 **Authoring-box work DONE:**
-- `scripts/export_onnx.py` — exports arena:21@hof to ONNX + dynamic int8 (home runs it)
-- `scripts/gen_golden_vectors.py` — generates `docs/play/golden_vectors.json` from Python engine
-- `docs/play/golden_vectors.json` — 50-game, 2957-ply correctness fixture (seed 0)
-- `docs/play/test_engine.html` — browser golden-vector test runner (open to verify JS engine)
-- `docs/play/uttt_engine.js` — full game engine port (home box wrote)
-- `docs/play/agent.js` — ONNX inference wrapper + PUCT MCTS (Hard=50 sims, Easy/Medium=raw policy)
-- `docs/play/index.html` + `docs/index.html` — complete play page + landing page (home box wrote)
+- `scripts/export_onnx.py` -- exports arena:21@hof to ONNX + dynamic int8 (home runs it)
+- `scripts/gen_golden_vectors.py` -- generates `docs/play/golden_vectors.json` from Python engine
+- `docs/play/golden_vectors.json` -- 50-game, 2957-ply correctness fixture (seed 0)
+- `docs/play/test_engine.html` -- browser golden-vector test runner (open to verify JS engine)
+- `docs/play/uttt_engine.js` -- full game engine port (home box wrote)
+- `docs/play/agent.js` -- ONNX inference wrapper + PUCT MCTS (Hard=50 sims, Easy/Medium=raw policy)
+- `docs/play/index.html` + `docs/index.html` -- complete play page + landing page (home box wrote)
 
 **Home-box steps -- DONE (2026-07-01):**
 1. [DONE] Run export: `python -m scripts.export_onnx --candidate arena:21@hof --quantize`
-   → fp32 5035 KB (intermediate, gitignored), int8 1283 KB committed as docs/models/model_int8.onnx
+   -> fp32 5035 KB (intermediate, gitignored), int8 1283 KB committed as docs/models/model_int8.onnx
 2. [DONE] Committed as bba60f6 (feat(m3): add int8 ONNX pocket model)
 3. [DONE] Parity: top-1 move matches torch in all sampled positions; value error < 1.1%
 4. [DONE (partial)] Bundle bytes: 1283 KB int8 (M3 gate cleared). Python move latency 0.77ms CPU
@@ -225,7 +225,7 @@ hash, passes golden-vector suite, MCTS Hard mode responds in <1s.
 
 See `SHIP_PLAN.md` M3 section for full exit gate.
 
-## M4 — AlphaZero long run (home box)
+## M4 -- AlphaZero long run (home box)
 
 **M4a (2026-07-03): plateaued, archived to `models/alphazero_m4_flat/`.**
 15h / 77k games / ~1,500 iters with every yardstick flat (wr vs random pinned 54-57%,
@@ -252,3 +252,15 @@ bland random position).
 Watch on the dashboard: wr_heur (win/block bot) rising is the primary signal the
 tactical blindness is fixed; past-self off 50% means real iteration-over-iteration
 growth; sp_draws falling means games are decisive enough to carry value signal.
+
+**M4b addendum (2026-07-04, mid-run restart at iter 63 via --resume):** new per-iter
+metrics logged so the plateau's smoking gun is visible live, plus dashboard support
+(quality chart + kill-shot/sharpness cards):
+- `pi_ent`: mean entropy of the iteration's policy targets (M4a sat pinned near
+  ln(81)=4.39; falling = search is decisive). Dashboard shows "target sharpness"
+  = 1 - pi_ent/ln(81).
+- `tac_w` / `tac_d`: win-in-1 shortcuts taken and losing-move filters applied, per game
+- `avg_len`: mean game length in plies
+- `winrate` is now null (not 0.0) on non-eval iterations
+Graceful-stop note: taskkill /F skips the finally-block resume save; send Ctrl+C
+(GenerateConsoleCtrlEvent via AttachConsole) so resume.pt (optimizer + buffer) lands.
