@@ -184,6 +184,22 @@
       padding: 0.8rem 1rem;
       position: relative; overflow: hidden;
       transition: border-color 0.3s, box-shadow 0.3s;
+      cursor: pointer;
+    }
+    .stat-card.info-open { border-color: var(--accent); }
+    /* ephemeral tap-to-explain popover for stat cards */
+    #card-info {
+      position: fixed; z-index: 200; max-width: 270px;
+      background: var(--surface2, #1c2430); color: var(--text);
+      border: 1px solid var(--accent); border-radius: 8px;
+      padding: 0.6rem 0.75rem; font-size: 0.72rem; line-height: 1.45;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+      opacity: 0; pointer-events: none; transition: opacity 0.15s;
+    }
+    #card-info.show { opacity: 1; pointer-events: auto; }
+    #card-info .ci-title {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--accent); margin-bottom: 0.3rem;
     }
     .stat-card.bump { animation: bump 0.55s ease; }
     @keyframes bump {
@@ -639,8 +655,11 @@ wrOpts.scales.y.min = 0; wrOpts.scales.y.max = 1;
 const chartWr = new Chart(document.getElementById('chart-wr'), {
   type: 'line',
   data: { labels: [], datasets: [
-    { ..._mkDataset('Win rate', '#22c55e') },
-    { ..._mkDataset('Best WR', '#f59e0b', [6,4]), borderWidth: 1.5 },
+    // winrate is sparse (only gate blocks carry it) -- without spanGaps the
+    // NaN gaps cut the line into invisible zero-radius points and all you see
+    // is the dashed best-WR line.
+    { ..._mkDataset('Win rate', '#22c55e'), spanGaps: true, pointRadius: 2.5, pointHoverRadius: 5 },
+    { ..._mkDataset('Best WR', '#f59e0b', [6,4]), borderWidth: 1.5, spanGaps: true },
   ]},
   options: wrOpts,
 });
@@ -1480,6 +1499,72 @@ function _showNoData() {
   document.getElementById('no-data').style.display      = 'block';
   document.getElementById('main-content').style.display = 'none';
 }
+
+// ==== Stat-card tap-to-explain popover =====================================
+// Tap/click a stat card -> ephemeral popover explaining what the number means.
+// Dismissed by tapping anywhere, tapping the card again, or after 10 seconds.
+const CARD_INFO = {
+  'card-iter':      ['Iteration', 'One generate/train block: the teacher (MCTS-200 over the current teacher net) plays 16 self-play games, then the student takes 100 SGD steps on the visit-count targets. The sub-line shows the current teacher generation.'],
+  'card-games':     ['Games played', 'Total teacher self-play games this run. These games are the training data; the bar underneath is a just-for-fun XP meter to the next games milestone.'],
+  'card-gph':       ['Games / hour', 'Teacher self-play throughput. Search-quality games are slow by design (200 sims per move); if this drops sharply, something is contending for the GPU.'],
+  'card-loss':      ['Loss (now)', 'Student training loss: policy cross-entropy vs the MCTS visit distribution, plus value MSE vs the game result. Falling = distilling. It can drift UP right after a promotion because the data starts coming from a stronger teacher.'],
+  'card-vloss':     ['Value loss', 'MSE between the student value head (tanh, -1..+1) and the actual game outcome z. Lower = better at judging who is winning from a single glance at the board.'],
+  'card-wr':        ['Win rate (now)', 'Raw student net -- single forward pass, NO search -- vs a uniformly random player. 40 games every ~5 min, draws count 0.5, first 6 plies sampled for variety. This isolates the policy head; the shipped agent also gets search on top.'],
+  'card-best-wr':   ['Best WR ever', 'Highest win-rate-vs-random probe seen this run. A high-water mark, so it only moves when a new probe beats every previous one.'],
+  'card-loss-drop': ['Loss reduction', 'How far current loss has fallen relative to early in the run. Rough progress feel only -- the target distribution shifts every promotion, so this is not comparable across teacher generations.'],
+  'card-buffer':    ['Replay buffer', 'Positions in the training window (cap 200k). Every block adds ~880 positions as a shard on disk; once full, the oldest fall out so the student always trains on recent teacher strength.'],
+  'card-tac':       ['Kill shots / game', 'Immediate tactical moves per self-play game: taking a mini-board win or blocking one. Ground-truth tactics injected during generation so the targets always contain the forced move when one exists.'],
+  'card-sharp':     ['Target sharpness', '1 - entropy/ln(81) of the MCTS visit targets. 0% = search returned a uniform shrug (the old plateau smoking gun), 100% = all visits on one move. Healthy search on a real position sits well above 50%.'],
+  'card-next':      ['Next milestone', 'The next win-rate-vs-random threshold not yet crossed, and progress toward it. Pure dopamine plumbing.'],
+  'card-day1':      ['vs anchor net', 'Raw student vs the raw CURRENT teacher net (moving anchor -- after each promotion the teacher is a recent student clone, so hovering near 50% is expected). Only the gen-0 reading compared against league best.pt.'],
+};
+(function () {
+  const pop = document.createElement('div');
+  pop.id = 'card-info';
+  document.body.appendChild(pop);
+  let openCard = null, hideTimer = null;
+
+  function hideInfo() {
+    pop.classList.remove('show');
+    if (openCard) openCard.classList.remove('info-open');
+    openCard = null;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  }
+
+  document.addEventListener('click', (ev) => {
+    const card = ev.target.closest('.stat-card');
+    if (!card || !CARD_INFO[card.id]) { hideInfo(); return; }
+    if (card === openCard) { hideInfo(); return; }
+    hideInfo();
+    const [title, body] = CARD_INFO[card.id];
+    pop.innerHTML = '<div class="ci-title"></div><div class="ci-body"></div>';
+    pop.querySelector('.ci-title').textContent = title;
+    pop.querySelector('.ci-body').textContent = body;
+    pop.classList.add('show');
+    card.classList.add('info-open');
+    openCard = card;
+    // position under the card, clamped to the viewport
+    const r = card.getBoundingClientRect();
+    const pw = Math.min(270, window.innerWidth - 16);
+    pop.style.maxWidth = pw + 'px';
+    let left = r.left;
+    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+    if (left < 8) left = 8;
+    pop.style.left = left + 'px';
+    let top = r.bottom + 6;
+    pop.style.top = top + 'px';
+    // if it would run off the bottom, flip above the card
+    requestAnimationFrame(() => {
+      const ph = pop.offsetHeight;
+      if (top + ph > window.innerHeight - 8) {
+        pop.style.top = Math.max(8, r.top - ph - 6) + 'px';
+      }
+    });
+    hideTimer = setTimeout(hideInfo, 10000);
+    ev.stopPropagation();
+  });
+  window.addEventListener('scroll', hideInfo, { passive: true });
+})();
 
 _fetch();
 setInterval(_fetch, 5000);
