@@ -291,22 +291,25 @@ models/alphazero (version_463 + resume.pt) if ever wanted.
 
 ---
 
-## M5 -- Expert iteration, "goat-train" (home box, live since 2026-07-04)
+## M5 -- Expert iteration v2, "goat-train" (ready 2026-07-05)
 
-New paradigm (scripts/expert_iter.py): stop bootstrapping from random weights;
-distill a PROVEN-strong teacher instead.
-- Teacher: MCTS(200 sims, fixed wave path) over models/league_pg/best.pt
-  (edge 0.875-0.925 vs its raw net). Self-play via train_alphazero.collect_game
-  (Dirichlet 0.10 root noise, temp 10 moves, tactics ground truth on targets).
-- Student: fresh medium net, tanh value head, supervised on (pi_visits, z):
-  data window 200k positions in RAM + disk shards (models/expert_iter/data/) so
-  --resume never loses a game.
-- Gates every 5 min (dashboard-compatible fields): winrate = raw vs random,
-  wr_heur = vs win/block bot, wr_anchor = vs CURRENT TEACHER raw,
-  mcts_edge = MCTS64(student) vs raw student (must stay >= 0.5).
-- PROMOTION every 30 min: MCTS64(student) vs MCTS64(teacher); >= 0.55 -> student
-  becomes teacher, gen++ (logged as teacher_gen; dashboard reel flags it).
-  The shipped artifact is always student + search at eval time.
-- Ops: start_goat.bat / stop_goat.bat (named window "goat-train", graceful
-  Ctrl+C stop, idempotent start). Watch: wr_anchor -> 50%+ means distillation
-  caught the teacher; first promotion is the milestone that matters.
+The first expert-iteration run is invalid for candidate selection. After 9,312
+games and 26 promotions, its last-ten-gate mean against WinBlock was only 0.116.
+The adversarial review and exact evidence are in
+`RESULT_ADVERSARIAL_REVIEW_2026-07-05.md`.
+
+The corrected `scripts/expert_iter.py` now:
+- starts from the independently selected Arena-22 HOF architecture/checkpoint,
+  and initializes the tanh student from those policy weights instead of random;
+- generates 35% of games against WinBlock to cover the measured blind spot;
+- masks policy loss exactly as inference does and applies exact D4 symmetry
+  augmentation;
+- promotes on raw-inference strength over fixed color-swapped openings, plus
+  absolute WinBlock improvement and a random-opponent regression guard;
+- requires 1,000 current-teacher games between promotions, clears stale replay
+  on promotion, and reloads only current-generation shards after resume.
+
+`start_goat.bat` uses the new default `models/expert_iter_v2`; the old
+`models/expert_iter` evidence is preserved and will not be resumed accidentally.
+The milestone is no longer "promotion count." It is sustained raw WinBlock and
+fixed-panel improvement, followed by the full M1 benchmark suite.

@@ -8,9 +8,9 @@ visit target (both fixed, see agents/mcts.py + agents/test_mcts.py). But even
 with search fixed, bootstrapping from random weights at ~1 game/s is
 data-starved. This script starts from PROVEN strength instead:
 
-    teacher = MCTS(teacher_sims) over models/league_pg/best.pt
-    (benchmark 2026-06-30: 16-sim MCTS beats raw best.pt 100%;
-     edge re-verified 0.875-0.925 after the wave fixes)
+    teacher = MCTS(teacher_sims) over the independently selected Arena-22 HOF
+    checkpoint (RESULT_M2.md), with a fixed slice of games against WinBlockAgent
+    to cover the repo's measured tactical blind spot.
 
 Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   1. GENERATE: teacher self-play games via train_alphazero.collect_game
@@ -22,9 +22,11 @@ Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   3. GATE (wall-clock paced, dashboard-friendly): student raw vs random /
      WinBlockAgent / teacher raw, plus the search invariant (MCTS over
      student must score >= 0.5 vs raw student -- below that, halt and debug).
-  4. PROMOTE: when MCTS(student) beats MCTS(teacher) >= --promote_thresh,
-     the student's weights BECOME the teacher and generation increments.
-     The shipped artifact is always student + search at eval time.
+  4. PROMOTE: only when the RAW student beats the RAW teacher on fixed,
+     color-swapped openings, improves the absolute WinBlock score, preserves
+     random-opponent strength, and has trained on enough current-teacher games.
+     Old-generation replay is discarded on promotion. This optimizes the actual
+     inference-only artifact instead of a noisy search-vs-search proxy.
 
 Metrics go to loss_logs/metrics_log.jsonl -- the AZ dashboard
 (gui/alphazero/index.html) renders them unchanged: 'winrate' = student raw
@@ -48,13 +50,15 @@ import torch
 torch.set_float32_matmul_precision("high")
 
 from agents.agent_base import ModelConfigCNN
-from engine.constants import DRAW
+from engine.constants import X, O, DRAW
+from engine.game import GameState
+from engine.rules import rule_utl_valid_moves
 from agents.deterministics import WinBlockAgent
 from agents.mcts import MCTS
 from agents.neural_net_agent_pg import NeuralNetAgentPG
 from agents.random_agent import RandomAgent
 from scripts.train_alphazero import (NETWORK_CONFIGS, ReplayBuffer,
-                                     _play_match, _policy_move, collect_game,
+                                     _policy_move, collect_game,
                                      train_on_examples)
 from scripts.trainer_base import append_metrics, clear_metrics_log, format_elapsed
 
@@ -104,7 +108,7 @@ class ShardStore:
         torch.save({"x": xs, "pi": pis, "z": zs, "teacher_gen": teacher_gen},
                    self._path(idx))
 
-    def load_window(self, last_idx, max_examples):
+    def load_window(self, last_idx, max_examples, teacher_gen=None):
         """Newest-first reload into (examples, count) until max_examples."""
         examples = []
         idx = last_idx
@@ -112,6 +116,14 @@ class ShardStore:
             p = self._path(idx)
             if os.path.isfile(p):
                 d = torch.load(p, map_location="cpu", weights_only=False)
+                shard_gen = int(d.get("teacher_gen", 0))
+                if teacher_gen is not None and shard_gen != teacher_gen:
+                    # Generations are monotonic. Once the newest-first scan
+                    # reaches an older teacher, no earlier shard is admissible.
+                    if shard_gen < teacher_gen:
+                        break
+                    idx -= 1
+                    continue
                 for i in range(d["x"].shape[0]):
                     examples.append((d["x"][i], d["pi"][i].numpy(),
                                      float(d["z"][i])))
@@ -142,15 +154,108 @@ def _save_teacher(path, model, value_tanh, gen):
 
 
 # --------------------------------------------------------------------------- #
+# Fixed inference-only evaluation
+# --------------------------------------------------------------------------- #
+
+def _eval_openings(n_games, seed=20260705):
+    """Build a reproducible diverse opening panel (two colors per opening)."""
+    pairs = max(1, (int(n_games) + 1) // 2)
+    rng = random.Random(seed)
+    openings = []
+    for i in range(pairs):
+        state = GameState()
+        moves = []
+        target_plies = 4 + (i % 7)  # cover early positions at plies 4..10
+        for _ in range(target_plies):
+            valid = rule_utl_valid_moves(
+                state.board, state.last_move, state.mini_winners)
+            if not valid or state.is_over():
+                break
+            move = rng.choice(valid)
+            ok, _ = state.make_move(move)
+            if not ok:
+                raise RuntimeError(f"opening generator produced illegal move {move}")
+            moves.append(move)
+        if not state.is_over():
+            openings.append(tuple(moves))
+    if not openings:
+        raise RuntimeError("failed to generate non-terminal evaluation openings")
+    return openings
+
+
+def _play_fixed_match(move_fn_a, move_fn_b, n_games, seed=20260705):
+    """Inference-only score on fixed openings with colors swapped.
+
+    The RNG is reset per game so stochastic anchors such as WinBlockAgent have
+    reproducible fallbacks. Candidate move functions used for promotion are raw
+    argmax (no sampling, no MCTS).
+    """
+    openings = _eval_openings(n_games, seed)
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    score = 0.0
+    played = 0
+    try:
+        for opening_idx, opening in enumerate(openings):
+            for a_side in (X, O):
+                if played >= n_games:
+                    break
+                game_seed = seed + opening_idx * 2 + (0 if a_side == X else 1)
+                random.seed(game_seed)
+                np.random.seed(game_seed & 0xFFFFFFFF)
+                state = GameState()
+                for move in opening:
+                    ok, _ = state.make_move(move)
+                    if not ok:
+                        raise RuntimeError(
+                            f"fixed opening contains illegal move {move}")
+                move_num = len(opening)
+                while not state.is_over():
+                    fn = move_fn_a if state.player == a_side else move_fn_b
+                    move = fn(state, move_num)
+                    valid = rule_utl_valid_moves(
+                        state.board, state.last_move, state.mini_winners)
+                    if not isinstance(move, (int, np.integer)) or move not in valid:
+                        raise RuntimeError(
+                            f"evaluation agent returned illegal move {move}")
+                    state.make_move(int(move))
+                    move_num += 1
+                if state.winner == a_side:
+                    score += 1.0
+                elif state.winner == DRAW:
+                    score += 0.5
+                played += 1
+    finally:
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+    return score / played
+
+
+def _promotion_decision(head_to_head, heur_score, random_score,
+                        best_heur, best_random, threshold,
+                        absolute_margin, random_tolerance):
+    """Return (promote, failed gates) for an inference-objective promotion."""
+    failed = []
+    if head_to_head < threshold:
+        failed.append("head_to_head")
+    if heur_score < min(1.0, best_heur + absolute_margin):
+        failed.append("winblock")
+    if random_score < best_random - random_tolerance:
+        failed.append("random_regression")
+    return not failed, failed
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
 def main():
     ap = argparse.ArgumentParser(
         description="Expert iteration: MCTS teacher -> student distillation.")
-    ap.add_argument("--network", choices=list(NETWORK_CONFIGS), default="medium")
+    ap.add_argument("--network", choices=list(NETWORK_CONFIGS), default="arena22")
     ap.add_argument("--teacher_ckpt", type=str,
-                    default=os.path.join("models", "league_pg", "best.pt"),
+                    default=os.path.join("models", "arena", "hall_of_fame",
+                                         "06-27-26_elo1864.pt"),
                     help="Gen-0 teacher weights (ignored on --resume with state).")
     ap.add_argument("--teacher_tanh", action=argparse.BooleanOptionalAction,
                     default=False,
@@ -173,6 +278,9 @@ def main():
                     help="Dirichlet mix at the teacher's search root.")
     ap.add_argument("--dir_alpha", type=float, default=0.3)
     ap.add_argument("--temperature_moves", type=int, default=10)
+    ap.add_argument("--opp_mix", type=float, default=0.35,
+                    help="Fraction of expert games played against WinBlockAgent "
+                         "to cover the repo's measured tactical blind spot.")
     ap.add_argument("--gate_min", type=float, default=5.0,
                     help="Minutes between gate evals (raw matches + edge probe).")
     ap.add_argument("--gate_games", type=int, default=40)
@@ -180,19 +288,28 @@ def main():
                     help="Sims for the search-invariant probe.")
     ap.add_argument("--edge_games", type=int, default=20)
     ap.add_argument("--promote_min", type=float, default=30.0,
-                    help="Minutes between promotion matches (search vs search).")
-    ap.add_argument("--promote_sims", type=int, default=64)
+                    help="Minimum minutes between inference promotion checks.")
     ap.add_argument("--promote_games", type=int, default=40)
     ap.add_argument("--promote_thresh", type=float, default=0.55,
-                    help="MCTS(student) score vs MCTS(teacher) to promote.")
+                    help="Raw student score vs raw teacher on fixed openings.")
+    ap.add_argument("--min_promote_games", type=int, default=1000,
+                    help="Minimum new expert games between teacher changes.")
+    ap.add_argument("--promote_margin", type=float, default=0.02,
+                    help="Required absolute WinBlock score improvement.")
+    ap.add_argument("--random_tolerance", type=float, default=0.03,
+                    help="Maximum allowed regression against random.")
     ap.add_argument("--model_dir", type=str,
-                    default=os.path.join("models", "expert_iter"))
+                    default=os.path.join("models", "expert_iter_v2"))
     ap.add_argument("--blocks", type=int, default=0, help="0 = run forever.")
     ap.add_argument("--resume", action="store_true",
                     help="Continue from model_dir state if present, else fresh.")
     ap.add_argument("--no_metrics", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
+    if not 0.0 <= args.opp_mix <= 1.0:
+        ap.error("--opp_mix must be in [0, 1]")
+    if args.promote_games < 2 or args.gate_games < 2:
+        ap.error("--promote_games and --gate_games must be at least 2")
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -208,6 +325,15 @@ def main():
     store = ShardStore(os.path.join(args.model_dir, "data"))
 
     resuming = args.resume and os.path.isfile(state_path)
+    saved_state = None
+    if resuming:
+        with open(state_path) as f:
+            saved_state = json.load(f)
+        saved_network = saved_state.get("network")
+        if saved_network is not None and saved_network != args.network:
+            raise RuntimeError(
+                f"resume architecture mismatch: state uses {saved_network!r}, "
+                f"command requested {args.network!r}")
 
     # ---- teacher ----------------------------------------------------------
     if resuming:
@@ -242,15 +368,17 @@ def main():
     shard_idx = -1
     games_total = 0
     steps_total = 0
+    games_since_promotion = 0
     buffer = ReplayBuffer(args.window)
 
     if resuming:
-        with open(state_path) as f:
-            st = json.load(f)
+        st = saved_state
         block = st["block"]
         shard_idx = st["shard_idx"]
         games_total = st["games_total"]
         steps_total = st["steps_total"]
+        games_since_promotion = st.get(
+            "games_since_promotion", games_total)
         teacher_gen = st["teacher_gen"]
         sd = torch.load(student_path, map_location=device, weights_only=False)
         student.model.load_state_dict(sd["state_dict"])
@@ -258,15 +386,32 @@ def main():
             opt_sd = torch.load(resume_path, map_location="cpu",
                                 weights_only=False)
             optimizer.load_state_dict(opt_sd["optimizer"])
-        buffer.extend(store.load_window(shard_idx, args.window))
+        buffer.extend(store.load_window(
+            shard_idx, args.window, teacher_gen=teacher_gen))
         print(f"Resumed: block {block}, {games_total} games, "
               f"{len(buffer)} positions reloaded, teacher gen {teacher_gen}")
     else:
+        # Preserve the strongest known policy at step zero. Starting the student
+        # from random weights threw away the verified Arena policy and spent the
+        # first phase relearning it. Tanh changes only the value output; policy
+        # logits remain byte-identical and the value head is then recalibrated.
+        student.model.load_state_dict(teacher.model.state_dict())
         if not args.no_metrics:
             clear_metrics_log()
 
     heur = WinBlockAgent()
     rnd = RandomAgent()
+    raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
+    best_heur = (saved_state.get("best_heur") if saved_state else None)
+    best_random = (saved_state.get("best_random") if saved_state else None)
+    if best_heur is None:
+        best_heur = _play_fixed_match(
+            raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
+    if best_random is None:
+        best_random = _play_fixed_match(
+            raw_teacher, _agent_fn(rnd), args.promote_games, seed=4401)
+    print(f"Inference promotion baseline | winblock={best_heur:.3f} | "
+          f"random={best_random:.3f}")
     last_gate_t = 0.0      # fire the first gate after the first block
     last_promote_t = time.time()
     t_start = time.time()
@@ -277,7 +422,12 @@ def main():
         with open(state_path, "w") as f:
             json.dump({"block": block, "shard_idx": shard_idx,
                        "games_total": games_total, "steps_total": steps_total,
-                       "teacher_gen": teacher_gen}, f)
+                       "teacher_gen": teacher_gen,
+                       "games_since_promotion": games_since_promotion,
+                       "best_heur": best_heur,
+                       "best_random": best_random,
+                       "network": args.network,
+                       "schema_version": 2}, f)
 
     print(f"Expert iteration on {device} | network={args.network} | "
           f"teacher_sims={args.teacher_sims} | window={args.window}")
@@ -291,8 +441,13 @@ def main():
             new_examples = []
             draws = 0
             moves_total = 0
+            opponent_games = 0
             with torch.no_grad():
                 for _ in range(args.games_per_block):
+                    opponent_fn = None
+                    if random.random() < args.opp_mix:
+                        opponent_fn = lambda s: heur.select_move(s)
+                        opponent_games += 1
                     exs, winner, gstats = collect_game(
                         model=teacher.model,
                         device=device,
@@ -303,13 +458,14 @@ def main():
                         wave_size=64,   # MCTS clamps to n_sims // 16 internally
                         temperature_moves=args.temperature_moves,
                         use_tactics=True,
-                        opponent_fn=None,
+                        opponent_fn=opponent_fn,
                     )
                     new_examples.extend(exs)
                     moves_total += gstats["moves"]
                     if winner == DRAW:
                         draws += 1
             games_total += args.games_per_block
+            games_since_promotion += args.games_per_block
             shard_idx += 1
             store.write(shard_idx, new_examples, teacher_gen)
             buffer.extend(new_examples)
@@ -342,23 +498,25 @@ def main():
                 "pi_ent": round(pi_ent, 3),
                 "avg_len": round(moves_total / args.games_per_block, 1),
                 "teacher_gen": teacher_gen,
+                "opponent_games": opponent_games,
             }
             wr_random = float("nan")
             gate_line = ""
             with torch.no_grad():
                 if time.time() - last_gate_t >= args.gate_min * 60:
                     tg0 = time.perf_counter()
-                    stu_fn = _raw_fn(student.model, device)
-                    wr_random = _play_match(stu_fn, _agent_fn(rnd),
-                                            args.gate_games)
-                    extra["wr_heur"] = round(_play_match(
-                        stu_fn, _agent_fn(heur), args.gate_games), 4)
-                    extra["wr_anchor"] = round(_play_match(
-                        stu_fn, _raw_fn(teacher.model, device),
-                        args.gate_games), 4)
-                    extra["mcts_edge"] = round(_play_match(
-                        _search_fn(student.model, device, args.edge_sims),
-                        stu_fn, args.edge_games), 4)
+                    stu_fn = _raw_fn(student.model, device, sample_moves=0)
+                    wr_random = _play_fixed_match(
+                        stu_fn, _agent_fn(rnd), args.gate_games, seed=1101)
+                    extra["wr_heur"] = round(_play_fixed_match(
+                        stu_fn, _agent_fn(heur), args.gate_games, seed=2201), 4)
+                    extra["wr_anchor"] = round(_play_fixed_match(
+                        stu_fn, _raw_fn(teacher.model, device, sample_moves=0),
+                        args.gate_games, seed=5501), 4)
+                    extra["mcts_edge"] = round(_play_fixed_match(
+                        _search_fn(student.model, device, args.edge_sims,
+                                   sample_moves=0),
+                        stu_fn, args.edge_games, seed=6601), 4)
                     extra["gauntlet_secs"] = round(time.perf_counter() - tg0, 1)
                     last_gate_t = time.time()
                     gate_line = (f"     gate | rand={wr_random*100:.0f}% | "
@@ -373,26 +531,54 @@ def main():
                 # ---- 4. PROMOTE? --------------------------------------------
                 if (time.time() - last_promote_t >= args.promote_min * 60
                         and len(buffer) >= args.min_window
+                        and games_since_promotion >= args.min_promote_games
                         and not np.isnan(avg_loss)):
                     tp0 = time.perf_counter()
-                    score = _play_match(
-                        _search_fn(student.model, device, args.promote_sims),
-                        _search_fn(teacher.model, device, args.promote_sims),
-                        args.promote_games)
+                    stu_raw = _raw_fn(
+                        student.model, device, sample_moves=0)
+                    teacher_raw = _raw_fn(
+                        teacher.model, device, sample_moves=0)
+                    score = _play_fixed_match(
+                        stu_raw, teacher_raw, args.promote_games, seed=7701)
+                    promote_heur = _play_fixed_match(
+                        stu_raw, _agent_fn(heur),
+                        args.promote_games, seed=3301)
+                    promote_random = _play_fixed_match(
+                        stu_raw, _agent_fn(rnd),
+                        args.promote_games, seed=4401)
                     last_promote_t = time.time()
                     extra["promote_score"] = round(score, 4)
-                    if score >= args.promote_thresh:
+                    extra["promote_heur"] = round(promote_heur, 4)
+                    extra["promote_random"] = round(promote_random, 4)
+                    promote, failed = _promotion_decision(
+                        score, promote_heur, promote_random,
+                        best_heur, best_random, args.promote_thresh,
+                        args.promote_margin, args.random_tolerance)
+                    if promote:
                         teacher_gen += 1
                         teacher.model.load_state_dict(student.model.state_dict())
                         teacher_tanh = True
                         _save_teacher(teacher_path, teacher.model,
                                       teacher_tanh, teacher_gen)
+                        best_heur = promote_heur
+                        best_random = max(best_random, promote_random)
+                        games_since_promotion = 0
+                        # Old-policy targets are off-policy supervision after a
+                        # teacher change. The prior 200k window spanned many
+                        # generations and made current-shard error far worse
+                        # than the reported replay loss.
+                        buffer.clear()
                         extra["teacher_gen"] = teacher_gen
-                        print(f"[**] PROMOTION: student beat teacher "
-                              f"{score*100:.0f}% -> teacher gen {teacher_gen}")
+                        print(f"[**] INFERENCE PROMOTION: raw student beat raw "
+                              f"teacher {score*100:.0f}% | winblock "
+                              f"{promote_heur*100:.0f}% | random "
+                              f"{promote_random*100:.0f}% -> gen {teacher_gen}")
                     else:
-                        print(f"     promotion match: {score*100:.0f}% "
-                              f"(need {args.promote_thresh*100:.0f}%) | "
+                        print(f"     no promotion ({','.join(failed)}): "
+                              f"head={score*100:.0f}% | "
+                              f"winblock={promote_heur*100:.0f}% "
+                              f"(best {best_heur*100:.0f}%) | "
+                              f"random={promote_random*100:.0f}% | "
                               f"{time.perf_counter()-tp0:.0f}s")
 
             # ---- metrics + state --------------------------------------------

@@ -167,7 +167,7 @@ class MCTS:
     def _run_wave(self, root, root_state, wave_size):
         """Select `wave_size` leaves with virtual loss, batch-evaluate, backup.
 
-        Each selection applies virtual loss (N+1, W-VL) to visited nodes so
+        Each selection applies virtual loss (N+1, W+VL) to visited nodes so
         subsequent selections in the same wave score those paths lower and
         diverge. After the batch forward pass the VL is undone before real
         backup, leaving tree statistics as if each sim ran independently.

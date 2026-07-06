@@ -33,6 +33,12 @@ NETWORK_CONFIGS = {
     "small":  dict(conv_channels=[32, 64, 64],         fc_hidden_sizes=[256, 512, 256]),
     "medium": dict(conv_channels=[64, 128, 128, 256],  fc_hidden_sizes=[512, 512, 256]),
     "large":  dict(conv_channels=[64, 128, 256, 256],  fc_hidden_sizes=[512, 1024, 512, 256]),
+    # Independent M2 playoff winner (arena id 22). Keep this exact: its HOF
+    # checkpoint is the strongest verified search-teacher seed in this repo.
+    "arena22": dict(
+        conv_channels=[64, 256, 256, 32, 256, 64, 128],
+        fc_hidden_sizes=[256, 1024],
+    ),
 }
 
 ''' # TODO consider allowing random network configurations rather than just the same three in case we find new better architectures by accident.
@@ -647,7 +653,7 @@ def main():
     ap.add_argument("--curriculum",      action="store_true",                 help="Enable curriculum training: start at stage 0 and auto-advance.")
     ap.add_argument("--debug_games",     action="store_true",                 help="Play 3 observed games, print every move and board state, then exit.")
     ap.add_argument("--parallel",        type=int,   default=64,              help="Parallel batch size for game runner. DEFAULT 64 (hardware-confirmed best learning/throughput balance on RTX 3080; bigger batches starve gradient updates -- 256 stalled). 0 = sequential.")
-    ap.add_argument("--network",         type=str,   default="small",         choices=["small", "medium", "large"], help="Network size (default: small).")
+    ap.add_argument("--network",         type=str,   default="small",         choices=list(NETWORK_CONFIGS), help="Network size (default: small).")
     ap.add_argument("--fix_0c",          action=argparse.BooleanOptionalAction, default=True, help="Phase 0c: use the corrected sequential learn() (no per-game adv-norm; .mean() actor/entropy -- mirrors the batched path). DEFAULT ON (validated: RESULT_0c -- breaks the 1300-1550 plateau, peak 1728). Pass --no-fix_0c to reproduce the old broken curve. Sequential path only (--parallel 0); a no-op for --parallel>0, which already uses the corrected batched path.")
     ap.add_argument("--no_metrics",      action="store_true",                 help="Disable writing loss_logs/metrics_log.jsonl. By default a run clears and streams loss/win-rate there so the dashboard Training tab (python -m arena.gui_server) shows it live.")
     ap.add_argument("--save_best",       action=argparse.BooleanOptionalAction, default=True, help="Track the run's strongest weights in <model_dir>/best.pt (separate from the rolling version_NN.pt and the archive -- immune to pruning and the 50-cap eviction). A run-owned floor is written at startup so best.pt always exists and matches this run's architecture, then it's overwritten on each new REALIZED-ELO peak. DEFAULT ON. Pass --no-save_best to disable.")

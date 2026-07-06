@@ -95,6 +95,9 @@ class ReplayBuffer:
     def sample(self, n: int) -> List[Example]:
         return random.sample(self._buf, min(n, len(self._buf)))
 
+    def clear(self):
+        self._buf.clear()
+
     def __len__(self):
         return len(self._buf)
 
@@ -228,8 +231,59 @@ def collect_game(model, device, n_sims: int, c_puct: float,
     return examples, winner, stats
 
 
+def apply_dihedral_symmetry(xs: torch.Tensor, pis: torch.Tensor,
+                            symmetry: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply one of the board's eight D4 symmetries to states and policy targets.
+
+    Every spatial input plane (pieces, legal mask, mini winners, last move, bias)
+    and the 9x9 policy coordinates must move together. This is exact UTTT data
+    augmentation: rotations/reflections preserve both local and macro rules.
+    """
+    if not 0 <= symmetry < 8:
+        raise ValueError(f"symmetry must be in [0, 7], got {symmetry}")
+    pi_grid = pis.reshape(*pis.shape[:-1], 9, 9)
+    if symmetry >= 4:
+        xs = torch.flip(xs, dims=(-1,))
+        pi_grid = torch.flip(pi_grid, dims=(-1,))
+    turns = symmetry % 4
+    if turns:
+        xs = torch.rot90(xs, turns, dims=(-2, -1))
+        pi_grid = torch.rot90(pi_grid, turns, dims=(-2, -1))
+    return xs, pi_grid.reshape_as(pis)
+
+
+def policy_value_loss(model, xs: torch.Tensor, pis: torch.Tensor,
+                      zs: torch.Tensor, value_coef: float):
+    """Inference-aligned AlphaZero loss with strict target validation."""
+    policy_logits, values = model.forward_both(xs)               # (B,81), (B,)
+    if policy_logits.dim() == 1:
+        policy_logits = policy_logits.unsqueeze(0)
+        values = values.unsqueeze(0)
+
+    legal = xs[:, 3, :, :].reshape(xs.shape[0], 81) > 0.5
+    if not bool(legal.any(dim=1).all()):
+        raise ValueError("training example has no legal moves")
+    target_sums = pis.sum(dim=1)
+    if not torch.allclose(target_sums, torch.ones_like(target_sums),
+                          atol=1e-4, rtol=1e-4):
+        raise ValueError("policy targets must sum to one")
+    illegal_target_mass = pis.masked_fill(legal, 0.0).sum(dim=1)
+    if bool((illegal_target_mass.abs() > 1e-5).any()):
+        raise ValueError("policy target assigns probability to an illegal move")
+
+    # Inference masks illegal moves before softmax. Train the same objective.
+    # The old all-81 softmax spent much of the gradient learning legality that
+    # is already supplied exactly by channel 3 and enforced at inference.
+    masked_logits = policy_logits.masked_fill(~legal, float("-inf"))
+    log_probs = F.log_softmax(masked_logits, dim=-1)
+    policy_loss = -(pis * log_probs.masked_fill(~legal, 0.0)).sum(dim=-1).mean()
+    value_loss = F.mse_loss(values, zs)
+    return policy_loss + value_coef * value_loss, policy_loss, value_loss
+
+
 def train_on_examples(model, optimizer, examples: List[Example],
-                      value_coef: float, device: str) -> Tuple[float, float, float]:
+                      value_coef: float, device: str,
+                      augment_symmetry: bool = True) -> Tuple[float, float, float]:
     """Run one gradient step on a batch. Returns (total_loss, policy_loss, value_loss)."""
     model.train()
 
@@ -239,20 +293,11 @@ def train_on_examples(model, optimizer, examples: List[Example],
     zs = torch.tensor([e[2] for e in examples],
                       dtype=torch.float32, device=device)        # (B,)
 
-    policy_logits, values = model.forward_both(xs)               # (B,81), (B,)
-    if policy_logits.dim() == 1:
-        policy_logits = policy_logits.unsqueeze(0)
-        values = values.unsqueeze(0)
+    if augment_symmetry:
+        xs, pis = apply_dihedral_symmetry(xs, pis, random.randrange(8))
 
-    # Policy: cross-entropy between visit distribution and log_softmax of logits.
-    # Using KL-divergence form: -sum(pi * log_softmax) = CE(pi, logits).
-    log_probs = F.log_softmax(policy_logits, dim=-1)        # (B, 81)
-    policy_loss = -(pis * log_probs).sum(dim=-1).mean()     # scalar
-
-    # Value: MSE between predicted value and outcome z.
-    value_loss = F.mse_loss(values, zs)
-
-    loss = policy_loss + value_coef * value_loss
+    loss, policy_loss, value_loss = policy_value_loss(
+        model, xs, pis, zs, value_coef)
 
     optimizer.zero_grad()
     loss.backward()

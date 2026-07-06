@@ -1516,7 +1516,7 @@ const CARD_INFO = {
   'card-tac':       ['Kill shots / game', 'Immediate tactical moves per self-play game: taking a mini-board win or blocking one. Ground-truth tactics injected during generation so the targets always contain the forced move when one exists.'],
   'card-sharp':     ['Target sharpness', '1 - entropy/ln(81) of the MCTS visit targets. 0% = search returned a uniform shrug (the old plateau smoking gun), 100% = all visits on one move. Healthy search on a real position sits well above 50%.'],
   'card-next':      ['Next milestone', 'The next win-rate-vs-random threshold not yet crossed, and progress toward it. Pure dopamine plumbing.'],
-  'card-day1':      ['vs anchor net', 'Raw student vs the raw CURRENT teacher net (moving anchor -- after each promotion the teacher is a recent student clone, so hovering near 50% is expected). Only the gen-0 reading compared against league best.pt.'],
+  'card-day1':      ['vs anchor net', 'Raw student vs the raw CURRENT teacher net on a fixed, color-swapped opening panel. Gen 0 is the independently selected Arena-22 HOF checkpoint. Promotions also require absolute WinBlock improvement and no material random-opponent regression.'],
 };
 (function () {
   const pop = document.createElement('div');
