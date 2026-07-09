@@ -10,7 +10,9 @@ data-starved. This script starts from PROVEN strength instead:
 
     teacher = MCTS(teacher_sims) over the independently selected Arena-22 HOF
     checkpoint (RESULT_M2.md), with a fixed slice of games against WinBlockAgent
-    to cover the repo's measured tactical blind spot.
+    to cover the repo's measured tactical blind spot, plus a slice against
+    RandomAgent so the student trains on blunder-created positions (the fixed
+    random panel regressed and stalled promotion without it).
 
 Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   1. GENERATE: teacher self-play games via train_alphazero.collect_game
@@ -307,6 +309,14 @@ def main():
                     help="In WinBlock opponent games, replace the MCTS target "
                          "with a local mini-board win/block target when one is "
                          "available. DEFAULT ON; affects only the opponent slice.")
+    ap.add_argument("--rnd_mix", type=float, default=0.15,
+                    help="Fraction of expert games played against RandomAgent. "
+                         "Pure teacher/WinBlock games never visit the sloppy "
+                         "positions random opponents create, so the raw student "
+                         "regressed ~0.045 on the fixed random panel (v2 checks "
+                         "1-4: promote_random 0.71-0.74 vs the 0.75 floor) and "
+                         "the promotion gate correctly stalled. Teacher search "
+                         "still labels every training position in this slice.")
     ap.add_argument("--gate_min", type=float, default=5.0,
                     help="Minutes between gate evals (raw matches + edge probe).")
     ap.add_argument("--gate_games", type=int, default=40)
@@ -339,6 +349,8 @@ def main():
     args = ap.parse_args()
     if not 0.0 <= args.opp_mix <= 1.0:
         ap.error("--opp_mix must be in [0, 1]")
+    if not 0.0 <= args.rnd_mix <= 1.0 or args.opp_mix + args.rnd_mix > 1.0:
+        ap.error("--rnd_mix must be in [0, 1] and --opp_mix + --rnd_mix <= 1")
     if args.promote_games < 2 or args.gate_games < 2:
         ap.error("--promote_games and --gate_games must be at least 2")
 
@@ -482,16 +494,24 @@ def main():
             draws = 0
             moves_total = 0
             opponent_games = 0
+            rnd_games = 0
             mini_tac_wins = 0
             mini_tac_blocks = 0
             with torch.no_grad():
                 for _ in range(args.games_per_block):
                     opponent_fn = None
                     opponent_game = False
-                    if random.random() < args.opp_mix:
+                    r = random.random()
+                    if r < args.opp_mix:
                         opponent_fn = lambda s: heur.select_move(s)
                         opponent_games += 1
                         opponent_game = True
+                    elif r < args.opp_mix + args.rnd_mix:
+                        # Random-opponent slice: mini tactics stay OFF here --
+                        # the point is teacher-search targets on blunder-created
+                        # positions, not the WinBlock motif.
+                        opponent_fn = lambda s: rnd.select_move(s)
+                        rnd_games += 1
                     exs, winner, gstats = collect_game(
                         model=teacher.model,
                         device=device,
@@ -551,6 +571,7 @@ def main():
                 "avg_len": round(moves_total / args.games_per_block, 1),
                 "teacher_gen": teacher_gen,
                 "opponent_games": opponent_games,
+                "rnd_games": rnd_games,
                 "mini_tac_wins": mini_tac_wins,
                 "mini_tac_blocks": mini_tac_blocks,
                 "lr": round(cur_lr, 8),
