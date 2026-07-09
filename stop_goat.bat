@@ -18,7 +18,10 @@ if "%FOUND%"=="0" (
 
 echo Waiting for goat-train to exit (state save can take a moment)...
 :wait
-timeout /t 3 /nobreak >nul
+REM ping, not timeout: Git Bash puts a Unix timeout.exe on PATH that shadows
+REM cmd's and errors out instantly, turning this loop into a busy-spin that can
+REM declare "stopped" before the state save finishes. ping is unshadowed.
+ping -n 4 127.0.0.1 >nul
 tasklist /FI "WINDOWTITLE eq goat-train*" /FO TABLE /NH 2>nul | findstr /B "cmd.exe" >nul
 if not errorlevel 1 goto wait
 echo goat-train stopped.
