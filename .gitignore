@@ -42,6 +42,9 @@ models/arena/
 # this also covers run_state.json and other per-machine metadata)
 models/alphazero*/
 
+# Expert-iteration runtime state (shards, state.json; checkpoints hit *.pt)
+models/expert_iter*/
+
 # home_batch.py outputs -- generated at home; report carries the local repo path,
 # scratch dir holds throwaway smoke/sweep/seed checkpoints. Paste-back only, never commit.
 home_batch_report.md
