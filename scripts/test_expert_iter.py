@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scripts.expert_iter import ShardStore, _promotion_decision
+from scripts.expert_iter import ShardStore, _decayed_lr, _promotion_decision
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
     _mini_tactical_target,
@@ -101,6 +101,15 @@ class ExpertIterationTests(unittest.TestCase):
             self.assertEqual(len(loaded), 2)
             self.assertEqual(
                 store.load_window(1, 10, teacher_gen=2), [])
+
+    def test_decayed_lr_halves_and_floors(self):
+        self.assertAlmostEqual(_decayed_lr(1e-3, 0, 25_000, 1e-4), 1e-3)
+        self.assertAlmostEqual(_decayed_lr(1e-3, 25_000, 25_000, 1e-4), 5e-4)
+        self.assertAlmostEqual(_decayed_lr(1e-3, 50_000, 25_000, 1e-4), 2.5e-4)
+        # far past the horizon, the floor holds
+        self.assertAlmostEqual(_decayed_lr(1e-3, 500_000, 25_000, 1e-4), 1e-4)
+        # 0 disables decay entirely
+        self.assertAlmostEqual(_decayed_lr(1e-3, 500_000, 0, 1e-4), 1e-3)
 
     def test_promotion_requires_head_to_head_and_absolute_progress(self):
         promote, failed = _promotion_decision(

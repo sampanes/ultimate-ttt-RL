@@ -233,6 +233,17 @@ def _play_fixed_match(move_fn_a, move_fn_b, n_games, seed=20260705):
     return score / played
 
 
+def _decayed_lr(base_lr, steps_total, half_life_steps, lr_min):
+    """Stateless exponential LR decay derived from lifetime optimizer steps.
+
+    Keyed off the persisted steps_total so it survives --resume without
+    scheduler state. half_life_steps <= 0 disables decay.
+    """
+    if half_life_steps <= 0:
+        return base_lr
+    return max(lr_min, base_lr * 0.5 ** (steps_total / half_life_steps))
+
+
 def _promotion_decision(head_to_head, heur_score, random_score,
                         best_heur, best_random, threshold,
                         absolute_margin, random_tolerance):
@@ -271,6 +282,14 @@ def main():
                     help="SGD steps per block.")
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr_half_life_steps", type=int, default=25_000,
+                    help="Halve the learning rate every this many optimizer "
+                         "steps (stateless: derived from the persisted "
+                         "steps_total, so it survives --resume; 0 disables). "
+                         "Constant lr floored both v1 and early v2 at a "
+                         "policy-CE plateau.")
+    ap.add_argument("--lr_min", type=float, default=1e-4,
+                    help="Learning-rate floor for the decay schedule.")
     ap.add_argument("--value_coef", type=float, default=1.0)
     ap.add_argument("--window", type=int, default=200_000,
                     help="Max positions in the training window.")
@@ -296,7 +315,12 @@ def main():
     ap.add_argument("--edge_games", type=int, default=20)
     ap.add_argument("--promote_min", type=float, default=30.0,
                     help="Minimum minutes between inference promotion checks.")
-    ap.add_argument("--promote_games", type=int, default=40)
+    ap.add_argument("--promote_games", type=int, default=300,
+                    help="Games per promotion panel. Must keep sampling noise "
+                         "well under the 0.02-0.03 promotion margins: 40 games "
+                         "has SE ~0.08 (coin-flip gates, ~1 false promotion "
+                         "per day); 300 has SE ~0.03. Raw inference, so a "
+                         "3-panel check still costs well under a minute.")
     ap.add_argument("--promote_thresh", type=float, default=0.55,
                     help="Raw student score vs raw teacher on fixed openings.")
     ap.add_argument("--min_promote_games", type=int, default=1000,
@@ -411,6 +435,14 @@ def main():
     raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
     best_heur = (saved_state.get("best_heur") if saved_state else None)
     best_random = (saved_state.get("best_random") if saved_state else None)
+    if saved_state and saved_state.get("promote_panel") != args.promote_games:
+        # Scores from different panel sizes are not comparable; rebase the
+        # promotion baselines against the current teacher on the new panel.
+        print(f"[!] promotion panel changed "
+              f"({saved_state.get('promote_panel')} -> {args.promote_games} "
+              f"games) -- recomputing baselines vs current teacher")
+        best_heur = None
+        best_random = None
     if best_heur is None:
         best_heur = _play_fixed_match(
             raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
@@ -433,6 +465,7 @@ def main():
                        "games_since_promotion": games_since_promotion,
                        "best_heur": best_heur,
                        "best_random": best_random,
+                       "promote_panel": args.promote_games,
                        "network": args.network,
                        "schema_version": 2}, f)
 
@@ -491,7 +524,11 @@ def main():
 
             # ---- 2. TRAIN ---------------------------------------------------
             avg_loss = avg_pol = avg_val = float("nan")
+            cur_lr = _decayed_lr(args.lr, steps_total,
+                                 args.lr_half_life_steps, args.lr_min)
             if len(buffer) >= args.min_window:
+                for pg in optimizer.param_groups:
+                    pg["lr"] = cur_lr
                 tl = pl = vl = 0.0
                 for _ in range(args.train_steps):
                     batch = buffer.sample(args.batch_size)
@@ -516,6 +553,7 @@ def main():
                 "opponent_games": opponent_games,
                 "mini_tac_wins": mini_tac_wins,
                 "mini_tac_blocks": mini_tac_blocks,
+                "lr": round(cur_lr, 8),
             }
             wr_random = float("nan")
             gate_line = ""
