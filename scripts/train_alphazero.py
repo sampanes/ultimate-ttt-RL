@@ -74,7 +74,11 @@ from agents.mcts import MCTS, MCTSAgent
 from engine.game import GameState
 from engine.constants import X, O, DRAW
 from engine.rules import rule_utl_valid_moves
-from engine.tactics import winning_moves, losing_moves
+from engine.tactics import (
+    losing_moves,
+    mini_tactical_filter,
+    winning_moves,
+)
 from scripts.train_league import NETWORK_CONFIGS, prune_versions, DEFAULT_ELO
 from scripts.trainer_base import append_metrics, clear_metrics_log
 
@@ -119,6 +123,24 @@ def _tactical_target(state, valid):
     return pi, random.choice(wins)
 
 
+def _mini_tactical_target(state, valid):
+    """Heuristic local mini-board win/block target for adversarial coverage.
+
+    This intentionally mirrors WinBlockAgent's local rule. It is not enabled by
+    default because local mini-board wins/blocks are not proof-correct in UTTT;
+    expert_iter enables it only for the WinBlock opponent slice so the raw net
+    actually sees the measured blind spot instead of only losing to it.
+    """
+    wins, blocks, preferred = mini_tactical_filter(state, valid)
+    if not preferred:
+        return None, None, None
+    pi = np.zeros(81, dtype=np.float32)
+    for m in preferred:
+        pi[m] = 1.0 / len(preferred)
+    kind = "win" if wins else "block"
+    return pi, random.choice(preferred), kind
+
+
 def _filter_losing(pi, state, valid):
     """Zero out moves that hand the opponent an immediate game win; renormalize.
 
@@ -146,6 +168,7 @@ def collect_game(model, device, n_sims: int, c_puct: float,
                  dir_alpha: float, dir_eps: float,
                  wave_size: int, temperature_moves: int,
                  use_tactics: bool = True,
+                 use_mini_tactics: bool = False,
                  opponent_fn=None) -> Tuple[List[Example], int, dict]:
     """Play one training game; returns (examples, winner, stats).
 
@@ -172,6 +195,8 @@ def collect_game(model, device, n_sims: int, c_puct: float,
     move_num = 0
     tac_wins = 0
     tac_dodges = 0
+    mini_tac_wins = 0
+    mini_tac_blocks = 0
 
     while not state.is_over():
         if net_side is not None and state.player != net_side:
@@ -185,6 +210,19 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             forced_pi, forced_move = _tactical_target(state, valid)
             if forced_pi is not None:
                 tac_wins += 1
+                x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
+                trajectory.append((x, forced_pi, state.player))
+                state.make_move(forced_move)
+                move_num += 1
+                continue
+
+        if use_mini_tactics:
+            forced_pi, forced_move, mini_kind = _mini_tactical_target(state, valid)
+            if forced_pi is not None:
+                if mini_kind == "win":
+                    mini_tac_wins += 1
+                else:
+                    mini_tac_blocks += 1
                 x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
                 trajectory.append((x, forced_pi, state.player))
                 state.make_move(forced_move)
@@ -227,7 +265,13 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             z = -1.0
         examples.append((x, pi, z))
 
-    stats = {"tac_wins": tac_wins, "tac_dodges": tac_dodges, "moves": move_num}
+    stats = {
+        "tac_wins": tac_wins,
+        "tac_dodges": tac_dodges,
+        "mini_tac_wins": mini_tac_wins,
+        "mini_tac_blocks": mini_tac_blocks,
+        "moves": move_num,
+    }
     return examples, winner, stats
 
 

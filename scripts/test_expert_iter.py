@@ -10,8 +10,11 @@ import torch.nn as nn
 from scripts.expert_iter import ShardStore, _promotion_decision
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
+    _mini_tactical_target,
     policy_value_loss,
 )
+from engine.constants import EMPTY, X, O
+from engine.game import _PyGameState
 
 
 class _FixedModel(nn.Module):
@@ -51,6 +54,21 @@ class ExpertIterationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "illegal move"):
             policy_value_loss(
                 _FixedModel([0.0] * 81), xs, pis, torch.zeros(1), 1.0)
+
+    def test_mini_tactical_target_is_opt_in_winblock_signal(self):
+        board = [EMPTY] * 81
+        board[0] = O
+        board[1] = O
+        state = _PyGameState(board=board, player=X, last_move=None,
+                             mini_winners=[EMPTY] * 9, winner=None)
+        valid = list(range(81))
+
+        pi, move, kind = _mini_tactical_target(state, valid)
+
+        self.assertEqual(kind, "block")
+        self.assertEqual(move, 2)
+        self.assertEqual(float(pi.sum()), 1.0)
+        self.assertEqual(float(pi[2]), 1.0)
 
     def test_symmetry_moves_state_and_policy_together(self):
         xs = torch.zeros((1, 7, 9, 9))

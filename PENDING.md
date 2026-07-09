@@ -302,6 +302,9 @@ The corrected `scripts/expert_iter.py` now:
 - starts from the independently selected Arena-22 HOF architecture/checkpoint,
   and initializes the tanh student from those policy weights instead of random;
 - generates 35% of games against WinBlock to cover the measured blind spot;
+- injects local mini-board win/block targets in that WinBlock slice only
+  (`--mini_tactic_opp`, default on), because second-pass review showed Arena-22
+  MCTS still misses that exact heuristic pattern;
 - masks policy loss exactly as inference does and applies exact D4 symmetry
   augmentation;
 - promotes on raw-inference strength over fixed color-swapped openings, plus

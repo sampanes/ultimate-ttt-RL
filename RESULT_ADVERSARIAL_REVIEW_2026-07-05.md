@@ -43,6 +43,11 @@ Observed old-run state:
 5. **Known failures were evaluated but not trained.** WinBlock was the
    documented shared blind spot, but expert generation remained pure teacher
    self-play. The corrected run sends 35% of games through WinBlock positions.
+   Second-pass review found this still under-specified: Arena-22 MCTS is strong
+   against its own raw policy, but remains weak against WinBlock's immediate
+   mini-board win/block heuristic. V2 now injects local mini-board win/block
+   targets only in the WinBlock opponent slice (`--mini_tactic_opp`, default on),
+   so the student sees the actual blind-spot motif instead of only losing to it.
 
 6. **Verified symmetry was discarded.** UTTT has eight exact square-board
    rotations/reflections. The corrected trainer transforms every spatial input
@@ -91,10 +96,13 @@ Do not judge the run by loss or teacher generation. Require:
 
 ## Verification completed
 
-- `python -m scripts.test_expert_iter`: 5/5 passed.
+- `python -m scripts.test_expert_iter`: 6/6 passed.
 - `python -m agents.test_mcts`: 10/10 passed.
 - `python -m scripts.test_benchmark_suite`: 10/10 passed.
 - `python -m engine.test_tactics`: passed.
 - `python -m engine.test_solver`: 8/8 passed.
 - One-block CUDA smoke run strictly loaded Arena 22, generated a shard, ran the
   fixed gate, and saved resumable v2 state.
+- Second-pass live generation probe with `opp_mix=1.0` emitted nonzero
+  `mini_tac_wins` and `mini_tac_blocks`; a CUDA CLI smoke confirmed the new
+  default path runs, gates, and saves.

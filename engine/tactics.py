@@ -18,7 +18,19 @@ so they behave identically on the C++ and pure-Python engines and need no torch.
 This keeps the logic unit-testable on a box with no GPU/torch.
 """
 from engine.constants import X, O
-from engine.rules import rule_utl_valid_moves
+from engine.rules import (
+    _MINI_INDICES,
+    rule_utl_get_mini_index,
+    rule_utl_get_next_mini,
+    rule_utl_valid_moves,
+)
+
+
+_MINI_WIN_PATTERNS = (
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),
+    (0, 4, 8), (2, 4, 6),
+)
 
 
 def _opponent(player: int) -> int:
@@ -29,6 +41,52 @@ def _valid_for(state, valid):
     if valid is None:
         return rule_utl_valid_moves(state.board, state.last_move, state.mini_winners)
     return valid
+
+
+def move_wins_mini(board, move, player):
+    """True if `player` at global `move` completes that mini-board.
+
+    This is not game-theoretic ground truth by itself: winning a mini-board can
+    be strategically bad in UTTT. It is exposed for adversarial data generation
+    and deterministic anchors such as WinBlockAgent, not for the default
+    proof-only tactical filter below.
+    """
+    mini = rule_utl_get_mini_index(move)
+    cell = rule_utl_get_next_mini(move)
+    cells = _MINI_INDICES[mini]
+    for pat in _MINI_WIN_PATTERNS:
+        if cell not in pat:
+            continue
+        if all(c == cell or board[cells[c]] == player for c in pat):
+            return True
+    return False
+
+
+def mini_winning_moves(state, valid=None, player=None):
+    """Legal moves that complete a mini-board for `player`.
+
+    Defaults to state.player. This deliberately answers only the local tactical
+    question; callers decide whether the local win/block is strategically useful.
+    """
+    player = state.player if player is None else player
+    return [
+        mv for mv in _valid_for(state, valid)
+        if move_wins_mini(state.board, mv, player)
+    ]
+
+
+def mini_tactical_filter(state, valid=None):
+    """Return local mini-board win/block candidates.
+
+    Returns (wins, blocks, preferred), where preferred is `wins` if any exist,
+    else `blocks`. This mirrors WinBlockAgent's local rule and is intended for
+    adversarial coverage of that measured blind spot. Unlike tactical_filter(),
+    it is heuristic, not proof-only.
+    """
+    valid = _valid_for(state, valid)
+    wins = mini_winning_moves(state, valid, state.player)
+    blocks = mini_winning_moves(state, valid, _opponent(state.player))
+    return wins, blocks, wins if wins else blocks
 
 
 def winning_moves(state, valid=None):

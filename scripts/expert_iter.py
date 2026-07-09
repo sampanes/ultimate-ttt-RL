@@ -16,7 +16,9 @@ Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   1. GENERATE: teacher self-play games via train_alphazero.collect_game
      (Dirichlet root noise + early-move temperature for diversity, tactical
      win-in-1 / losing-move ground truth applied to targets). Positions are
-     appended to an in-RAM window AND written to disk shards for resume.
+     appended to an in-RAM window AND written to disk shards for resume. In the
+     WinBlock opponent slice, local mini-board win/block targets are injected to
+     cover the measured blind spot that Arena-22 search still misses.
   2. TRAIN: student (fresh net, tanh value head) supervised on the window:
      CE on visit distributions + MSE on game outcomes.
   3. GATE (wall-clock paced, dashboard-friendly): student raw vs random /
@@ -281,6 +283,11 @@ def main():
     ap.add_argument("--opp_mix", type=float, default=0.35,
                     help="Fraction of expert games played against WinBlockAgent "
                          "to cover the repo's measured tactical blind spot.")
+    ap.add_argument("--mini_tactic_opp", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="In WinBlock opponent games, replace the MCTS target "
+                         "with a local mini-board win/block target when one is "
+                         "available. DEFAULT ON; affects only the opponent slice.")
     ap.add_argument("--gate_min", type=float, default=5.0,
                     help="Minutes between gate evals (raw matches + edge probe).")
     ap.add_argument("--gate_games", type=int, default=40)
@@ -442,12 +449,16 @@ def main():
             draws = 0
             moves_total = 0
             opponent_games = 0
+            mini_tac_wins = 0
+            mini_tac_blocks = 0
             with torch.no_grad():
                 for _ in range(args.games_per_block):
                     opponent_fn = None
+                    opponent_game = False
                     if random.random() < args.opp_mix:
                         opponent_fn = lambda s: heur.select_move(s)
                         opponent_games += 1
+                        opponent_game = True
                     exs, winner, gstats = collect_game(
                         model=teacher.model,
                         device=device,
@@ -458,10 +469,14 @@ def main():
                         wave_size=64,   # MCTS clamps to n_sims // 16 internally
                         temperature_moves=args.temperature_moves,
                         use_tactics=True,
+                        use_mini_tactics=(
+                            args.mini_tactic_opp and opponent_game),
                         opponent_fn=opponent_fn,
                     )
                     new_examples.extend(exs)
                     moves_total += gstats["moves"]
+                    mini_tac_wins += gstats.get("mini_tac_wins", 0)
+                    mini_tac_blocks += gstats.get("mini_tac_blocks", 0)
                     if winner == DRAW:
                         draws += 1
             games_total += args.games_per_block
@@ -499,6 +514,8 @@ def main():
                 "avg_len": round(moves_total / args.games_per_block, 1),
                 "teacher_gen": teacher_gen,
                 "opponent_games": opponent_games,
+                "mini_tac_wins": mini_tac_wins,
+                "mini_tac_blocks": mini_tac_blocks,
             }
             wr_random = float("nan")
             gate_line = ""

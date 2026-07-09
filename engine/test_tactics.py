@@ -13,7 +13,13 @@ Cell layout reference (global indices 0-80, row-major 9x9):
 """
 from engine.constants import EMPTY, X, O
 from engine.game import _PyGameState
-from engine.tactics import winning_moves, losing_moves, tactical_filter
+from engine.tactics import (
+    mini_tactical_filter,
+    mini_winning_moves,
+    tactical_filter,
+    losing_moves,
+    winning_moves,
+)
 
 _failures = []
 
@@ -75,10 +81,38 @@ def test_neutral_empty_board():
     check(w == [] and len(safe) == 81, f"tactical_filter == ([], all 81) (got {w}, |safe|={len(safe)})")
 
 
+def test_mini_tactical_filter():
+    """Local mini-board rules mirror WinBlockAgent but stay separate from proof tactics."""
+    board = [EMPTY] * 81
+    board[0] = X
+    board[1] = X
+    board[9] = O
+    board[10] = O
+    s = _PyGameState(board=board, player=X, last_move=None,
+                     mini_winners=[EMPTY] * 9, winner=None)
+
+    print("test_mini_tactical_filter:")
+    check(mini_winning_moves(s) == [2], "X can complete mini 0 at cell 2")
+    wins, blocks, preferred = mini_tactical_filter(s)
+    check(wins == [2], f"mini wins == [2] (got {wins})")
+    check(blocks == [11], f"mini blocks == [11] (got {blocks})")
+    check(preferred == [2], f"mini preferred takes win before block (got {preferred})")
+
+    board[0] = EMPTY
+    board[1] = EMPTY
+    s = _PyGameState(board=board, player=X, last_move=None,
+                     mini_winners=[EMPTY] * 9, winner=None)
+    wins, blocks, preferred = mini_tactical_filter(s)
+    check(wins == [], f"no X mini win (got {wins})")
+    check(blocks == [11], f"block O mini win at cell 11 (got {blocks})")
+    check(preferred == [11], f"mini preferred blocks when no win (got {preferred})")
+
+
 if __name__ == "__main__":
     test_win_in_1()
     test_block_in_1()
     test_neutral_empty_board()
+    test_mini_tactical_filter()
     print()
     if _failures:
         print(f"{len(_failures)} FAILURE(S):")
