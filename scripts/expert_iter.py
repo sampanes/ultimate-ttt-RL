@@ -634,6 +634,12 @@ def main():
                         teacher_gen += 1
                         teacher.model.load_state_dict(student.model.state_dict())
                         teacher_tanh = True
+                        # The student is always tanh (line ~407); load_state_dict
+                        # copies weights only, NOT the runtime value_tanh flag, so
+                        # a gen-0 non-tanh teacher would keep feeding unbounded
+                        # pre-tanh values into MCTS generation -- the value-scale
+                        # poisoning the raw-argmax promote gate cannot detect.
+                        teacher.model.value_tanh = True
                         _save_teacher(teacher_path, teacher.model,
                                       teacher_tanh, teacher_gen)
                         best_heur = promote_heur

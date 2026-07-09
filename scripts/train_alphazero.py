@@ -776,18 +776,31 @@ def main():
             # stacks them with fresh cpu examples); optimizer.load_state_dict
             # re-homes its state to the params' device on its own.
             payload = torch.load(resume_path, map_location="cpu", weights_only=False)
-            try:
-                optimizer.load_state_dict(payload["optimizer"])
-                print("Resumed optimizer state")
-            except (ValueError, KeyError) as e:
-                print(f"[!] optimizer state incompatible, starting fresh: {e}")
-            if "buffer_x" in payload:
-                xs = payload["buffer_x"]
-                pis = payload["buffer_pi"]
-                zs = payload["buffer_z"]
-                buffer.extend([(xs[i], pis[i], float(zs[i]))
-                               for i in range(xs.shape[0])])
-                print(f"Resumed replay buffer: {len(buffer)} examples")
+            # Staleness guard: resume.pt is only written on a clean exit, while
+            # the weights (version_NNN.pt) and run_state.json advance every
+            # iteration. After a hard crash resume.pt can lag the weights by many
+            # iters -- pairing those stale Adam moments + old-policy buffer with
+            # current weights silently degrades training. If it lags, skip both
+            # and refill fresh rather than resume a mismatched optimizer/buffer.
+            resume_iter = payload.get("iteration")
+            stale = resume_iter is None or resume_iter < start_iteration
+            if stale:
+                print(f"[!] resume.pt is stale (its iter={resume_iter} < "
+                      f"weights iter={start_iteration}) -- likely a hard crash. "
+                      f"Skipping optimizer+buffer; both refill fresh in a few iters.")
+            else:
+                try:
+                    optimizer.load_state_dict(payload["optimizer"])
+                    print("Resumed optimizer state")
+                except (ValueError, KeyError) as e:
+                    print(f"[!] optimizer state incompatible, starting fresh: {e}")
+                if "buffer_x" in payload:
+                    xs = payload["buffer_x"]
+                    pis = payload["buffer_pi"]
+                    zs = payload["buffer_z"]
+                    buffer.extend([(xs[i], pis[i], float(zs[i]))
+                                   for i in range(xs.shape[0])])
+                    print(f"Resumed replay buffer: {len(buffer)} examples")
         else:
             print("[!] no resume.pt -- replay buffer starts empty (refills in a few iters)")
 
@@ -824,7 +837,10 @@ def main():
 
     def _save_resume_state():
         """Persist optimizer + replay buffer for --resume (called on exit)."""
-        payload = {"optimizer": optimizer.state_dict()}
+        # Stamp the iteration so a later resume can detect a stale resume.pt:
+        # run_state.json is rewritten every iteration but this file only on exit,
+        # so a hard crash (OOM-kill, power loss) leaves it lagging the weights.
+        payload = {"optimizer": optimizer.state_dict(), "iteration": iteration}
         if len(buffer) > 0:
             examples = list(buffer._buf)
             payload["buffer_x"] = torch.stack([e[0] for e in examples])
