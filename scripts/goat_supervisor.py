@@ -33,17 +33,23 @@ def main():
         attempt += 1
         print(f"[supervisor] launching expert_iter (attempt {attempt}): "
               f"{' '.join(child_cmd)}", flush=True)
-        try:
-            # Child shares this console, so a Ctrl+C sent to the console (what
-            # stop_goat.bat does) reaches the child directly; expert_iter saves
-            # resume state and exits 0.
-            rc = subprocess.call(child_cmd)
-        except KeyboardInterrupt:
-            # Ctrl+C landed while we were waiting; the child got it too and is
-            # saving state. Wait is already over (call returns after the child
-            # dies), so just stop.
-            print("[supervisor] interrupted -- not restarting.", flush=True)
-            return 0
+        # Child shares this console, so a Ctrl+C sent to the console (what
+        # stop_goat.bat does) reaches the child directly; expert_iter saves
+        # resume state and exits 0. We must NOT let subprocess.call's 0.25s
+        # KeyboardInterrupt grace TerminateProcess the child mid state-save
+        # (that corrupts the resume payload the graceful-stop design protects).
+        # So: explicit Popen, then wait() and swallow every Ctrl+C, giving the
+        # child unbounded time to finish its finally-block save and exit itself.
+        proc = subprocess.Popen(child_cmd)
+        while True:
+            try:
+                rc = proc.wait()
+                break
+            except KeyboardInterrupt:
+                # The child got the same Ctrl+C and is saving state. Keep
+                # waiting on it rather than killing it.
+                print("[supervisor] Ctrl+C -- waiting for child to save state "
+                      "and exit...", flush=True)
         if rc == 0:
             print("[supervisor] expert_iter exited cleanly -- done.", flush=True)
             return 0
