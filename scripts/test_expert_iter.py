@@ -7,7 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scripts.expert_iter import ShardStore, _decayed_lr, _promotion_decision
+from scripts.expert_iter import (ShardStore, _decayed_lr, _promote_teacher,
+                                 _promotion_decision)
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
     _mini_tactical_target,
@@ -25,6 +26,23 @@ class _FixedModel(nn.Module):
     def forward_both(self, xs):
         batch = xs.shape[0]
         return self.logits.unsqueeze(0).expand(batch, -1), torch.zeros(batch)
+
+
+class _TanhShell(nn.Module):
+    """Minimal model with the value_tanh runtime flag (a plain attribute,
+    deliberately NOT part of state_dict -- that is the bug class under test)."""
+
+    def __init__(self, value_tanh, fill):
+        super().__init__()
+        self.lin = nn.Linear(2, 2)
+        with torch.no_grad():
+            self.lin.weight.fill_(fill)
+        self.value_tanh = value_tanh
+
+
+class _Holder:
+    def __init__(self, model):
+        self.model = model
 
 
 class ExpertIterationTests(unittest.TestCase):
@@ -150,6 +168,44 @@ class ExpertIterationTests(unittest.TestCase):
         )
         self.assertTrue(promote)
         self.assertEqual(failed, [])
+
+    def test_gregory_gate_self_arms(self):
+        base = dict(head_to_head=0.60, heur_score=0.32, random_score=0.70,
+                    best_heur=0.28, best_random=0.71, threshold=0.55,
+                    absolute_margin=0.02, random_tolerance=0.03)
+        # Unarmed (best below gregory_arm): even a to-zero drop is
+        # noise-floor and must stay report-only.
+        promote, failed = _promotion_decision(
+            **base, gregory_score=0.0, best_gregory=0.05,
+            gregory_tolerance=0.03, gregory_arm=0.10)
+        self.assertTrue(promote)
+        self.assertEqual(failed, [])
+        # Armed: a regression beyond tolerance blocks promotion.
+        promote, failed = _promotion_decision(
+            **base, gregory_score=0.10, best_gregory=0.20,
+            gregory_tolerance=0.03, gregory_arm=0.10)
+        self.assertFalse(promote)
+        self.assertIn("gregory_regression", failed)
+        # Armed but within tolerance: passes.
+        promote, failed = _promotion_decision(
+            **base, gregory_score=0.18, best_gregory=0.20,
+            gregory_tolerance=0.03, gregory_arm=0.10)
+        self.assertTrue(promote)
+        # Legacy call without gregory arguments is unchanged.
+        promote, failed = _promotion_decision(**base)
+        self.assertTrue(promote)
+
+    def test_promote_teacher_flips_value_tanh_with_weights(self):
+        # The v2 run's fourth failure mode: promotion copied weights via
+        # load_state_dict but value_tanh is a runtime attribute, so the live
+        # teacher kept feeding unbounded pre-tanh values into MCTS generation.
+        teacher = _Holder(_TanhShell(value_tanh=False, fill=0.0))
+        student = _Holder(_TanhShell(value_tanh=True, fill=1.0))
+        teacher_tanh = _promote_teacher(teacher, student)
+        self.assertTrue(teacher_tanh)
+        self.assertTrue(teacher.model.value_tanh)
+        self.assertTrue(torch.equal(teacher.model.lin.weight,
+                                    student.model.lin.weight))
 
 
 if __name__ == "__main__":

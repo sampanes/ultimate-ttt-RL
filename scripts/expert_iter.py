@@ -29,8 +29,14 @@ Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   4. PROMOTE: only when the RAW student beats the RAW teacher on fixed,
      color-swapped openings, improves the absolute WinBlock score, preserves
      random-opponent strength, and has trained on enough current-teacher games.
-     Old-generation replay is discarded on promotion. This optimizes the actual
-     inference-only artifact instead of a noisy search-vs-search proxy.
+     A depth-limited alpha-beta anchor (gregory, the one panel opponent
+     independent of the training gene pool) is measured on every check as the
+     long-horizon ruler; its no-regression gate self-arms at --gregory_arm.
+     Old-generation replay is discarded on promotion and the LR decay clock
+     restarts (--lr_gen_reset): each generation is a fresh distillation
+     problem, so late generations are not stranded at the lr_min floor.
+     This optimizes the actual inference-only artifact instead of a noisy
+     search-vs-search proxy.
 
 Metrics go to loss_logs/metrics_log.jsonl -- the AZ dashboard
 (gui/alphazero/index.html) renders them unchanged: 'winrate' = student raw
@@ -58,6 +64,7 @@ from engine.constants import X, O, DRAW
 from engine.game import GameState
 from engine.rules import rule_utl_valid_moves
 from agents.deterministics import WinBlockAgent
+from agents.gregory import GregoryAgent
 from agents.mcts import MCTS
 from agents.neural_net_agent_pg import NeuralNetAgentPG
 from agents.random_agent import RandomAgent
@@ -157,6 +164,21 @@ def _save_teacher(path, model, value_tanh, gen):
                 "value_tanh": value_tanh, "gen": gen}, path)
 
 
+def _promote_teacher(teacher, student):
+    """Swap the promoted student's weights into the live teacher; return tanh flag.
+
+    load_state_dict copies weights only, NOT the runtime value_tanh flag, and
+    promoted students always have a tanh value head. A stale False here feeds
+    unbounded pre-tanh values into MCTS generation -- value-scale poisoning the
+    raw-argmax promote gate cannot detect (measured on the first v2 run: the
+    live gen-2 teacher emitted values in [-1.66, 3.27] instead of [-1, 1] for
+    ~12h of generation until a restart healed it from saved metadata).
+    """
+    teacher.model.load_state_dict(student.model.state_dict())
+    teacher.model.value_tanh = True
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Fixed inference-only evaluation
 # --------------------------------------------------------------------------- #
@@ -248,8 +270,18 @@ def _decayed_lr(base_lr, steps_total, half_life_steps, lr_min):
 
 def _promotion_decision(head_to_head, heur_score, random_score,
                         best_heur, best_random, threshold,
-                        absolute_margin, random_tolerance):
-    """Return (promote, failed gates) for an inference-objective promotion."""
+                        absolute_margin, random_tolerance,
+                        gregory_score=None, best_gregory=None,
+                        gregory_tolerance=0.03, gregory_arm=0.10):
+    """Return (promote, failed gates) for an inference-objective promotion.
+
+    The gregory gate is a no-regression check against a depth-limited
+    alpha-beta anchor -- the one panel opponent that is fully independent of
+    the training gene pool (GRADING_AND_ORACLE.md). It self-arms: below
+    gregory_arm the score is noise-floor territory (raw nets currently score
+    ~0.03 vs depth 3) and regressions there are meaningless, so it is
+    report-only until the lineage first reaches gregory_arm.
+    """
     failed = []
     if head_to_head < threshold:
         failed.append("head_to_head")
@@ -257,6 +289,10 @@ def _promotion_decision(head_to_head, heur_score, random_score,
         failed.append("winblock")
     if random_score < best_random - random_tolerance:
         failed.append("random_regression")
+    if (gregory_score is not None and best_gregory is not None
+            and best_gregory >= gregory_arm
+            and gregory_score < best_gregory - gregory_tolerance):
+        failed.append("gregory_regression")
     return not failed, failed
 
 
@@ -292,6 +328,15 @@ def main():
                          "policy-CE plateau.")
     ap.add_argument("--lr_min", type=float, default=1e-4,
                     help="Learning-rate floor for the decay schedule.")
+    ap.add_argument("--lr_gen_reset", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Key the LR decay clock to steps since the last "
+                         "promotion instead of lifetime steps. Each generation "
+                         "is a fresh distillation problem (the buffer is "
+                         "cleared on promotion, so there is no old data to "
+                         "protect); a global clock strands late generations "
+                         "at the lr_min floor and stretches every gen longer "
+                         "than the last for reasons unrelated to capability.")
     ap.add_argument("--value_coef", type=float, default=1.0)
     ap.add_argument("--window", type=int, default=200_000,
                     help="Max positions in the training window.")
@@ -339,6 +384,21 @@ def main():
                     help="Required absolute WinBlock score improvement.")
     ap.add_argument("--random_tolerance", type=float, default=0.03,
                     help="Maximum allowed regression against random.")
+    ap.add_argument("--gregory_depth", type=int, default=3,
+                    help="Depth of the alpha-beta anchor measured at every "
+                         "promotion check. Gregory is the one panel opponent "
+                         "independent of the training gene pool; its score is "
+                         "the long-horizon honest ruler for when the WinBlock "
+                         "and random anchors saturate. Raw nets currently "
+                         "score ~0.03 vs depth 3 (a 300-game panel costs "
+                         "~40s), so there is years of headroom.")
+    ap.add_argument("--gregory_tolerance", type=float, default=0.03,
+                    help="Maximum allowed regression against gregory once "
+                         "the gate has armed.")
+    ap.add_argument("--gregory_arm", type=float, default=0.10,
+                    help="The gregory no-regression gate arms only once "
+                         "best_gregory first reaches this score; below it "
+                         "the panel is noise-floor and report-only.")
     ap.add_argument("--model_dir", type=str,
                     default=os.path.join("models", "expert_iter_v2"))
     ap.add_argument("--blocks", type=int, default=0, help="0 = run forever.")
@@ -412,6 +472,7 @@ def main():
     games_total = 0
     steps_total = 0
     games_since_promotion = 0
+    steps_since_promotion = 0
     buffer = ReplayBuffer(args.window)
 
     if resuming:
@@ -422,6 +483,13 @@ def main():
         steps_total = st["steps_total"]
         games_since_promotion = st.get(
             "games_since_promotion", games_total)
+        steps_since_promotion = st.get("steps_since_promotion")
+        if steps_since_promotion is None:
+            # Pre-schema-3 state never tracked the per-generation step clock.
+            # Estimate it from the games ratio so the current generation
+            # resumes mid-decay instead of at the global floor.
+            steps_since_promotion = int(
+                steps_total * games_since_promotion / max(1, games_total))
         teacher_gen = st["teacher_gen"]
         sd = torch.load(student_path, map_location=device, weights_only=False)
         student.model.load_state_dict(sd["state_dict"])
@@ -444,9 +512,11 @@ def main():
 
     heur = WinBlockAgent()
     rnd = RandomAgent()
+    greg = GregoryAgent(depth=args.gregory_depth)
     raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
     best_heur = (saved_state.get("best_heur") if saved_state else None)
     best_random = (saved_state.get("best_random") if saved_state else None)
+    best_gregory = (saved_state.get("best_gregory") if saved_state else None)
     if saved_state and saved_state.get("promote_panel") != args.promote_games:
         # Scores from different panel sizes are not comparable; rebase the
         # promotion baselines against the current teacher on the new panel.
@@ -455,14 +525,19 @@ def main():
               f"games) -- recomputing baselines vs current teacher")
         best_heur = None
         best_random = None
+        best_gregory = None
     if best_heur is None:
         best_heur = _play_fixed_match(
             raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
     if best_random is None:
         best_random = _play_fixed_match(
             raw_teacher, _agent_fn(rnd), args.promote_games, seed=4401)
+    if best_gregory is None:
+        best_gregory = _play_fixed_match(
+            raw_teacher, _agent_fn(greg), args.promote_games, seed=8801)
     print(f"Inference promotion baseline | winblock={best_heur:.3f} | "
-          f"random={best_random:.3f}")
+          f"random={best_random:.3f} | gregory(d{args.gregory_depth})="
+          f"{best_gregory:.3f}")
     last_gate_t = 0.0      # fire the first gate after the first block
     last_promote_t = time.time()
     t_start = time.time()
@@ -475,11 +550,13 @@ def main():
                        "games_total": games_total, "steps_total": steps_total,
                        "teacher_gen": teacher_gen,
                        "games_since_promotion": games_since_promotion,
+                       "steps_since_promotion": steps_since_promotion,
                        "best_heur": best_heur,
                        "best_random": best_random,
+                       "best_gregory": best_gregory,
                        "promote_panel": args.promote_games,
                        "network": args.network,
-                       "schema_version": 2}, f)
+                       "schema_version": 3}, f)
 
     print(f"Expert iteration on {device} | network={args.network} | "
           f"teacher_sims={args.teacher_sims} | window={args.window}")
@@ -544,7 +621,9 @@ def main():
 
             # ---- 2. TRAIN ---------------------------------------------------
             avg_loss = avg_pol = avg_val = float("nan")
-            cur_lr = _decayed_lr(args.lr, steps_total,
+            lr_clock = (steps_since_promotion if args.lr_gen_reset
+                        else steps_total)
+            cur_lr = _decayed_lr(args.lr, lr_clock,
                                  args.lr_half_life_steps, args.lr_min)
             if len(buffer) >= args.min_window:
                 for pg in optimizer.param_groups:
@@ -562,6 +641,7 @@ def main():
                 avg_pol = pl / args.train_steps
                 avg_val = vl / args.train_steps
                 steps_total += args.train_steps
+                steps_since_promotion += args.train_steps
             student.model.eval()
 
             # ---- 3. GATE (wall-clock paced) ----------------------------------
@@ -622,29 +702,34 @@ def main():
                     promote_random = _play_fixed_match(
                         stu_raw, _agent_fn(rnd),
                         args.promote_games, seed=4401)
+                    promote_greg = _play_fixed_match(
+                        stu_raw, _agent_fn(greg),
+                        args.promote_games, seed=8801)
                     last_promote_t = time.time()
                     extra["promote_score"] = round(score, 4)
                     extra["promote_heur"] = round(promote_heur, 4)
                     extra["promote_random"] = round(promote_random, 4)
+                    extra["promote_gregory"] = round(promote_greg, 4)
                     promote, failed = _promotion_decision(
                         score, promote_heur, promote_random,
                         best_heur, best_random, args.promote_thresh,
-                        args.promote_margin, args.random_tolerance)
+                        args.promote_margin, args.random_tolerance,
+                        gregory_score=promote_greg,
+                        best_gregory=best_gregory,
+                        gregory_tolerance=args.gregory_tolerance,
+                        gregory_arm=args.gregory_arm)
                     if promote:
                         teacher_gen += 1
-                        teacher.model.load_state_dict(student.model.state_dict())
-                        teacher_tanh = True
-                        # The student is always tanh (line ~407); load_state_dict
-                        # copies weights only, NOT the runtime value_tanh flag, so
-                        # a gen-0 non-tanh teacher would keep feeding unbounded
-                        # pre-tanh values into MCTS generation -- the value-scale
-                        # poisoning the raw-argmax promote gate cannot detect.
-                        teacher.model.value_tanh = True
+                        teacher_tanh = _promote_teacher(teacher, student)
                         _save_teacher(teacher_path, teacher.model,
                                       teacher_tanh, teacher_gen)
                         best_heur = promote_heur
                         best_random = max(best_random, promote_random)
+                        best_gregory = max(best_gregory, promote_greg)
                         games_since_promotion = 0
+                        # New generation = new distillation problem; restart
+                        # the LR decay clock with the buffer.
+                        steps_since_promotion = 0
                         # Old-policy targets are off-policy supervision after a
                         # teacher change. The prior 200k window spanned many
                         # generations and made current-shard error far worse
@@ -654,13 +739,15 @@ def main():
                         print(f"[**] INFERENCE PROMOTION: raw student beat raw "
                               f"teacher {score*100:.0f}% | winblock "
                               f"{promote_heur*100:.0f}% | random "
-                              f"{promote_random*100:.0f}% -> gen {teacher_gen}")
+                              f"{promote_random*100:.0f}% | gregory "
+                              f"{promote_greg*100:.0f}% -> gen {teacher_gen}")
                     else:
                         print(f"     no promotion ({','.join(failed)}): "
                               f"head={score*100:.0f}% | "
                               f"winblock={promote_heur*100:.0f}% "
                               f"(best {best_heur*100:.0f}%) | "
                               f"random={promote_random*100:.0f}% | "
+                              f"gregory={promote_greg*100:.0f}% | "
                               f"{time.perf_counter()-tp0:.0f}s")
 
             # ---- metrics + state --------------------------------------------
