@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "label": "expert-iter-v2-certified",
+  "checkpoint": "../models/expert_iter_v2/certified/candidate.pt",
+  "value_tanh": true,
+  "architecture": {
+    "type": "conv_policy_value_v1",
+    "input_channels": 7,
+    "conv_channels": [64, 256, 256, 32, 256, 64, 128],
+    "fc_hidden_sizes": [256, 1024],
+    "output_size": 81
+  }
+}

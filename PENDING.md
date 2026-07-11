@@ -4,6 +4,52 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
+## M5.5 -- QUEUED: post-promotion certification + two-page ship (armed 2026-07-11)
+
+**Trigger: the next goat-train PROMOTION line (gen 5).** Executed on the home box.
+Plumbing already committed and smoke-tested: `benchmarks/goat_certified.json`
+(candidate manifest), `value_tanh` manifest support in `scripts/benchmark_suite.py`
+(threads through `grade_agent` and `export_onnx` via the shared candidate builder).
+
+1. **Stop the run** (`stop_goat.bat`) so certification gets the GPU to itself.
+2. **Snapshot**: copy `models/expert_iter_v2/teacher.pt` ->
+   `models/expert_iter_v2/certified/candidate.pt`; record gen + SHA-256.
+   (Weights stay gitignored; the SHA is the identity of record, as with the
+   arena checkpoints.)
+3. **M2 panel** (same instrument as `RESULT_M2.md`):
+   ```
+   set CUBLAS_WORKSPACE_CONFIG=:4096:8
+   python -m scripts.benchmark_suite --candidate benchmarks/goat_certified.json ^
+     --anchors lottery,nn_big8,winblock,center,first ^
+     --candidate-sims 0,25,100 --oracle-sims 400 ^
+     --openings standard --out results/goat-gen5
+   ```
+4. **GOLD blunder rate**:
+   `python -m scripts.grade_agent --suite gold_endgame_suite.json --candidate benchmarks/goat_certified.json`
+5. **Restart the run** (`start_goat.bat`, resumes); the ship steps below are CPU-only.
+6. **Champion test** vs the incumbent oracle `arena:22@hof` (numbers from
+   `RESULT_M2.md` / `CHAMPIONS.md`): tactical aggregate > 0.844, holds its own
+   400-sim oracle >= 0.500, GOLD blunder < 6.26%. Write `RESULT_M2_5.md`; if it
+   wins, update the `CHAMPIONS.md` oracle row (new SHA, which metric improved).
+7. **If champion -- ship page 1 (this repo's Pages)**: export fp32 ONNX via the
+   manifest (`python -m scripts.export_onnx --candidate benchmarks/goat_certified.json
+   --out-dir <staging>`), deploy as `docs/models/champion.onnx` +
+   `docs/models/champion_config.json` (do NOT overwrite the pocket
+   `model.onnx`/`model_config.json`); add an opt-in model picker to the play page
+   (default stays the 5 MB pocket net; champion is a ~27 MB opt-in download).
+   Spot-check torch-vs-ONNX policy parity as in M3.
+8. **If champion -- ship page 2 (`turn_based_games` repo)**: upgrade the UTTT solo
+   bot. ort-web from CDN; fetch `champion_config.json`/`champion.onnx`
+   cross-origin from `https://sampanes.github.io/ultimate-ttt-RL/models/`
+   (GitHub Pages sends `Access-Control-Allow-Origin: *`), so the model has one
+   source of truth. Async brain behind the existing synchronous
+   `computerMove(state, slot)` contract: return the cached result when ready,
+   `null` while thinking (the solo poll loop already re-arms on null); existing
+   heuristic keeps playing until the model finishes loading or if offline.
+   No framework changes to `solo.js`/`app.js`.
+
+---
+
 ## Throughput benchmark harness -- DONE + FIXES BAKED (home box, 2026-07-02/03)
 
 **All three steps ran; full results + bug reports in `RESULT_PERF_BENCH.md`. The

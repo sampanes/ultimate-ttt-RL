@@ -23,7 +23,9 @@ agents/agent_base.py board_to_tensor_from_gamestate):
 
 Outputs:
   "policy_logits" : (1, 81) float32  -- raw unnormalised logits
-  "value"         : (1,)    float32  -- to-move expected return (unbounded)
+  "value"         : (1,)    float32  -- to-move expected return; unbounded for
+                    legacy shaped-return nets, tanh-bounded to [-1, 1] when the
+                    checkpoint was trained with a tanh value head (value_tanh)
 
 Usage (home box, needs torch + onnxruntime):
     python -m scripts.export_onnx --candidate arena:21@hof --quantize
@@ -93,7 +95,8 @@ def _quantize(fp32_path: Path) -> Path:
     return int8
 
 
-def _write_config(out_dir: Path, label: str, model_file: str, fp32_kb: int, int8_kb: int | None):
+def _write_config(out_dir: Path, label: str, model_file: str, fp32_kb: int, int8_kb: int | None,
+                  value_tanh: bool = False):
     """Write/update docs/models/model_config.json.
 
     This JSON is the ONLY coupling between the export pipeline and the browser.
@@ -111,6 +114,7 @@ def _write_config(out_dir: Path, label: str, model_file: str, fp32_kb: int, int8
         "file":        f"./{model_file}",
         "fp32_kb":     fp32_kb,
         "int8_kb":     int8_kb,
+        "value_tanh":  value_tanh,
         "input": {
             "name":  "input",
             "shape": [1, 7, 9, 9],
@@ -147,6 +151,9 @@ def main():
                     help="Output directory (default: docs/models/).")
     ap.add_argument("--quantize", action="store_true",
                     help="Also produce a dynamic int8 model (requires onnxruntime).")
+    ap.add_argument("--value_tanh", action="store_true",
+                    help="Bound the exported value head with tanh. Only for --checkpoint "
+                         "mode; --candidate manifests declare value_tanh themselves.")
     ap.add_argument("--device", type=str, default="cpu",
                     help="Torch device for export (cpu recommended).")
     args = ap.parse_args()
@@ -155,6 +162,9 @@ def main():
         ap.error("Supply --candidate arena:N@hof  OR  --checkpoint path/to/net.pt")
     if args.candidate and args.checkpoint:
         ap.error("--candidate and --checkpoint are mutually exclusive")
+    if args.candidate and args.value_tanh:
+        ap.error("--value_tanh only applies to --checkpoint mode; put "
+                 '"value_tanh": true in the candidate manifest instead')
 
     device = torch.device(args.device)
     out_dir = Path(args.out_dir)
@@ -164,6 +174,7 @@ def main():
         spec  = resolve_candidate(args.candidate)
         agent = _build_base_candidate(spec, device)
         label = args.candidate
+        value_tanh = spec.value_tanh
     else:
         if not os.path.isfile(args.checkpoint):
             ap.error(f"checkpoint not found: {args.checkpoint}")
@@ -171,10 +182,12 @@ def main():
         cfg = ModelConfigCNN(
             **net_cfg, learning_rate=1e-4, label="export",
             model_dir=str(Path(args.checkpoint).parent), device=device,
+            value_tanh=args.value_tanh,
         )
         agent = NeuralNetAgentPG(cfg=cfg, model_path=args.checkpoint)
         agent.set_eval(True)
         label = f"{Path(args.checkpoint).name} ({args.network})"
+        value_tanh = args.value_tanh
 
     print(f"Exporting: {label}")
     fp32     = _export_fp32(agent, out_dir / "model.onnx")
@@ -187,7 +200,7 @@ def main():
         int8_kb = int8.stat().st_size // 1024
         deployed = "model_int8.onnx"
 
-    _write_config(out_dir, label, deployed, fp32_kb, int8_kb)
+    _write_config(out_dir, label, deployed, fp32_kb, int8_kb, value_tanh=value_tanh)
     print(f"\nDone. Browser will load: docs/models/{deployed}")
 
 

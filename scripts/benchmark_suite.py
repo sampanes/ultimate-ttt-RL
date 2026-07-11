@@ -16,6 +16,7 @@ Manifest schema:
       "label": "candidate-name",
       "checkpoint": "relative/or/absolute.pt",
       "sha256": "optional expected digest",
+      "value_tanh": false,
       "architecture": {
         "type": "conv_policy_value_v1",
         "input_channels": 7,
@@ -24,6 +25,11 @@ Manifest schema:
         "output_size": 81
       }
     }
+
+value_tanh (optional, default false) declares that the checkpoint was trained
+with a tanh-bounded value head (expert_iter / M4-style nets). The candidate is
+then rebuilt with the same bounding; evaluating a tanh-trained net without it
+feeds wrong-scale values into the MCTS panel modes.
 """
 
 from __future__ import annotations
@@ -152,6 +158,7 @@ class CandidateSpec:
     architecture: Architecture
     source: str
     expected_sha256: str | None = None
+    value_tanh: bool = False
     arena_id: int | None = None
     arena_name: str | None = None
     arena_selector: str | None = None
@@ -306,12 +313,16 @@ def resolve_manifest_candidate(path: Path) -> CandidateSpec:
     expected = raw.get("sha256")
     if expected is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", str(expected)):
         raise BenchmarkError(f"{path}: sha256 must be exactly 64 hexadecimal characters")
+    value_tanh = raw.get("value_tanh", False)
+    if not isinstance(value_tanh, bool):
+        raise BenchmarkError(f"{path}: value_tanh must be a boolean when present")
     return CandidateSpec(
         label=label.strip(),
         checkpoint=checkpoint.resolve(),
         architecture=architecture,
         source=str(path),
         expected_sha256=str(expected).lower() if expected else None,
+        value_tanh=value_tanh,
     )
 
 
@@ -405,6 +416,7 @@ def validate_checkpoint(spec: CandidateSpec) -> dict[str, Any]:
         "bytes": path.stat().st_size,
         "architecture": asdict(spec.architecture),
         "parameter_count": parameter_count,
+        "value_tanh": spec.value_tanh,
     }
 
 
@@ -420,6 +432,7 @@ def _build_base_candidate(
         label="benchmark",
         model_dir=str(spec.checkpoint.parent),
         device=device,
+        value_tanh=spec.value_tanh,
     )
     with contextlib.redirect_stdout(io.StringIO()):
         agent = NeuralNetAgentPG(
