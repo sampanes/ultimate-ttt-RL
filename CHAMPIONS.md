@@ -23,6 +23,12 @@ run #4 (`RESULT_HOME_QUEUE.md`) showed `best.pt`'s ELO 4437 loses 0/40 to shallo
 search, i.e. ELO does not measure real strength. On promotion: bump the row,
 record the new SHA-256, and note which metric improved.
 
+Amended 2026-07-11 (`RESULT_M2_5.md`): when panel modes disagree, a direct
+300-game fixed-opening color-swapped raw head-to-head vs the incumbent is the
+tie-breaker; the "holds own 400-sim oracle" score is reference-only, not a
+cross-net criterion (it is self-referential -- a better value head makes the
+candidate's own oracle stronger, so a better net can score lower on it).
+
 ## Pocket champion (current)
 
 | Field | Value |
@@ -45,18 +51,23 @@ missing the 5 MB gate, so it cannot be the pocket champion despite being stronge
 
 | Field | Value |
 |---|---|
-| Selector | `arena:22@hof` (`06-27-26`) |
-| Architecture | conv=`[64,256,256,32,256,64,128]` fc=`[256,1024]` |
+| Selector | `benchmarks/goat_certified.json` (expert_iter_v2 gen-5, promoted 2026-07-11) |
+| Architecture | conv=`[64,256,256,32,256,64,128]` fc=`[256,1024]`, tanh value head |
 | Parameters | 6,766,386 |
-| fp32 bytes | 27,074,677 (27 MB) |
-| SHA-256 (fp32 source) | `400374b1a2d2ce638de5ed01d7ca12adba1ad24c9d8a0955bbeb8890af11138b` |
-| M2 aggregate (tactical) | 0.844 vs anchors; 0.500 vs its own 400-sim oracle (only finalist to hold even) |
-| GOLD blunder (tactical vs center) | 6.26% |
-| Hosted at | Hugging Face (M4 deployment) -- TODO once M4 trains a search champion |
+| fp32 bytes | 27,072,859 (27 MB) |
+| SHA-256 (fp32 source .pt) | `748e77329aad34120cf0a050741cf151eb2e8afd5e1da700046e1daa6f4d3258` |
+| Direct h2h vs prior champion | **0.698** (300 games, raw, fixed openings, color-swapped) |
+| M2 aggregates | raw 0.700, tactical 0.800, mcts_25 0.778, **mcts_100 0.856** (prior best-any-mode was 0.844) |
+| GOLD suite blunder (tactical, fixed 336 positions) | 3.57% (prior champion on same suite: 2.98% -- tie) |
+| Ships as | fp32 ONNX `docs/models/champion.onnx` (browser opt-in) + `turn_based_games` UTTT solo bot |
 
-The M4 track (`M4_DESIGN.md`) is expected to supersede this with a bounded-value,
-search-trained champion; when it clears the M2 panel at its deployment budget,
-promote it here.
+This is the M4/M5 bounded-value, search-trained champion the previous row
+anticipated: the expert-iteration teacher lineage (MCTS-200 over its own tanh
+net) seeded from `arena:22@hof` and promoted five times on fixed external
+panels. Search finally adds strength over the raw/tactical net (mcts_100
+0.856 > tactical 0.800) instead of losing it (incumbent: 0.700 < 0.844).
+Full certification: `RESULT_M2_5.md`. Superseded: `arena:22@hof` (SHA
+`400374b1...`, M2 tactical 0.844 -- see `RESULT_M2.md`).
 
 ## Provenance
 

@@ -58,6 +58,41 @@ function _buildInputTensor(state) {
 }
 
 // ---------------------------------------------------------------------------
+// 1-ply tactical pool -- mirrors engine/tactics.py tactical_filter().
+// Returns the move pool the policy argmax must choose within:
+//   - immediate game-winning moves if any exist,
+//   - else moves that do not hand the opponent an immediate game win
+//     (falling back to all legal moves if every move loses).
+// Pure engine logic; the net breaks ties within the pool.
+// ---------------------------------------------------------------------------
+
+function _tacticalPool(state) {
+  const valid = state.validMoves();
+  const wins = [];
+  for (const mv of valid) {
+    const s = state.clone();
+    s.makeMove(mv);
+    if (s.winner === state.player) wins.push(mv);
+  }
+  if (wins.length > 0) return wins;
+
+  const safe = [];
+  for (const mv of valid) {
+    const s = state.clone();
+    s.makeMove(mv);
+    if (s.winner !== null) { safe.push(mv); continue; } // game over on our move (draw) -- no reply
+    let losing = false;
+    for (const omv of s.validMoves()) {
+      const s2 = s.clone();
+      s2.makeMove(omv);
+      if (s2.winner === s.player) { losing = true; break; }
+    }
+    if (!losing) safe.push(mv);
+  }
+  return safe.length > 0 ? safe : valid;
+}
+
+// ---------------------------------------------------------------------------
 // PUCT MCTS — mirrors agents/mcts.py (serial, wave_size=1)
 // ---------------------------------------------------------------------------
 
@@ -163,6 +198,7 @@ class AgentRunner {
     this._valueName   = config.outputs.value;
     this.nSims        = 50;    // MCTS budget for Hard mode; set to 0 to use raw policy
     this.cPuct        = 1.5;
+    this.tactical     = false; // 1-ply win/block pool on the argmax path (certified mode)
     this.lastEval     = null;  // { xAdv, topMoves, mode } — updated after each selectMove
   }
 
@@ -214,8 +250,10 @@ class AgentRunner {
 
     let chosen;
     if (temperature === 0.0) {
-      chosen = valid[0];
-      for (const cell of valid) if (logits[cell] > logits[chosen]) chosen = cell;
+      // Argmax, optionally constrained to the provably-correct tactical pool.
+      const pool = this.tactical ? _tacticalPool(state) : valid;
+      chosen = pool[0];
+      for (const cell of pool) if (logits[cell] > logits[chosen]) chosen = cell;
     } else {
       const expsT = valid.map(c => Math.exp((logits[c] - maxLog) / temperature));
       const sumT  = expsT.reduce((a, b) => a + b, 0);

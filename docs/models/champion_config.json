@@ -1,0 +1,22 @@
+{
+  "_swap_guide": "Champion (oracle) model config. To redeploy: python -m scripts.export_onnx --candidate benchmarks/goat_certified.json --out-dir <staging>, copy model.onnx to docs/models/champion.onnx, update this file. Certified in RESULT_M2_5.md; identity of record is the .pt SHA-256 in CHAMPIONS.md.",
+  "name": "expert-iter-v2 gen-5 (champion)",
+  "version": "m5-r1",
+  "description": "Expert-iteration distillation of 200-sim MCTS self-play (arena22 arch, tanh value head). Strongest net; browser runs it with the certified 1-ply tactical overlay.",
+  "file": "./champion.onnx",
+  "fp32_kb": 26438,
+  "int8_kb": null,
+  "value_tanh": true,
+  "input": {
+    "name": "input",
+    "shape": [1, 7, 9, 9],
+    "channels": [
+      "x_pieces", "o_pieces", "current_player",
+      "valid_moves", "mini_winners", "last_move", "bias"
+    ]
+  },
+  "outputs": {
+    "policy": "policy_logits",
+    "value": "value"
+  }
+}

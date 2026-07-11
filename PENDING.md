@@ -4,7 +4,19 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
-## M5.5 -- QUEUED: post-promotion certification + two-page ship (armed 2026-07-11)
+## M5.5 -- DONE 2026-07-11: gen-5 certified as oracle champion + shipped
+
+Gen 5 promoted 2026-07-11 (58% h2h | winblock 35% | random 82% | gregory 14%)
+and the queue below executed same-day. Verdict: **PROMOTED** -- direct
+head-to-head 0.698 vs `arena:22@hof` (300 games), M2 raw/mcts_25/mcts_100 all
+up (0.856 best mode), tactical + GOLD-suite ties. Full numbers:
+`RESULT_M2_5.md`; `CHAMPIONS.md` oracle row updated (rule amended: direct h2h
+tie-breaker added, self-oracle retired as cross-net criterion). Shipped:
+`docs/models/champion.onnx` + play-page opt-in picker (pocket stays default);
+`turn_based_games` UTTT solo bot upgraded (champion via cross-origin fetch,
+win/block fallback). Goat run resumed into gen-6 (~2.5h downtime).
+
+Original queue text kept below for reference.
 
 **Trigger: the next goat-train PROMOTION line (gen 5).** Executed on the home box.
 Plumbing already committed and smoke-tested: `benchmarks/goat_certified.json`

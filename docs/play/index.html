@@ -355,7 +355,12 @@
 <div class="diff-row" id="diff-row">
   <button class="diff-btn" data-temp="1.8" data-sims="0">Easy</button>
   <button class="diff-btn" data-temp="0.45" data-sims="0">Medium</button>
-  <button class="diff-btn active" data-temp="0.0" data-sims="50">Hard (MCTS)</button>
+  <button class="diff-btn active" data-temp="0.0" data-sims="50" id="btn-hard">Hard (MCTS)</button>
+</div>
+
+<div class="diff-row" id="model-row">
+  <button class="diff-btn active" data-model="pocket">Pocket (fast)</button>
+  <button class="diff-btn" data-model="champion">Champion (26 MB)</button>
 </div>
 
 <div id="board-area">
@@ -557,6 +562,63 @@ async function _doAiMove() {
   _updateEvalPanel(_runner && _runner.lastEval);
 }
 
+// -- Model selection ----------------------------------------------------------
+// Pocket (default): 1.3 MB int8-class net, Hard = MCTS-50 in the browser.
+// Champion: the certified strongest net (RESULT_M2_5.md), ~26 MB fp32, lazily
+// fetched on first selection; Hard = certified 1-ply tactical argmax (a 26 MB
+// net at 50 sims is too slow in WASM, and tactical certified stronger anyway).
+const _models = { pocket: null, champion: null };
+let _modelKind = 'pocket';
+
+function _applyAgentMode() {
+  const btn = document.querySelector('#diff-row .diff-btn.active');
+  if (!btn) return;
+  _temperature = parseFloat(btn.dataset.temp);
+  document.getElementById('btn-hard').textContent =
+    (_modelKind === 'champion') ? 'Hard (tactical)' : 'Hard (MCTS)';
+  if (!_runner) return;
+  if (_modelKind === 'champion') {
+    _runner.nSims    = 0;
+    _runner.tactical = (_temperature === 0.0);
+  } else {
+    _runner.nSims    = parseInt(btn.dataset.sims || '0', 10);
+    _runner.tactical = false;
+  }
+}
+
+async function _selectModel(kind) {
+  if (_aiThinking || kind === _modelKind) return;
+  const overlay = document.getElementById('loading-overlay');
+  const loadMsg = document.getElementById('loading-msg');
+
+  if (!_models[kind]) {
+    const url = (kind === 'champion') ? '../models/champion_config.json'
+                                      : '../models/model_config.json';
+    try {
+      loadMsg.textContent = (kind === 'champion')
+        ? 'Fetching champion model (~26 MB, one-time)...'
+        : 'Fetching model...';
+      overlay.classList.add('show');
+      _models[kind] = await loadAgent(url);
+    } catch (err) {
+      overlay.classList.remove('show');
+      _setStatus('error', 'Could not load ' + kind + ' model: ' + err.message);
+      return;
+    }
+    overlay.classList.remove('show');
+  }
+
+  _modelKind = kind;
+  _runner = _models[kind];
+  document.querySelectorAll('#model-row .diff-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.model === kind));
+  document.getElementById('model-name').textContent = _runner.name;
+  _applyAgentMode();
+  _updateStatus();
+  // If it is the AI's turn under the new model, let it move.
+  if (_game && _game.winner === null && _humanSide !== _game.player) _scheduleAiMove();
+}
+
 // ── Game control ──────────────────────────────────────────────────────────────
 function _newGame() {
   if (_aiThinking) return;
@@ -591,13 +653,16 @@ async function _init() {
     _newGame();
   });
 
-  document.querySelectorAll('.diff-btn').forEach(btn => {
+  document.querySelectorAll('#diff-row .diff-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#diff-row .diff-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      _temperature = parseFloat(btn.dataset.temp);
-      if (_runner) _runner.nSims = parseInt(btn.dataset.sims || '0', 10);
+      _applyAgentMode();
     });
+  });
+
+  document.querySelectorAll('#model-row .diff-btn').forEach(btn => {
+    btn.addEventListener('click', () => _selectModel(btn.dataset.model));
   });
 
   // Load the agent.
@@ -608,9 +673,9 @@ async function _init() {
   try {
     loadMsg.textContent = 'Fetching model config…';
     _runner = await loadAgent('../models/model_config.json');
-    // Sync nSims with whichever difficulty button is active at load time.
-    const activeBtn = document.querySelector('.diff-btn.active');
-    if (activeBtn) _runner.nSims = parseInt(activeBtn.dataset.sims || '0', 10);
+    _models.pocket = _runner;
+    // Sync nSims/tactical with the active difficulty + model buttons.
+    _applyAgentMode();
     nameEl.textContent = _runner.name;
     overlay.classList.remove('show');
     _newGame();
