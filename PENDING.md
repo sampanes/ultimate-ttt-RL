@@ -4,6 +4,73 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
+## S0+S1 runbook -- TRAINING BOX, run next (authored 2026-07-13)
+
+S0 (gen/train time split in metrics) and S1 (gregory d2 training slice,
+opt-in) are authored and py_compile-verified on the authoring box; runtime
+verification is this runbook. Everything below is cmd from the repo root.
+
+**1. Pull + regression suites** (CPU, fast; the goat run can stay live):
+
+    git pull
+    .venv\Scripts\python -m scripts.test_expert_iter
+    .venv\Scripts\python -m agents.test_mcts
+
+Expect 10/10 (was 9: new slice-layout test) and 10/10.
+
+**2. S1 pre-step: baseline the raw net vs gregory d2** (CPU-only, read-only,
+~1 min, does NOT require stopping the run):
+
+    .venv\Scripts\python -m scripts.baseline_vs_gregory --depths 2,3
+
+The script prints the verdict itself (STRENGTH_NEXT S1 threshold 0.55).
+Sanity check: the d3 number should land near the latest `promote_gregory`
+in the metrics log (~0.10-0.16 as of gen-7) -- same seed, same instrument.
+- **Verdict "enable"** (expected): go to step 3.
+- **Verdict "STOP"** (raw net >= 0.55 vs d2): do NOT enable; paste the
+  numbers back and the authoring box designs the d3-in-mix + d4-ruler
+  variant. Still do step 3's restart WITHOUT the new flags so S0 logging
+  goes live.
+
+**3. One graceful restart to activate S0 (+S1 if step 2 said enable).**
+Edit `start_goat.bat` line 20 and append the mix flags after `--resume`
+(goat_supervisor passes all args through to expert_iter unchanged):
+
+    ... -m scripts.goat_supervisor --resume --greg_mix 0.10 --opp_mix 0.30 --rnd_mix 0.10 ...
+
+Then run `start_goat.bat` (it stops the old instance gracefully and
+resumes; buffer/state/baselines all survive -- the promotion panel size is
+unchanged, so no baseline rebase fires). Startup misuse is guarded: the
+script hard-errors if greg_mix_depth >= gregory_depth or the mixes sum > 1.
+
+**4. Expectations (STRENGTH_NEXT rule 3 -- write them down, don't panic):**
+head/winblock may wobble for a few checks after the mix change; judge only
+the fixed 300-game panels. Success metric = the gregory(d3) panel slope
+improving from +1-2 pts/gen toward +4, NOT promotion cadence. The gregory
+no-regression gate is already armed (best 0.143), so a real regression
+still blocks promotion.
+
+**5. Paste back after ~1 full generation on the new mix** (RESULT_S1.md or
+chat), the useful info in priority order:
+
+  a. The full `baseline_vs_gregory` output (pre-step numbers + verdict).
+  b. The `promote_gregory` series before vs after the change -- every
+     promotion-check line carries it:
+
+         findstr promote_gregory loss_logs\metrics_log.jsonl
+
+  c. Proof the slice is live: any metrics line showing `greg_games` > 0
+     (16-game blocks at 0.10 mix -> expect 1-3 most blocks, some 0s).
+  d. The S0 split -- mean gen vs train seconds (this is the S4
+     go/no-go data):
+
+         .venv\Scripts\python -c "import json;rows=[json.loads(l) for l in open('loss_logs/metrics_log.jsonl',encoding='utf-8')];g=[(r['gen_secs'],r['train_secs']) for r in rows if 'gen_secs' in r];n=len(g);print(f'blocks={n} gen={sum(a for a,_ in g)/n:.1f}s train={sum(b for _,b in g)/n:.1f}s')"
+
+  e. Any promotion/no-promotion console lines from the segment (the
+     gate-fail reasons matter as much as the passes).
+
+---
+
 ## S-queue -- long-horizon strength backlog (OPEN, authoring box)
 
 Full analysis and reasoning: `STRENGTH_NEXT.md` (2026-07-13, written on the
@@ -17,6 +84,10 @@ never-run champion(+search)-vs-gregory measurement. One change per run
 segment, judged by the fixed 300-game panels only. Context: certification of
 gen-6+ is deliberately deferred (2026-07-12) until the compounded margin
 justifies interrupting the run.
+
+Status 2026-07-13: **S0 DONE, S1 AUTHORED (opt-in)** -- see the runbook
+above. S2 (blended value targets) is the next authoring-box item, judged
+against S1's trajectory; S3/S4 wait on the S0 timing data.
 
 ---
 

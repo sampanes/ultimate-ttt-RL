@@ -49,7 +49,7 @@ commit this file lands on.
 
 ---
 
-## S0. Log the generate/train time split  [tiny, land first]
+## S0. Log the generate/train time split  [DONE 2026-07-13, authoring box]
 
 `gen_secs` is computed and printed every block (`expert_iter.py`, the
 "gen Xs / total Xs" line) but never logged. Add `gen_secs` and a
@@ -57,9 +57,20 @@ commit this file lands on.
 dashboard and log show where block time actually goes. Non-behavioral,
 zero risk. This is the decision data for S3/S4.
 
+**Status: LANDED.** Both fields stream to `loss_logs/metrics_log.jsonl`
+automatically once the run restarts on this commit; no flags needed.
+
 ## S1. Gregory joins the training mix -- d2 in curriculum, d3 stays ruler
 
 The headline item; decided 2026-07-13.
+
+**Status: AUTHORED 2026-07-13, opt-in, NOT yet enabled.** `--greg_mix`
+(default 0.0) + `--greg_mix_depth` (default 2, hard-errors if >= the ruler
+depth) are in `expert_iter.py`, with a `greg_games` counter in metrics and a
+slice-layout regression test. The pre-step baseline is
+`scripts/baseline_vs_gregory.py` (CPU-only, safe while the run is live, and
+it prints the enable/stop verdict itself). **The training box runs the
+PENDING.md "S0+S1 runbook" to baseline, enable, and report back.**
 
 Motive: the one known distribution gap. The rnd_mix precedent proves the
 fix class works (its flag help documents the measured random-panel
@@ -226,8 +237,9 @@ hand at every promotion.
 
 ## Suggested order
 
-1. S0 immediately (non-behavioral).
+1. S0 immediately (non-behavioral).  [DONE 2026-07-13]
 2. S1 pre-step (raw-vs-d2 baseline, seconds), then S1 for one full gen.
+   [AUTHORED 2026-07-13 -- training box executes the PENDING.md runbook]
 3. S2 for one gen, judged against S1's trajectory.
 4. S3 or S4 next, chosen with S0's timing data; never both in one segment.
 5. S5/S6 anytime -- they do not touch the run.

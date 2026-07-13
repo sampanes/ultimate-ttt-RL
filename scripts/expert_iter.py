@@ -12,7 +12,10 @@ data-starved. This script starts from PROVEN strength instead:
     checkpoint (RESULT_M2.md), with a fixed slice of games against WinBlockAgent
     to cover the repo's measured tactical blind spot, plus a slice against
     RandomAgent so the student trains on blunder-created positions (the fixed
-    random panel regressed and stalled promotion without it).
+    random panel regressed and stalled promotion without it). An opt-in
+    --greg_mix slice against a shallow GregoryAgent (depth kept strictly below
+    the d3 ruler) covers the minimax-style distribution gap -- the gregory(d3)
+    panel crawls at +1-2 pts/gen while winblock moves at +4 (STRENGTH_NEXT S1).
 
 Loop, forever (Ctrl+C safe, --resume picks up where it left off):
   1. GENERATE: teacher self-play games via train_alphazero.collect_game
@@ -98,6 +101,22 @@ def _search_fn(model, device, sims, sample_moves=6):
 
 def _agent_fn(agent):
     return lambda s, mn: agent.select_move(s)
+
+
+def _opponent_slice(r, opp_mix, rnd_mix, greg_mix=0.0):
+    """Map a uniform draw r in [0, 1) to an opponent-slice tag (or None).
+
+    Slice order is fixed [winblock | random | gregory | self-play], so
+    enabling --greg_mix never reshuffles which r values land in the existing
+    slices, and greg_mix=0.0 is arithmetically identical to the pre-S1 layout.
+    """
+    if r < opp_mix:
+        return "heur"
+    if r < opp_mix + rnd_mix:
+        return "rnd"
+    if r < opp_mix + rnd_mix + greg_mix:
+        return "greg"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -362,6 +381,19 @@ def main():
                          "1-4: promote_random 0.71-0.74 vs the 0.75 floor) and "
                          "the promotion gate correctly stalled. Teacher search "
                          "still labels every training position in this slice.")
+    ap.add_argument("--greg_mix", type=float, default=0.0,
+                    help="Fraction of expert games played against a shallow "
+                         "GregoryAgent (--greg_mix_depth). The one measured "
+                         "distribution gap: the net never sees minimax-style "
+                         "play, so the gregory(d3) panel crawls at +1-2 "
+                         "pts/gen vs winblock's +4 (STRENGTH_NEXT S1). "
+                         "OPT-IN, default 0. Suggested first segment: 0.10, "
+                         "donated equally from --opp_mix and --rnd_mix so "
+                         "pure self-play stays at 0.50.")
+    ap.add_argument("--greg_mix_depth", type=int, default=2,
+                    help="Depth of the training-mix gregory. Must stay BELOW "
+                         "--gregory_depth: training against the ruler burns "
+                         "the instrument (STRENGTH_NEXT rule 1).")
     ap.add_argument("--gate_min", type=float, default=5.0,
                     help="Minutes between gate evals (raw matches + edge probe).")
     ap.add_argument("--gate_games", type=int, default=40)
@@ -411,6 +443,13 @@ def main():
         ap.error("--opp_mix must be in [0, 1]")
     if not 0.0 <= args.rnd_mix <= 1.0 or args.opp_mix + args.rnd_mix > 1.0:
         ap.error("--rnd_mix must be in [0, 1] and --opp_mix + --rnd_mix <= 1")
+    if (not 0.0 <= args.greg_mix <= 1.0
+            or args.opp_mix + args.rnd_mix + args.greg_mix > 1.0):
+        ap.error("--greg_mix must be in [0, 1] and "
+                 "--opp_mix + --rnd_mix + --greg_mix <= 1")
+    if args.greg_mix > 0 and args.greg_mix_depth >= args.gregory_depth:
+        ap.error("--greg_mix_depth must be below --gregory_depth: never train "
+                 "against the honest ruler (STRENGTH_NEXT rule 1)")
     if args.promote_games < 2 or args.gate_games < 2:
         ap.error("--promote_games and --gate_games must be at least 2")
 
@@ -513,6 +552,10 @@ def main():
     heur = WinBlockAgent()
     rnd = RandomAgent()
     greg = GregoryAgent(depth=args.gregory_depth)
+    # Training-mix gregory is a SEPARATE, shallower instance -- the d3 ruler
+    # above must never appear in the training data (STRENGTH_NEXT rule 1).
+    greg_train = (GregoryAgent(depth=args.greg_mix_depth)
+                  if args.greg_mix > 0 else None)
     raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
     best_heur = (saved_state.get("best_heur") if saved_state else None)
     best_random = (saved_state.get("best_random") if saved_state else None)
@@ -572,23 +615,32 @@ def main():
             moves_total = 0
             opponent_games = 0
             rnd_games = 0
+            greg_games = 0
             mini_tac_wins = 0
             mini_tac_blocks = 0
             with torch.no_grad():
                 for _ in range(args.games_per_block):
                     opponent_fn = None
                     opponent_game = False
-                    r = random.random()
-                    if r < args.opp_mix:
+                    tag = _opponent_slice(random.random(), args.opp_mix,
+                                          args.rnd_mix, args.greg_mix)
+                    if tag == "heur":
                         opponent_fn = lambda s: heur.select_move(s)
                         opponent_games += 1
                         opponent_game = True
-                    elif r < args.opp_mix + args.rnd_mix:
+                    elif tag == "rnd":
                         # Random-opponent slice: mini tactics stay OFF here --
                         # the point is teacher-search targets on blunder-created
                         # positions, not the WinBlock motif.
                         opponent_fn = lambda s: rnd.select_move(s)
                         rnd_games += 1
+                    elif tag == "greg":
+                        # Gregory slice (STRENGTH_NEXT S1): teacher-search
+                        # targets on positions a minimax-style opponent forces.
+                        # Mini tactics stay OFF, same reasoning as the random
+                        # slice.
+                        opponent_fn = lambda s: greg_train.select_move(s)
+                        greg_games += 1
                     exs, winner, gstats = collect_game(
                         model=teacher.model,
                         device=device,
@@ -620,6 +672,7 @@ def main():
             gen_secs = time.perf_counter() - t0
 
             # ---- 2. TRAIN ---------------------------------------------------
+            t_train = time.perf_counter()
             avg_loss = avg_pol = avg_val = float("nan")
             lr_clock = (steps_since_promotion if args.lr_gen_reset
                         else steps_total)
@@ -642,6 +695,7 @@ def main():
                 avg_val = vl / args.train_steps
                 steps_total += args.train_steps
                 steps_since_promotion += args.train_steps
+            train_secs = time.perf_counter() - t_train
             student.model.eval()
 
             # ---- 3. GATE (wall-clock paced) ----------------------------------
@@ -652,9 +706,14 @@ def main():
                 "teacher_gen": teacher_gen,
                 "opponent_games": opponent_games,
                 "rnd_games": rnd_games,
+                "greg_games": greg_games,
                 "mini_tac_wins": mini_tac_wins,
                 "mini_tac_blocks": mini_tac_blocks,
                 "lr": round(cur_lr, 8),
+                # S0: where block time actually goes -- the decision data for
+                # the cross-game generation batching call (STRENGTH_NEXT S4).
+                "gen_secs": round(gen_secs, 1),
+                "train_secs": round(train_secs, 1),
             }
             wr_random = float("nan")
             gate_line = ""

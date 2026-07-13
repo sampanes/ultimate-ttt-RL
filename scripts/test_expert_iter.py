@@ -7,8 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scripts.expert_iter import (ShardStore, _decayed_lr, _promote_teacher,
-                                 _promotion_decision)
+from scripts.expert_iter import (ShardStore, _decayed_lr, _opponent_slice,
+                                 _promote_teacher, _promotion_decision)
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
     _mini_tactical_target,
@@ -194,6 +194,28 @@ class ExpertIterationTests(unittest.TestCase):
         # Legacy call without gregory arguments is unchanged.
         promote, failed = _promotion_decision(**base)
         self.assertTrue(promote)
+
+    def test_opponent_slice_layout_is_stable(self):
+        # Legacy two-slice layout: greg_mix omitted must reproduce the pre-S1
+        # branch arithmetic exactly (x + 0.0 == x, so identical thresholds).
+        self.assertEqual(_opponent_slice(0.0, 0.35, 0.15), "heur")
+        self.assertEqual(_opponent_slice(0.34, 0.35, 0.15), "heur")
+        self.assertEqual(_opponent_slice(0.36, 0.35, 0.15), "rnd")
+        self.assertEqual(_opponent_slice(0.45, 0.35, 0.15), "rnd")
+        self.assertIsNone(_opponent_slice(0.51, 0.35, 0.15))
+        # S1 suggested first segment (0.30/0.10/0.10): the gregory slice sits
+        # between random and self-play; winblock/random boundaries only move
+        # via their OWN mix values, never because greg_mix was enabled.
+        self.assertEqual(_opponent_slice(0.05, 0.30, 0.10, 0.10), "heur")
+        self.assertEqual(_opponent_slice(0.29, 0.30, 0.10, 0.10), "heur")
+        self.assertEqual(_opponent_slice(0.31, 0.30, 0.10, 0.10), "rnd")
+        self.assertEqual(_opponent_slice(0.39, 0.30, 0.10, 0.10), "rnd")
+        self.assertEqual(_opponent_slice(0.41, 0.30, 0.10, 0.10), "greg")
+        self.assertEqual(_opponent_slice(0.49, 0.30, 0.10, 0.10), "greg")
+        self.assertIsNone(_opponent_slice(0.51, 0.30, 0.10, 0.10))
+        self.assertIsNone(_opponent_slice(0.99, 0.30, 0.10, 0.10))
+        # greg_mix=0 collapses the gregory slice to empty at any r.
+        self.assertIsNone(_opponent_slice(0.50, 0.35, 0.15, 0.0))
 
     def test_promote_teacher_flips_value_tanh_with_weights(self):
         # The v2 run's fourth failure mode: promotion copied weights via
