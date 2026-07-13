@@ -11,6 +11,7 @@ from scripts.expert_iter import (ShardStore, _decayed_lr, _opponent_slice,
                                  _promote_teacher, _promotion_decision)
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
+    _blend_value,
     _mini_tactical_target,
     policy_value_loss,
 )
@@ -216,6 +217,21 @@ class ExpertIterationTests(unittest.TestCase):
         self.assertIsNone(_opponent_slice(0.99, 0.30, 0.10, 0.10))
         # greg_mix=0 collapses the gregory slice to empty at any r.
         self.assertIsNone(_opponent_slice(0.50, 0.35, 0.15, 0.0))
+
+    def test_blend_value_targets(self):
+        # lam=0 and tactics-shortcut positions (q_root=None, no search ran)
+        # keep the pure game outcome z.
+        self.assertEqual(_blend_value(1.0, 0.5, 0.0), 1.0)
+        self.assertEqual(_blend_value(-1.0, None, 0.4), -1.0)
+        # Blend is (1-lam)*z + lam*q_root, both in the same (root player's)
+        # perspective.
+        self.assertAlmostEqual(_blend_value(1.0, 0.5, 0.4), 0.8)
+        self.assertAlmostEqual(_blend_value(-1.0, 0.25, 0.4), -0.5)
+        self.assertAlmostEqual(_blend_value(0.0, -0.5, 0.5), -0.25)
+        # Defensive clamp: an unbounded (untanhed) root value cannot poison
+        # the targets -- the 2026-07-09 value-scale failure class.
+        self.assertAlmostEqual(_blend_value(1.0, 3.27, 0.5), 1.0)
+        self.assertAlmostEqual(_blend_value(1.0, -3.0, 0.5), 0.0)
 
     def test_promote_teacher_flips_value_tanh_with_weights(self):
         # The v2 run's fourth failure mode: promotion copied weights via

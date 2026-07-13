@@ -206,6 +206,31 @@ def test_virtual_loss_discourages_revisit():
 
 
 # --------------------------------------------------------------------------- #
+# 8. Root Q sign -- S2 (STRENGTH_NEXT) consumes root.Q() as a value target.
+#    On a root where the mover has a provable immediate win, root.Q() must be
+#    strongly POSITIVE (W is stored per-node in its own to_play perspective,
+#    so the root's Q is the ROOT player's expected outcome), while the winning
+#    CHILD's Q is exactly -1.0 (stored from the child's to-play = the LOSER's
+#    perspective). Confusing those two perspectives is the exact sign mistake
+#    the 2026-07-04 virtual-loss bug came from (see _run_wave). This test must
+#    pass before trusting blended value targets built from root.Q().
+# --------------------------------------------------------------------------- #
+def test_root_q_sign_on_won_root():
+    state = _state_one_move_from_x_win()
+    _, root = _mcts(n_sims=100).search(state)
+
+    assert root.to_play == X, "root perspective should be the player to move"
+    assert root.N == 100, f"root got {root.N} backups, expected one per sim"
+    assert root.Q() > 0.5, \
+        f"root Q {root.Q():+.2f} must be strongly positive on a won root"
+
+    win_child = root.children[8]
+    assert win_child.Q() == -1.0, (
+        f"winning child's Q is {win_child.Q():+.2f}; every backup through a "
+        f"terminal win is exactly -1.0 from the child's (loser's) perspective")
+
+
+# --------------------------------------------------------------------------- #
 # Standalone runner (mirrors engine/test_tactics.py style)
 # --------------------------------------------------------------------------- #
 def _run_all():

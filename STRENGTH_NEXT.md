@@ -119,6 +119,17 @@ pool. That item stands on its own.
 
 ## S2. Stop discarding the search's root value -- blended value targets
 
+**Status: AUTHORED 2026-07-13, opt-in, NOT yet enabled.** `--value_blend`
+(default 0.0 = byte-identical, capped at 0.5 by argparse) on `expert_iter.py`
+threads through `collect_game(value_blend=...)`; targets are precombined via
+`_blend_value` so the shard schema stays `(x, pi, z)`. Tactics-shortcut
+positions keep pure z; q_root is defensively clamped to [-1, 1] (untanhed
+gen-0 teacher = the 2026-07-09 poisoning class). The sign warning below is
+now a test: `agents/test_mcts.py::test_root_q_sign_on_won_root` (root Q
+strongly positive on a won root, winning child exactly -1). Enable per the
+PENDING.md runbook -- the segment AFTER S1 is judged, ideally right after a
+promotion so the fresh window is uniformly blended.
+
 Today `collect_game` does `pi, _ = mcts.search(state)` and value targets
 are pure game outcome z in {-1, 0, +1} (highest-variance estimator).
 `MCTS.search` already returns the root node, whose visit-weighted value
@@ -240,7 +251,8 @@ hand at every promotion.
 1. S0 immediately (non-behavioral).  [DONE 2026-07-13]
 2. S1 pre-step (raw-vs-d2 baseline, seconds), then S1 for one full gen.
    [AUTHORED 2026-07-13 -- training box executes the PENDING.md runbook]
-3. S2 for one gen, judged against S1's trajectory.
+3. S2 for one gen, judged against S1's trajectory.  [AUTHORED 2026-07-13 --
+   opt-in `--value_blend`; enable the segment after S1 per the runbook]
 4. S3 or S4 next, chosen with S0's timing data; never both in one segment.
 5. S5/S6 anytime -- they do not touch the run.
 

@@ -4,11 +4,13 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
-## S0+S1 runbook -- TRAINING BOX, run next (authored 2026-07-13)
+## S0+S1+S2 runbook -- TRAINING BOX, run next (authored 2026-07-13)
 
-S0 (gen/train time split in metrics) and S1 (gregory d2 training slice,
-opt-in) are authored and py_compile-verified on the authoring box; runtime
-verification is this runbook. Everything below is cmd from the repo root.
+S0 (gen/train time split in metrics), S1 (gregory d2 training slice, opt-in)
+and S2 (blended value targets, opt-in) are authored and py_compile-verified
+on the authoring box; runtime verification is this runbook. S1 and S2 are
+SEPARATE run segments (rule 3: one change per segment) -- S1 first, S2 the
+segment after. Everything below is cmd from the repo root.
 
 **1. Pull + regression suites** (CPU, fast; the goat run can stay live):
 
@@ -16,7 +18,9 @@ verification is this runbook. Everything below is cmd from the repo root.
     .venv\Scripts\python -m scripts.test_expert_iter
     .venv\Scripts\python -m agents.test_mcts
 
-Expect 10/10 (was 9: new slice-layout test) and 10/10.
+Expect 11/11 (was 9: + slice-layout + value-blend tests) and 11/11 (was 10:
++ root-Q sign test -- the gate for trusting S2's value targets; if THIS one
+fails, do not enable --value_blend, ping the authoring box).
 
 **2. S1 pre-step: baseline the raw net vs gregory d2** (CPU-only, read-only,
 ~1 min, does NOT require stopping the run):
@@ -69,6 +73,21 @@ chat), the useful info in priority order:
   e. Any promotion/no-promotion console lines from the segment (the
      gate-fail reasons matter as much as the passes).
 
+**6. S2 segment -- blended value targets (the segment AFTER S1 is judged).**
+Prereq: step 1's root-Q sign test passed, and S1's gen has been judged (keep
+`--greg_mix` in place -- S1 stays on; S2 is the segment's ONE new variable).
+Cleanest enable point is right after a PROMOTION line: the buffer clears on
+promotion, so the whole new window carries uniformly-blended targets instead
+of a pure-z/blended mix. Add to the same start_goat.bat line:
+
+    ... --greg_mix 0.10 --opp_mix 0.30 --rnd_mix 0.10 --value_blend 0.4 ...
+
+then `start_goat.bat`. Judge over ONE gen by: `value_loss` trend (dashboard
+loss chart / metrics log), the h2h promote gate, and -- if a certification
+happens -- the GOLD fixed suite. Do NOT judge it by winblock/random wobble.
+Paste back: the value_loss series around the enable point + the segment's
+promotion/no-promotion lines.
+
 ---
 
 ## S-queue -- long-horizon strength backlog (OPEN, authoring box)
@@ -85,9 +104,10 @@ segment, judged by the fixed 300-game panels only. Context: certification of
 gen-6+ is deliberately deferred (2026-07-12) until the compounded margin
 justifies interrupting the run.
 
-Status 2026-07-13: **S0 DONE, S1 AUTHORED (opt-in)** -- see the runbook
-above. S2 (blended value targets) is the next authoring-box item, judged
-against S1's trajectory; S3/S4 wait on the S0 timing data.
+Status 2026-07-13: **S0 DONE, S1 + S2 AUTHORED (both opt-in)** -- see the
+runbook above. S3/S4 wait on the S0 timing data; S4 (cross-game batched
+generation) is the next authoring-box build, developable behind a parity
+gate while the S1/S2 segments run.
 
 ---
 

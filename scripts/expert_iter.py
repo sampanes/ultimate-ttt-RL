@@ -394,6 +394,18 @@ def main():
                     help="Depth of the training-mix gregory. Must stay BELOW "
                          "--gregory_depth: training against the ruler burns "
                          "the instrument (STRENGTH_NEXT rule 1).")
+    ap.add_argument("--value_blend", type=float, default=0.0,
+                    help="lam for blended value targets: train the value head "
+                         "on (1-lam)*z + lam*root_Q instead of the pure "
+                         "(highest-variance) game outcome z. The search's "
+                         "visit-weighted root value was previously computed "
+                         "and thrown away (STRENGTH_NEXT S2). OPT-IN, default "
+                         "0 = byte-identical. Suggested first segment: 0.4; "
+                         "keep <= 0.5 toward z (bootstrap bias: root_Q "
+                         "reflects the current net's misjudgments). ONE "
+                         "change per run segment -- enable only after the S1 "
+                         "segment is judged. Tactics-shortcut positions "
+                         "always keep pure z (no search ran).")
     ap.add_argument("--gate_min", type=float, default=5.0,
                     help="Minutes between gate evals (raw matches + edge probe).")
     ap.add_argument("--gate_games", type=int, default=40)
@@ -450,6 +462,10 @@ def main():
     if args.greg_mix > 0 and args.greg_mix_depth >= args.gregory_depth:
         ap.error("--greg_mix_depth must be below --gregory_depth: never train "
                  "against the honest ruler (STRENGTH_NEXT rule 1)")
+    if not 0.0 <= args.value_blend <= 0.5:
+        ap.error("--value_blend must be in [0, 0.5]: past 0.5 the target "
+                 "leans harder on the net's own root value than on the game "
+                 "outcome (bootstrap bias, STRENGTH_NEXT S2)")
     if args.promote_games < 2 or args.gate_games < 2:
         ap.error("--promote_games and --gate_games must be at least 2")
 
@@ -654,6 +670,7 @@ def main():
                         use_mini_tactics=(
                             args.mini_tactic_opp and opponent_game),
                         opponent_fn=opponent_fn,
+                        value_blend=args.value_blend,
                     )
                     new_examples.extend(exs)
                     moves_total += gstats["moves"]

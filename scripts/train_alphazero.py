@@ -163,13 +163,36 @@ def _filter_losing(pi, state, valid):
     return pi
 
 
+def _blend_value(z: float, q_root, lam: float) -> float:
+    """S2 (STRENGTH_NEXT): blended value target (1 - lam)*z + lam*q_root.
+
+    q_root is the search's visit-weighted root value (root.Q()), which
+    MCTSNode stores in the ROOT player's own to-play perspective -- the same
+    perspective z is recorded in for that position, so the two terms mix
+    directly (sign locked by agents/test_mcts.py test_root_q_sign_on_won_root).
+    Positions recorded via the tactics shortcut never ran a search and pass
+    q_root=None -> pure z. Targets are precombined here so the shard schema
+    and buffer stay (x, pi, z).
+
+    q_root is clamped to [-1, 1] defensively: with a tanh value head it is
+    already bounded (terminal leaves are exactly +/-1), but an untanhed gen-0
+    teacher would otherwise leak unbounded values into the targets -- the
+    2026-07-09 value-scale poisoning class.
+    """
+    if q_root is None or lam <= 0.0:
+        return z
+    q = min(1.0, max(-1.0, float(q_root)))
+    return (1.0 - lam) * z + lam * q
+
+
 @torch.no_grad()
 def collect_game(model, device, n_sims: int, c_puct: float,
                  dir_alpha: float, dir_eps: float,
                  wave_size: int, temperature_moves: int,
                  use_tactics: bool = True,
                  use_mini_tactics: bool = False,
-                 opponent_fn=None) -> Tuple[List[Example], int, dict]:
+                 opponent_fn=None,
+                 value_blend: float = 0.0) -> Tuple[List[Example], int, dict]:
     """Play one training game; returns (examples, winner, stats).
 
     stats: tac_wins (win-in-1 shortcuts taken), tac_dodges (positions where
@@ -181,6 +204,11 @@ def collect_game(model, device, n_sims: int, c_puct: float,
     recorded (opponent moves have no MCTS target behind them). Diverse
     opponents widen the position/outcome distribution the way the league did
     for PG training -- twin self-play alone is draw-heavy and narrow.
+
+    value_blend > 0 (S2) trains the value head on (1-lam)*z + lam*root_Q
+    instead of the pure, highest-variance game outcome z -- the root's
+    visit-weighted value was previously computed and thrown away. Default 0.0
+    is byte-identical to pre-S2 behavior.
     """
     mcts = MCTS(model, device, n_sims=n_sims, c_puct=c_puct,
                 add_dirichlet_at_root=True, dir_alpha=dir_alpha, dir_eps=dir_eps,
@@ -191,7 +219,7 @@ def collect_game(model, device, n_sims: int, c_puct: float,
         net_side = X if random.random() < 0.5 else O
 
     state = GameState()
-    trajectory = []  # (tensor, pi, player)
+    trajectory = []  # (tensor, pi, player, q_root or None)
     move_num = 0
     tac_wins = 0
     tac_dodges = 0
@@ -211,7 +239,8 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             if forced_pi is not None:
                 tac_wins += 1
                 x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
-                trajectory.append((x, forced_pi, state.player))
+                # No search ran -> no root Q; this position keeps pure z.
+                trajectory.append((x, forced_pi, state.player, None))
                 state.make_move(forced_move)
                 move_num += 1
                 continue
@@ -224,12 +253,15 @@ def collect_game(model, device, n_sims: int, c_puct: float,
                 else:
                     mini_tac_blocks += 1
                 x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
-                trajectory.append((x, forced_pi, state.player))
+                trajectory.append((x, forced_pi, state.player, None))
                 state.make_move(forced_move)
                 move_num += 1
                 continue
 
-        pi, _ = mcts.search(state)
+        pi, root = mcts.search(state)
+        # root.Q() = visit-weighted root value in the ROOT player's (= this
+        # position's recorded player's) perspective -- the S2 value signal.
+        q_root = float(root.Q())
         if use_tactics:
             filtered = _filter_losing(pi, state, valid)
             if filtered is not pi:  # _filter_losing returns pi unchanged when nothing to zero
@@ -237,7 +269,7 @@ def collect_game(model, device, n_sims: int, c_puct: float,
             pi = filtered
 
         x = board_to_tensor_from_gamestate(state, v_computed=valid).cpu()
-        trajectory.append((x, pi.copy(), state.player))
+        trajectory.append((x, pi.copy(), state.player, q_root))
 
         if move_num < temperature_moves:
             # Proportional sampling with temperature=1 for early moves (exploration).
@@ -253,17 +285,18 @@ def collect_game(model, device, n_sims: int, c_puct: float,
         state.make_move(move)
         move_num += 1
 
-    # Assign outcome z from each position's player perspective.
+    # Assign outcome z from each position's player perspective, optionally
+    # blended with the search's root value (S2; no-op at value_blend=0).
     winner = state.winner
     examples: List[Example] = []
-    for x, pi, player in trajectory:
+    for x, pi, player, q_root in trajectory:
         if winner == DRAW:
             z = 0.0
         elif winner == player:
             z = 1.0
         else:
             z = -1.0
-        examples.append((x, pi, z))
+        examples.append((x, pi, _blend_value(z, q_root, value_blend)))
 
     stats = {
         "tac_wins": tac_wins,
