@@ -369,6 +369,85 @@
       to   { transform: translateY(0);    opacity: 1; }
     }
 
+    /* ==== promotion gates ==== */
+    .promo-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem 1.6rem;
+    }
+    @media (max-width: 860px) { .promo-grid { grid-template-columns: 1fr; } }
+    .promo-row {
+      display: grid; grid-template-columns: 118px 1fr 96px;
+      align-items: center; gap: 0.6rem;
+    }
+    .promo-name { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
+    .promo-track {
+      position: relative; height: 12px; border-radius: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+    }
+    .promo-fill {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+      border-radius: 6px;
+      background: linear-gradient(90deg, var(--accent), var(--cyan));
+      transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .promo-row.pass .promo-fill {
+      background: linear-gradient(90deg, var(--green), var(--cyan));
+      box-shadow: 0 0 10px rgba(34,197,94,0.45);
+    }
+    .promo-target {
+      position: absolute; top: -3px; bottom: -3px; width: 2px;
+      background: var(--yellow); border-radius: 1px;
+    }
+    .promo-val {
+      font-size: 0.72rem; font-variant-numeric: tabular-nums;
+      color: var(--text); text-align: right; white-space: nowrap;
+    }
+    .promo-val .goal { color: var(--muted); }
+    .promo-row.pass .promo-val { color: var(--green); font-weight: 700; }
+    .promo-note { margin-top: 0.55rem; font-size: 0.66rem; color: var(--muted); }
+
+    /* ==== live game viewer ==== */
+    .uttt-layout { display: flex; gap: 1.1rem; flex-wrap: wrap; align-items: flex-start; }
+    .uttt-board {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px;
+      width: min(420px, 92vw); aspect-ratio: 1 / 1; flex: 0 0 auto;
+    }
+    .uttt-mini {
+      position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 3px; padding: 4px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 7px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .uttt-mini.active { border-color: var(--cyan); box-shadow: 0 0 8px rgba(34,211,238,0.35); }
+    .uttt-cell {
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg); border-radius: 3px;
+      font-weight: 800; font-size: clamp(0.7rem, 2.6vw, 1.05rem);
+      color: var(--muted); user-select: none;
+    }
+    .uttt-cell.x { color: var(--accent); }
+    .uttt-cell.o { color: var(--pink); }
+    .uttt-cell.last { outline: 2px solid var(--yellow); outline-offset: -2px; }
+    .uttt-ovl {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 2.4rem; font-weight: 900; border-radius: 7px;
+      background: rgba(19,23,34,0.82);
+      opacity: 0; transform: scale(0.6);
+      transition: opacity 0.25s, transform 0.25s; pointer-events: none;
+    }
+    .uttt-ovl.show { opacity: 1; transform: scale(1); }
+    .uttt-ovl.x { color: var(--accent); }
+    .uttt-ovl.o { color: var(--pink); }
+    .uttt-ovl.d { color: var(--muted); font-size: 1.3rem; }
+    .uttt-side { flex: 1 1 220px; min-width: 200px; display: flex; flex-direction: column; gap: 0.6rem; }
+    .uttt-status { font-size: 0.7rem; color: var(--muted); line-height: 1.55; }
+    .uttt-result { font-size: 1rem; font-weight: 800; min-height: 1.2rem; }
+    .uttt-result.win  { color: var(--green); }
+    .uttt-result.loss { color: var(--red); }
+    .uttt-result.draw { color: var(--yellow); }
+    .uttt-legend { font-size: 0.7rem; color: var(--muted); line-height: 1.6; }
+    .uttt-legend .lg-x { color: var(--accent); font-weight: 800; }
+    .uttt-legend .lg-o { color: var(--pink); font-weight: 800; }
+
     /* ==== footer ==== */
     .footer {
       margin-top: 0.8rem;
@@ -413,8 +492,8 @@
 <!-- ==== no-data state ==== -->
 <div id="no-data">
   No training data yet.<br>
-  Start a run with:<br>
-  <code>python -m scripts.train_alphazero --network medium --value_tanh --games_per_iter 50</code><br><br>
+  Start the goat run with:<br>
+  <code>start_goat.bat</code> (wraps <code>python -m scripts.expert_iter --resume</code>)<br><br>
   This page auto-refreshes every 5 seconds.
 </div>
 
@@ -424,6 +503,39 @@
 <div class="hype" id="hype">
   <div class="hype-tag" id="hype-tag">STATUS</div>
   <div class="hype-text" id="hype-text">Crunching the numbers...</div>
+</div>
+
+<!-- ==== promotion gates ==== -->
+<div class="card" style="margin-bottom:1rem;" id="promo-card">
+  <div class="card-title">
+    <span id="promo-title">Promotion gates</span>
+    <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+      <span id="promo-when">waiting for first check...</span>
+    </div>
+  </div>
+  <div class="promo-grid">
+    <div class="promo-row" id="promo-head">
+      <div class="promo-name">Beat the teacher</div>
+      <div class="promo-track"><div class="promo-fill" id="pf-head"></div><div class="promo-target" id="pt-head"></div></div>
+      <div class="promo-val" id="pv-head">--</div>
+    </div>
+    <div class="promo-row" id="promo-wb">
+      <div class="promo-name">Crush win/block</div>
+      <div class="promo-track"><div class="promo-fill" id="pf-wb"></div><div class="promo-target" id="pt-wb"></div></div>
+      <div class="promo-val" id="pv-wb">--</div>
+    </div>
+    <div class="promo-row" id="promo-rnd">
+      <div class="promo-name">Hold vs random</div>
+      <div class="promo-track"><div class="promo-fill" id="pf-rnd"></div><div class="promo-target" id="pt-rnd"></div></div>
+      <div class="promo-val" id="pv-rnd">--</div>
+    </div>
+    <div class="promo-row" id="promo-greg">
+      <div class="promo-name">Hold vs gregory</div>
+      <div class="promo-track"><div class="promo-fill" id="pf-greg"></div><div class="promo-target" id="pt-greg"></div></div>
+      <div class="promo-val" id="pv-greg">--</div>
+    </div>
+  </div>
+  <div class="promo-note" id="promo-note"></div>
 </div>
 
 <!-- ==== stat cards ==== -->
@@ -449,10 +561,10 @@
     <div class="stat-value" id="s-loss">--</div>
     <div class="stat-sub" id="s-loss-sub">&nbsp;</div>
   </div>
-  <div class="stat-card cyan" id="card-vloss">
-    <div class="stat-label">Value loss</div>
-    <div class="stat-value" id="s-vloss">--</div>
-    <div class="stat-sub" id="s-vloss-sub">&nbsp;</div>
+  <div class="stat-card yellow" id="card-gen">
+    <div class="stat-label">Teacher gen</div>
+    <div class="stat-value" id="s-gen">--</div>
+    <div class="stat-sub" id="s-gen-sub">&nbsp;</div>
   </div>
   <div class="stat-card green" id="card-wr">
     <div class="stat-label">Win rate (now)</div>
@@ -464,10 +576,11 @@
     <div class="stat-value" id="s-best-wr">--</div>
     <div class="stat-sub" id="s-best-wr-sub">&nbsp;</div>
   </div>
-  <div class="stat-card purple" id="card-loss-drop">
-    <div class="stat-label">Loss reduction</div>
-    <div class="stat-value" id="s-loss-drop">--</div>
-    <div class="stat-sub" id="s-loss-drop-sub">&nbsp;</div>
+  <div class="stat-card purple" id="card-lr">
+    <div class="stat-label">Learning rate</div>
+    <div class="stat-value" id="s-lr">--</div>
+    <div class="stat-sub" id="s-lr-sub">&nbsp;</div>
+    <div class="mini-bar aqua" title="position between the 1e-4 floor and the 1e-3 gen-start rate (log scale)"><div id="lr-bar"></div></div>
   </div>
   <div class="stat-card cyan" id="card-buffer">
     <div class="stat-label">Replay buffer</div>
@@ -537,11 +650,48 @@
   <div class="chart-wrap"><canvas id="chart-gauntlet"></canvas></div>
 </div>
 
+<!-- ==== live game viewer ==== -->
+<div class="card" style="margin-bottom:0.7rem;">
+  <div class="card-title">
+    Watch a game -- current student checkpoint, on demand
+    <div class="card-title-actions">
+      <select id="game-opp" class="mini-btn" style="cursor:pointer;">
+        <option value="teacher">vs teacher (raw)</option>
+        <option value="winblock" selected>vs win/block bot</option>
+        <option value="gregory">vs gregory (minimax d3)</option>
+        <option value="random">vs random</option>
+      </select>
+      <select id="game-speed" class="mini-btn" style="cursor:pointer;">
+        <option value="60">fast</option>
+        <option value="140" selected>normal</option>
+        <option value="350">slow</option>
+      </select>
+      <button class="mini-btn active" id="btn-game">Play a game</button>
+    </div>
+  </div>
+  <div class="uttt-layout">
+    <div class="uttt-board" id="uttt-board"></div>
+    <div class="uttt-side">
+      <div class="uttt-result" id="game-result"></div>
+      <div class="uttt-legend" id="game-legend"></div>
+      <div class="uttt-status" id="game-status">Plays ONE game on the CPU when you click -- zero compute otherwise,
+        and the GPU stays 100% on training. The student weights are reloaded fresh for every game, so this is
+        literally the net as of the last save. First click takes ~10s (loads torch); after that games start in
+        well under a second.</div>
+    </div>
+  </div>
+</div>
+
 <!-- ==== charts row 2 ==== -->
 <div class="chart-grid-2">
   <div class="card chart-mid">
-    <div class="card-title">Value loss</div>
-    <div class="chart-wrap"><canvas id="chart-vloss"></canvas></div>
+    <div class="card-title">
+      Exploration dials
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+        LR decays within each gen (explore -&gt; exploit) &middot; entropy = how open-minded search targets are
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-explore"></canvas></div>
   </div>
   <div class="card chart-mid">
     <div class="card-title">
@@ -583,7 +733,9 @@
 
 <div class="footer" id="footer-info">
   Reads <code style="font-family:monospace; font-size:0.68rem;">loss_logs/metrics_log.jsonl</code>
-  &mdash; add <code style="font-family:monospace; font-size:0.68rem;">t</code> (Unix timestamp) field for time tracking
+  + <code style="font-family:monospace; font-size:0.68rem;">models/expert_iter_v2/state.json</code>
+  &mdash; the game viewer needs the dashboard to be served by
+  <code style="font-family:monospace; font-size:0.68rem;">gui.alphazero.dashboard_server</code> (start_dashboard.bat does this)
 </div>
 
 <script>
@@ -644,6 +796,7 @@ const chartLoss = new Chart(document.getElementById('chart-loss'), {
   type: 'line',
   data: { labels: [], datasets: [
     { ..._mkDataset('Total loss', '#ef4444'), yAxisID: 'y' },
+    { ..._mkDataset('Policy loss', '#f59e0b', [7,4]), yAxisID: 'y' },
     { ..._mkDataset('Value loss', '#22d3ee', [4,3]), yAxisID: 'yRight' },
   ]},
   options: lossOpts,
@@ -664,13 +817,26 @@ const chartWr = new Chart(document.getElementById('chart-wr'), {
   options: wrOpts,
 });
 
-// ==== Value loss chart =====================================================
-const chartVloss = new Chart(document.getElementById('chart-vloss'), {
+// ==== Exploration chart ====================================================
+// There is no epsilon here (that's DQN); exploration is Dirichlet root noise
+// (10%) + sampled first 10 plies, both constant, plus the LR decay clock that
+// restarts every promotion -- the actual explore->exploit dial per gen. The
+// entropy line is the MCTS visit targets' open-mindedness in nats.
+const exploreOpts = _baseOpts('learning rate (log)', '#a78bfa');
+exploreOpts.scales.y.type = 'logarithmic';
+exploreOpts.scales.yRight = {
+  position: 'right', grid: { drawOnChartArea: false },
+  ticks: { color: TICK, font: { size: 10 } },
+  title: { display: true, text: 'target entropy (nats)', color: '#22d3ee', font: { size: 10 } },
+  beginAtZero: true,
+};
+const chartExplore = new Chart(document.getElementById('chart-explore'), {
   type: 'line',
   data: { labels: [], datasets: [
-    { ..._mkDataset('Value loss', '#22d3ee') },
+    { ..._mkDataset('learning rate', '#a78bfa'), yAxisID: 'y' },
+    { ..._mkDataset('target entropy', '#22d3ee', [4,3]), yAxisID: 'yRight' },
   ]},
-  options: _baseOpts('value loss', '#22d3ee'),
+  options: exploreOpts,
 });
 
 // ==== Gauntlet chart =======================================================
@@ -728,6 +894,7 @@ let _firstLoad = true;      // suppress celebrations on initial page load
 let _hypeMsgs  = [];
 let _hypeIdx   = 0;
 let _prevLevel = null;
+let _runState  = null;      // models/expert_iter_v2/state.json (bests, gen, counters)
 
 const WR_MILESTONES   = [0.50, 0.60, 0.70, 0.80, 0.90];
 const GAME_MILESTONES = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000,
@@ -902,12 +1069,11 @@ document.getElementById('btn-log-scale').addEventListener('click', () => {
   b.textContent = _logScale ? 'Log scale: ON' : 'Log scale: OFF';
   chartLoss.options.scales.y.type      = _logScale ? 'logarithmic' : 'linear';
   chartLoss.options.scales.yRight.type = _logScale ? 'logarithmic' : 'linear';
-  chartVloss.options.scales.y.type     = _logScale ? 'logarithmic' : 'linear';
   _redraw();
 });
 
 function _resetZoom() {
-  [chartLoss, chartWr, chartVloss, chartGauntlet, chartQual].forEach(c => c.resetZoom());
+  [chartLoss, chartWr, chartExplore, chartGauntlet, chartQual].forEach(c => c.resetZoom());
 }
 
 // ==== Redraw ===============================================================
@@ -921,7 +1087,9 @@ function _redraw() {
   const wrs    = data.map(d => isFinite(d.winrate) && d.winrate > 0 ? d.winrate : NaN);
   const W      = _smooth ? 20 : 1;
 
+  const plosses = data.map(d => isFinite(d.policy_loss) ? d.policy_loss : NaN);
   const smLoss   = _ds(_smooth ? _ma(losses, W)   : losses, MAX_PTS);
+  const smPloss  = _ds(_smooth ? _ma(plosses, W)  : plosses, MAX_PTS);
   const smVloss  = _ds(_smooth ? _ma(vlosses, W)  : vlosses, MAX_PTS);
   const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR -- milestone detection uses raw
   const labels   = _dsLabels(n, MAX_PTS);
@@ -929,7 +1097,8 @@ function _redraw() {
 
   chartLoss.data.labels                = labels;
   chartLoss.data.datasets[0].data      = smLoss;
-  chartLoss.data.datasets[1].data      = smVloss;
+  chartLoss.data.datasets[1].data      = smPloss;
+  chartLoss.data.datasets[2].data      = smVloss;
   chartLoss.update('none');
 
   chartWr.data.labels                  = labels;
@@ -937,9 +1106,12 @@ function _redraw() {
   chartWr.data.datasets[1].data        = bestLine;
   chartWr.update('none');
 
-  chartVloss.data.labels               = labels;
-  chartVloss.data.datasets[0].data     = smVloss;
-  chartVloss.update('none');
+  const lrs  = data.map(d => isFinite(d.lr) ? d.lr : NaN);
+  const ents = data.map(d => isFinite(d.pi_ent) ? d.pi_ent : NaN);
+  chartExplore.data.labels             = labels;
+  chartExplore.data.datasets[0].data   = _ds(lrs, MAX_PTS);
+  chartExplore.data.datasets[1].data   = _ds(_smooth ? _ma(ents, W) : ents, MAX_PTS);
+  chartExplore.update('none');
 
   const gAnchor = _ds(data.map(d => isFinite(d.wr_anchor) ? d.wr_anchor : NaN), MAX_PTS);
   const gPast   = _ds(data.map(d => isFinite(d.wr_past)   ? d.wr_past   : NaN), MAX_PTS);
@@ -1027,16 +1199,25 @@ function _updateCards(data) {
     document.getElementById('s-gph-sub').textContent = 'needs t + games_total';
   }
 
-  // loss
+  // loss -- ONE number; the policy/value split lives in the sub-line
   _setStat('s-loss', last.loss, v => _fmt(v, 3));
-  const lossFirst = first.loss;
-  const lossDelta = isFinite(lossFirst) && isFinite(last.loss) ? last.loss - lossFirst : null;
+  const lossBits = [];
+  if (isFinite(last.policy_loss)) lossBits.push('policy ' + last.policy_loss.toFixed(3));
+  if (isFinite(last.value_loss))  lossBits.push('value ' + last.value_loss.toFixed(3));
   document.getElementById('s-loss-sub').textContent =
-    lossDelta !== null ? (lossDelta < 0 ? '' : '+') + lossDelta.toFixed(3) + ' vs start' : '';
+    lossBits.length ? lossBits.join(' + ') : 'cross-entropy + MSE';
 
-  // value loss
-  _setStat('s-vloss', last.value_loss, v => _fmt(v, 4));
-  document.getElementById('s-vloss-sub').textContent = 'MSE';
+  // teacher generation
+  if (isFinite(last.teacher_gen)) {
+    _setStat('s-gen', last.teacher_gen, v => Math.round(v).toString());
+    document.getElementById('s-gen-sub').textContent =
+      (_runState && isFinite(_runState.games_since_promotion))
+        ? _runState.games_since_promotion.toLocaleString() + ' games since promotion'
+        : 'hunting the next promotion';
+  } else {
+    document.getElementById('s-gen').textContent = '--';
+    document.getElementById('s-gen-sub').textContent = 'needs teacher_gen field';
+  }
 
   // win rate
   const wr = isFinite(last.winrate) && last.winrate > 0 ? last.winrate : NaN;
@@ -1053,14 +1234,18 @@ function _updateCards(data) {
   document.getElementById('s-best-wr-sub').textContent =
     _bestWRIter > 0 ? 'at iter ' + _bestWRIter.toLocaleString() : '';
 
-  // loss reduction
-  const drop = isFinite(lossFirst) && isFinite(last.loss) && lossFirst > 0
-    ? (lossFirst - last.loss) / lossFirst
-    : null;
-  document.getElementById('s-loss-drop').textContent =
-    drop !== null ? (drop * 100).toFixed(0) + '%' : '--';
-  document.getElementById('s-loss-drop-sub').textContent =
-    drop !== null ? _fmt(lossFirst, 2) + ' -> ' + _fmt(last.loss, 2) : 'start loss unknown';
+  // learning rate -- the per-gen explore->exploit dial (no epsilon in AZ)
+  if (isFinite(last.lr)) {
+    _setStat('s-lr', last.lr, v => Number(v).toExponential(1));
+    const lrFrac = Math.max(0, Math.min(1,
+      (Math.log(last.lr) - Math.log(1e-4)) / (Math.log(1e-3) - Math.log(1e-4))));
+    document.getElementById('lr-bar').style.width = (lrFrac * 100).toFixed(1) + '%';
+    document.getElementById('s-lr-sub').textContent =
+      lrFrac <= 0.02 ? 'at the 1e-4 floor' : 'decaying, resets each gen';
+  } else {
+    document.getElementById('s-lr').textContent = '--';
+    document.getElementById('s-lr-sub').textContent = 'needs lr field';
+  }
 
   // replay buffer
   if (isFinite(last.buffer)) {
@@ -1440,10 +1625,19 @@ function _trackBestWR(data) {
   }
 }
 
+// ==== Run-state fetch (bests + counters for the promotion panel) ===========
+function _fetchState() {
+  fetch('../../models/expert_iter_v2/state.json', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(s => { if (s) { _runState = s; if (_allData.length) _updatePromo(_allData); } })
+    .catch(() => {});
+}
+
 // ==== Main fetch loop ======================================================
 async function _fetch() {
   if (_inFlight) return;
   _inFlight = true;
+  _fetchState();
   try {
     const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
     if (!res.ok) { _showNoData(); return; }
@@ -1477,6 +1671,7 @@ async function _fetch() {
     _updateElapsed(data);
     _updateLiveBadge(data);
     _updateReel(data);
+    _updatePromo(data);
     _redraw();
 
     _hypeMsgs = _buildHype(data);
@@ -1500,6 +1695,216 @@ function _showNoData() {
   document.getElementById('main-content').style.display = 'none';
 }
 
+// ==== Promotion gates panel ================================================
+// Thresholds mirror the scripts/expert_iter.py defaults the goat run uses:
+// head-to-head >= promote_thresh (0.55); winblock >= best + promote_margin
+// (0.02); random >= best - random_tolerance (0.03); gregory >= best -
+// gregory_tolerance (0.03). Bests come live from state.json.
+const PROMO = { head: 0.55, wbMargin: 0.02, rndTol: 0.03, gregTol: 0.03 };
+
+function _updatePromo(data) {
+  if (!data.length) return;
+  const st  = _runState || {};
+  const last = data[data.length - 1];
+  const gen = isFinite(last.teacher_gen) ? last.teacher_gen
+            : (isFinite(st.teacher_gen) ? st.teacher_gen : NaN);
+  document.getElementById('promo-title').textContent =
+    'Promotion gates -- path to teacher gen ' + (isFinite(gen) ? (gen + 1) : '?');
+
+  // newest promotion-check row belonging to the CURRENT gen (checks from
+  // before the last promotion were scored against the previous teacher)
+  let row = null, rowIdx = -1, promotedOnRow = false;
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (!isFinite(data[i].promote_score)) continue;
+    if (isFinite(data[i].teacher_gen) && isFinite(gen) && data[i].teacher_gen !== gen) break;
+    row = data[i]; rowIdx = i;
+    promotedOnRow = i > 0 && isFinite(data[i - 1].teacher_gen)
+                    && data[i].teacher_gen > data[i - 1].teacher_gen;
+    break;
+  }
+
+  const bars = [
+    { id: 'head', val: row ? row.promote_score    : NaN, tgt: PROMO.head },
+    { id: 'wb',   val: row ? row.promote_heur     : NaN,
+      tgt: isFinite(st.best_heur)    ? st.best_heur    + PROMO.wbMargin : NaN },
+    { id: 'rnd',  val: row ? row.promote_random   : NaN,
+      tgt: isFinite(st.best_random)  ? st.best_random  - PROMO.rndTol   : NaN },
+    { id: 'greg', val: row ? row.promote_gregory  : NaN,
+      tgt: isFinite(st.best_gregory) ? st.best_gregory - PROMO.gregTol  : NaN },
+  ];
+  let passCount = 0, gateCount = 0;
+  for (const b of bars) {
+    const rowEl = document.getElementById('promo-' + b.id);
+    document.getElementById('pf-' + b.id).style.width =
+      isFinite(b.val) ? (b.val * 100).toFixed(1) + '%' : '0%';
+    const tgtEl = document.getElementById('pt-' + b.id);
+    if (isFinite(b.tgt)) {
+      tgtEl.style.display = '';
+      tgtEl.style.left = Math.min(99.5, b.tgt * 100).toFixed(1) + '%';
+    } else {
+      tgtEl.style.display = 'none';
+    }
+    const pass = isFinite(b.val) && isFinite(b.tgt) && b.val >= b.tgt;
+    rowEl.classList.toggle('pass', pass);
+    if (isFinite(b.tgt)) { gateCount++; if (pass) passCount++; }
+    document.getElementById('pv-' + b.id).innerHTML =
+      (isFinite(b.val) ? (b.val * 100).toFixed(0) + '%' : '--') +
+      ' <span class="goal">/ ' +
+      (isFinite(b.tgt) ? (b.tgt * 100).toFixed(0) + '%' : '?') + '</span>';
+  }
+
+  const whenEl = document.getElementById('promo-when');
+  if (!row) {
+    whenEl.textContent = 'no check yet this gen';
+  } else {
+    whenEl.textContent = 'last check ' +
+      (row.t ? _fmtAge(Date.now() / 1000 - row.t) + ' ago' : 'iter ' + (rowIdx + 1));
+  }
+
+  const noteEl = document.getElementById('promo-note');
+  if (promotedOnRow) {
+    noteEl.textContent = 'These scores PROMOTED gen ' + gen +
+      ' -- the panel refreshes on the first check of the new hunt.';
+  } else if (row) {
+    noteEl.textContent = passCount + ' of ' + gateCount + ' gates green. ' +
+      'The first two must beat their bars (yellow line); the last two are ' +
+      'no-regression floors. All four on the same check = promotion.';
+  } else {
+    noteEl.textContent = 'Promotion checks run every ~25 minutes once enough ' +
+      'games against the new teacher exist.';
+  }
+}
+
+// ==== Live game viewer =====================================================
+// One click = one request to /api/play (dashboard_server.py) = one CPU game
+// with the freshest student.pt. Nothing polls; zero compute unless asked.
+const _gvCells = [];   // cell idx (0-80) -> element
+const _gvOvls  = [];   // mini idx (0-8)  -> overlay element
+(function _buildBoard() {
+  const board = document.getElementById('uttt-board');
+  for (let m = 0; m < 9; m++) {
+    const mini = document.createElement('div');
+    mini.className = 'uttt-mini';
+    mini.id = 'um-' + m;
+    const mr = Math.floor(m / 3), mc = m % 3;
+    for (let lr = 0; lr < 3; lr++) {
+      for (let lc = 0; lc < 3; lc++) {
+        const cell = (mr * 3 + lr) * 9 + (mc * 3 + lc);
+        const el = document.createElement('div');
+        el.className = 'uttt-cell';
+        el.id = 'uc-' + cell;
+        mini.appendChild(el);
+        _gvCells[cell] = el;
+      }
+    }
+    const ovl = document.createElement('div');
+    ovl.className = 'uttt-ovl';
+    mini.appendChild(ovl);
+    _gvOvls[m] = ovl;
+    board.appendChild(mini);
+  }
+})();
+
+let _gvBusy = false;
+let _gvTimer = null;
+
+function _gvReset() {
+  for (const el of _gvCells) { el.textContent = ''; el.className = 'uttt-cell'; }
+  for (const ovl of _gvOvls) { ovl.textContent = ''; ovl.className = 'uttt-ovl'; }
+  document.querySelectorAll('.uttt-mini.active').forEach(x => x.classList.remove('active'));
+}
+
+function _gvDone() {
+  _gvBusy = false;
+  const btn = document.getElementById('btn-game');
+  btn.textContent = 'Play a game';
+  btn.disabled = false;
+}
+
+async function _gvPlay() {
+  if (_gvBusy) return;
+  _gvBusy = true;
+  const btn = document.getElementById('btn-game');
+  btn.textContent = 'Thinking...';
+  btn.disabled = true;
+  if (_gvTimer) { clearTimeout(_gvTimer); _gvTimer = null; }
+  _gvReset();
+  const resultEl = document.getElementById('game-result');
+  resultEl.textContent = '';
+  resultEl.className = 'uttt-result';
+  const status = document.getElementById('game-status');
+  status.textContent = 'Playing on the CPU (first click loads torch, ~10s)...';
+  try {
+    const opp = document.getElementById('game-opp').value;
+    const res = await fetch('/api/play?opp=' + encodeURIComponent(opp), { cache: 'no-store' });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || ('HTTP ' + res.status));
+    _gvAnimate(j);
+  } catch (e) {
+    status.textContent = 'Game API unavailable (' + e.message + '). Is the dashboard ' +
+      'running via start_dashboard.bat? The old bare http.server has no /api/play.';
+    _gvDone();
+  }
+}
+
+function _gvAnimate(j) {
+  const speed = parseInt(document.getElementById('game-speed').value, 10) || 140;
+  const stuSym = j.student_side, oppSym = stuSym === 'X' ? 'O' : 'X';
+  document.getElementById('game-legend').innerHTML =
+    '<span class="lg-' + stuSym.toLowerCase() + '">' + stuSym + '</span> student (gen-' +
+    (isFinite(j.teacher_gen) ? j.teacher_gen : '?') + ' lineage) &nbsp;vs&nbsp; <span class="lg-' +
+    oppSym.toLowerCase() + '">' + oppSym + '</span> ' + j.opp_label;
+  document.getElementById('game-status').textContent =
+    'Server played it in ' + j.elapsed_ms + ' ms -- replaying ' + j.plies + ' plies...';
+  const doneMinis = new Set();
+  let i = 0, lastCell = null;
+  function step() {
+    if (i >= j.moves.length) { _gvFinish(j); return; }
+    const mv = j.moves[i];
+    const el = _gvCells[mv.cell];
+    el.textContent = mv.side;
+    el.classList.add(mv.side.toLowerCase());
+    if (lastCell !== null) _gvCells[lastCell].classList.remove('last');
+    el.classList.add('last');
+    lastCell = mv.cell;
+    if (mv.mini_won) {
+      doneMinis.add(mv.mini);
+      const ovl = _gvOvls[mv.mini];
+      ovl.textContent = mv.mini_won === 'D' ? 'full' : mv.mini_won;
+      ovl.className = 'uttt-ovl show ' + mv.mini_won.toLowerCase();
+      if (mv.mini_won === stuSym) _confetti(25);
+    }
+    document.querySelectorAll('.uttt-mini.active').forEach(x => x.classList.remove('active'));
+    if (i + 1 < j.moves.length && !doneMinis.has(mv.next_mini)) {
+      document.getElementById('um-' + mv.next_mini).classList.add('active');
+    }
+    i++;
+    _gvTimer = setTimeout(step, speed);
+  }
+  step();
+}
+
+function _gvFinish(j) {
+  document.querySelectorAll('.uttt-mini.active').forEach(x => x.classList.remove('active'));
+  const r = document.getElementById('game-result');
+  if (j.result === 'student') {
+    r.textContent = 'STUDENT WINS in ' + j.plies + ' plies';
+    r.className = 'uttt-result win';
+    _celebrate(false);
+  } else if (j.result === 'draw') {
+    r.textContent = 'DRAW after ' + j.plies + ' plies';
+    r.className = 'uttt-result draw';
+  } else {
+    r.textContent = 'Student loses to ' + j.opp_label + ' in ' + j.plies + ' plies';
+    r.className = 'uttt-result loss';
+  }
+  document.getElementById('game-status').textContent =
+    'Click again for a fresh game -- the student weights reload every time, so ' +
+    'this is always the latest checkpoint.';
+  _gvDone();
+}
+document.getElementById('btn-game').addEventListener('click', _gvPlay);
+
 // ==== Stat-card tap-to-explain popover =====================================
 // Tap/click a stat card -> ephemeral popover explaining what the number means.
 // Dismissed by tapping anywhere, tapping the card again, or after 10 seconds.
@@ -1507,11 +1912,11 @@ const CARD_INFO = {
   'card-iter':      ['Iteration', 'One generate/train block: the teacher (MCTS-200 over the current teacher net) plays 16 self-play games, then the student takes 100 SGD steps on the visit-count targets. The sub-line shows the current teacher generation.'],
   'card-games':     ['Games played', 'Total teacher self-play games this run. These games are the training data; the bar underneath is a just-for-fun XP meter to the next games milestone.'],
   'card-gph':       ['Games / hour', 'Teacher self-play throughput. Search-quality games are slow by design (200 sims per move); if this drops sharply, something is contending for the GPU.'],
-  'card-loss':      ['Loss (now)', 'Student training loss: policy cross-entropy vs the MCTS visit distribution, plus value MSE vs the game result. Falling = distilling. It can drift UP right after a promotion because the data starts coming from a stronger teacher.'],
-  'card-vloss':     ['Value loss', 'MSE between the student value head (tanh, -1..+1) and the actual game outcome z. Lower = better at judging who is winning from a single glance at the board.'],
+  'card-loss':      ['Loss (now)', 'Student training loss, ONE number: policy cross-entropy vs the MCTS visit distribution plus value MSE vs the game result (the sub-line shows the split; the Loss curve chart has all three lines -- click the legend to toggle). It can drift UP right after a promotion because the data starts coming from a stronger teacher.'],
+  'card-gen':       ['Teacher gen', 'How many times the student has beaten its teacher and taken its place. Each promotion swaps the teacher, clears the replay buffer, and restarts the LR clock. The promotion-gates panel at the top shows how close the next one is.'],
   'card-wr':        ['Win rate (now)', 'Raw student net -- single forward pass, NO search -- vs a uniformly random player. 40 games every ~5 min, draws count 0.5, first 6 plies sampled for variety. This isolates the policy head; the shipped agent also gets search on top.'],
   'card-best-wr':   ['Best WR ever', 'Highest win-rate-vs-random probe seen this run. A high-water mark, so it only moves when a new probe beats every previous one.'],
-  'card-loss-drop': ['Loss reduction', 'How far current loss has fallen relative to early in the run. Rough progress feel only -- the target distribution shifts every promotion, so this is not comparable across teacher generations.'],
+  'card-lr':        ['Learning rate', 'There is no epsilon here (that is DQN); in AlphaZero-style training the explore/exploit dial is Dirichlet root noise (10%) + sampled first 10 plies (both constant) and THIS: the LR, which restarts at 1e-3 every promotion and halves every 25k steps down to a 1e-4 floor. High = plastic and exploring; low = committing to what it knows.'],
   'card-buffer':    ['Replay buffer', 'Positions in the training window (cap 200k). Every block adds ~880 positions as a shard on disk; once full, the oldest fall out so the student always trains on recent teacher strength.'],
   'card-tac':       ['Kill shots / game', 'Immediate tactical moves per self-play game: taking a mini-board win or blocking one. Ground-truth tactics injected during generation so the targets always contain the forced move when one exists.'],
   'card-sharp':     ['Target sharpness', '1 - entropy/ln(81) of the MCTS visit targets. 0% = search returned a uniform shrug (the old plateau smoking gun), 100% = all visits on one move. Healthy search on a real position sits well above 50%.'],
