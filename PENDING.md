@@ -4,6 +4,22 @@ Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---
 
+## S-queue -- long-horizon strength backlog (OPEN, authoring box)
+
+Full analysis and reasoning: `STRENGTH_NEXT.md` (2026-07-13, written on the
+training box, analysis only -- no training code touched there). Headline:
+`GregoryAgent(depth=2)` joins the expert_iter opponent mix while d3 stays the
+untouched honest ruler. Also queued there: root-value capture for blended
+value targets, playout-cap randomization, cross-game batched generation
+(generation GPU batches are only 12 positions today), gen/train timing in
+metrics, auto teacher snapshots per gen, browser MCTS "Brutal" mode, and the
+never-run champion(+search)-vs-gregory measurement. One change per run
+segment, judged by the fixed 300-game panels only. Context: certification of
+gen-6+ is deliberately deferred (2026-07-12) until the compounded margin
+justifies interrupting the run.
+
+---
+
 ## M5.5 -- DONE 2026-07-11: gen-5 certified as oracle champion + shipped
 
 Gen 5 promoted 2026-07-11 (58% h2h | winblock 35% | random 82% | gregory 14%)
