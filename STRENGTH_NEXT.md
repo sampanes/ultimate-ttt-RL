@@ -36,6 +36,29 @@ commit this file lands on.
   do waves of only 200//16 = 12 leaf evals per forward pass. A 6.8M-param
   net at batch 12 leaves most of an RTX 3080 idle.
 
+### Measured update, 2026-07-14 (training box; full tables in RESULT_S1.md sec 5)
+
+The S0/S3/S4 decision data now exists; the speed items below were re-scoped
+around it. Headlines:
+- Generation is 85% of block wall-clock (train ~2s of a ~95s block).
+- Within a 200-sim self-play game the GPU does ~0.7s of 7.77s (~9%). The
+  per-sim cost is Python-side: MCTS tree bookkeeping, per-leaf tensor
+  building, pybind attribute crossings. The game RULES are already C++
+  (`engine/game.py` loads the pybind GameState: clone/make_move/
+  valid_moves) -- do not re-solve those.
+- Forward-latency sweep: batch 12 costs the same ~0.9 ms as batch 1;
+  batch 256 is the sweet spot at 78.6k pos/s (6.0x today's 13.1k);
+  1024 degrades, 4096 collapses.
+- Cheap/full search cost ratio, 64-vs-200 sims: 0.40 measured (not the
+  naive 0.32; fixed per-move overhead).
+- Live run: 22-30% GPU, 4.1/10.2 GiB. Box has 24 logical cores (Ryzen 9
+  3900X); the run occupies 1-2 of them.
+
+Consequence: forward-batching alone attacks ~9% of generation; every real
+multiplier below is Python-parallelism or fewer/cheaper sims. Owner
+directive 2026-07-14: every speedup that does not cost agent skill is
+FORMALLY REQUESTED -- statuses on S3/S4 and the new S7/S8 reflect that.
+
 ## Ground rules (binding, from the plateau lessons + design preferences)
 
 1. Never train against the honest ruler. If a gregory depth joins the
@@ -64,13 +87,19 @@ automatically once the run restarts on this commit; no flags needed.
 
 The headline item; decided 2026-07-13.
 
-**Status: AUTHORED 2026-07-13, opt-in, NOT yet enabled.** `--greg_mix`
+**Status: LIVE since 2026-07-13.** Baseline said ENABLE (raw gen-6 scored
+0.138 vs d2 AND d3 -- identical, so the d2 slice loses no signal); flags
+`--greg_mix 0.10 --opp_mix 0.30 --rnd_mix 0.10` are in `start_goat.bat`
+(commit 2b55cba), `greg_games` confirmed streaming. T0 data package:
+RESULT_S1.md. Gen-8 is the judgment gen; success bar = gregory(d3) slope
+clearly beating the pre-S1 drift (~+3.4 pts half-over-half within gen-7).
+
+Original authoring notes kept below for the record. `--greg_mix`
 (default 0.0) + `--greg_mix_depth` (default 2, hard-errors if >= the ruler
 depth) are in `expert_iter.py`, with a `greg_games` counter in metrics and a
 slice-layout regression test. The pre-step baseline is
 `scripts/baseline_vs_gregory.py` (CPU-only, safe while the run is live, and
-it prints the enable/stop verdict itself). **The training box runs the
-PENDING.md "S0+S1 runbook" to baseline, enable, and report back.**
+it prints the enable/stop verdict itself).
 
 Motive: the one known distribution gap. The rnd_mix precedent proves the
 fix class works (its flag help documents the measured random-panel
@@ -156,7 +185,19 @@ Judge over one gen: value_loss trend, the GOLD fixed suite
 "fix the value head, unlock search," and it paid; lower-variance value
 targets push the same lever again.
 
-## S3. Playout-cap randomization  [experiment]
+## S3. Playout-cap randomization  [REQUESTED 2026-07-14 -- speed track, smallest diff]
+
+**Status: formally requested; not yet authored** (verified 2026-07-14: no
+p_full/playout code in the repo). Measured re-arithmetic (RESULT_S1.md 5d):
+the cheap/full cost ratio at 64-vs-200 sims is 0.40, so the honest
+projection is ~1.8x games/hour at p_full=0.25 and ~1.4x at p_full=0.5 --
+the 2.2x below used the naive 0.32 ratio; keep the structure, use these
+numbers. Skill-neutrality condition (binding, the reason this qualifies
+for the owner's "no skill cost" list): policy examples recorded ONLY from
+full 200-sim searches, so per-example quality is unchanged; cheap moves
+still play through a >=16-wave search holding a 0.80+ edge over raw, so
+trajectory/z quality degrades little. Behavioral (changes the games/
+examples mix) -> one-gen segment per rule 3.
 
 KataGo's generation trick: most moves only need to be PLAYED reasonably,
 not labeled. Per net move, with p_full ~0.25-0.5 run the full 200 sims
@@ -179,21 +220,45 @@ and judge by promotion wall-clock and panel slopes, not loss curves.
 If S2 has landed, cheap-move positions can optionally record value-only
 examples (KataGo records value everywhere, policy only on full searches).
 
-## S4. Cross-game batched generation  [biggest lift, gate on S0 data]
+## S4. Parallel generation  [REQUESTED 2026-07-14 -- biggest multiplier, RE-SCOPED]
 
-Games are generated one at a time; within a search, leaf batches are
-capped at n_sims//16 = 12 positions (see "measured picture"). Coalescing
-leaf evals ACROSS N concurrent games into one forward pass is the classic
-AlphaZero-engine speedup, and the repo already has the precedent pattern
-(`ParallelGameRunner` + batched opponents in train_league; the wave engine
-already dedups leaves within a search).
+**Status: formally requested, re-scoped by measurement (RESULT_S1.md 5e).**
+The original design below -- single-process coalescing of leaf evals across
+games -- is DEAD as a primary lever: the GPU is only ~9% of generation
+time, so batching forwards alone caps near 1.1x. The redirect:
 
-Expected 2-5x generation throughput; the 3080 is demonstrably underfilled.
-Prereq: S0 confirming generation dominates block time (near-certain: 100
-train steps at batch 256 are seconds, a 16-game block at 200 sims is not).
-Risks: per-root Dirichlet/RNG correctness, memory, real refactor surface
-in `collect_game`/`MCTS`. Do after S1/S2 land; do not combine with S3 in
-the same segment.
+- N game-actor PROCESSES, each owning whole games end to end (tree ops,
+  clones, tensor building -- the ~90% Python term). Multiprocessing, not
+  threads (GIL).
+- First cut, simplest: fully independent workers, each doing its own
+  batch-12 forwards on the shared GPU (WDDM timeslices fine at these
+  sizes; measured batch-12 latency equals batch-1). Workers return
+  finished games' examples to the parent over a queue; shard writes,
+  buffer, and the block train step stay in the parent, single-writer.
+- Second cut, only if (a) shows GPU contention: one shared eval server
+  process coalescing leaf waves from all workers toward the measured
+  batch-256 sweet spot (78.6k pos/s, 6x ceiling).
+- Sizing: 24 logical cores on the box, the run uses 1-2 today. 6-10
+  workers -> honest 3-5x games/hour; leave cores for the OS/dashboard
+  and the periodic weekly-scan contention.
+
+Skill-neutrality: distribution-preserving, NOT byte-identical -- each
+worker needs its own seeded RNG stream (per-root Dirichlet stays per-game
+and correct), so gate with a timing A/B plus panels-inside-noise rather
+than a byte parity oracle; land at a promotion boundary to keep the
+window clean. Teacher weights are read-only during generation (blocks
+alternate generate/train), so workers can hold a frozen copy per block;
+refresh on block start.
+
+Original notes (kept for the batching-precedent pointers): the repo
+already has the pattern precedent (`ParallelGameRunner` + batched
+opponents in train_league; the wave engine already dedups leaves within a
+search). Risks: per-root Dirichlet/RNG correctness, memory, real refactor
+surface in `collect_game`/`MCTS`. Windows note: multiprocessing spawn +
+CUDA in workers works but each worker pays a CUDA context (~300 MB VRAM);
+at 6-10 workers that is ~2-3 GiB against the 6 GiB currently free --
+budget it, or route evals through the shared server (cut two) which needs
+only one context.
 
 ## S5. Deploy-side strength (independent of training, anytime)
 
@@ -205,11 +270,12 @@ a) Browser "Brutal" mode: the certified best mode is mcts_100 (panel mean
    ort-web latency first (likely 1-3s/move, acceptable for an opt-in
    mode).
 
-b) Missing measurement: champion(+search) vs gregory(d3) has NEVER been
-   run -- the 0.14 gate number is the naked net. One CPU-only match on
-   the training box (no run interrupt needed) closes the "beats
-   everything measured" claim. Either add gregory as a benchmark_suite
-   anchor or script `_play_fixed_match` with an MCTS-wrapped candidate.
+b) [DONE 2026-07-13, RESULT_S1.md sec 6] champion(+search) vs gregory(d3)
+   measured for the first time: gregory beats EVERY deployed config (best
+   mode mcts_100 scores 0.342; gen-5 and gen-6 identical -- gen-over-gen
+   gains do not transfer). The gregory(d3) panel is now the primary
+   yardstick, and (a)'s "Brutal" mode must NOT be marketed as beating
+   d3-level play at 100 sims; re-size (a) after S1 lands.
 
 ## S6. Auto-snapshot the teacher at promotion  [ops, tiny]
 
@@ -218,7 +284,59 @@ by a manual copy to `models/expert_iter_v2/snapshots/teacher_gen6.pt`.
 Have `_save_teacher` (or the promotion branch) also write
 `snapshots/teacher_gen{N}.pt`. 26 MB/gen, gitignored, hundreds are fine
 on disk; removes a manual step the training box currently performs by
-hand at every promotion.
+hand at every promotion (done again for gen-7).
+
+## S7. MCTS tree reuse between moves  [NEW ASK 2026-07-14 -- speed track]
+
+**Status: formally requested; does not exist** (verified: `MCTS.search`
+builds a cold root every move; `collect_game` constructs one MCTS per game
+but carries no tree across moves). The move just played is typically the
+child holding the plurality of the previous search's 200 visits; that
+subtree is discarded and recomputed. Keeping it warm-starts each search
+~30-50% for near-zero code cost -- LC0/KataGo standard practice.
+
+Change: MCTS keeps its last root; after the game advances with move `a`,
+descend to `children[a]` and adopt it (with its N/W/children intact) as
+the next search's root. Re-apply Dirichlet noise to the adopted root's
+priors -- root noise is a per-search decoration, not stored tree state.
+In pure self-play both sides are the same searcher, so consecutive
+searches are exactly one ply apart and reuse fires on every move. In
+opponent-slice games descend two plies (net move, then the opponent's
+reply) when that child exists, else cold-start; restricting reuse to the
+self-play slice is an acceptable first cut.
+
+Skill notes: same net, same sim budget, strictly more accumulated search
+per position -- skill-neutral-to-positive. One care point: an adopted
+root arrives pre-visited, so fresh root noise has less influence;
+mitigations are the re-noising above plus optionally cold-starting during
+the `temperature_moves` opening plies to protect opening diversity.
+Behavioral (pi targets sharpen slightly) -> one-gen segment per rule 3.
+Expected ~1.3-1.5x effective sims per wall-clock second; multiplies with
+S3 (cheap searches reuse too) and S4 (per worker).
+
+## S8. Per-sim hot path: tensor build + pybind crossings  [NEW ASK 2026-07-14]
+
+**Status: formally requested.** The rules are ALREADY C++ (`engine/game.py`
+loads the pybind GameState; clone/make_move/valid_moves), so the residual
+~90%-Python generation cost is MCTS tree bookkeeping,
+`board_to_tensor_from_gamestate`, and pybind attribute crossings -- every
+leaf eval reads `state.board` / `mini_winners` / `last_move` through
+pybind (container conversion per access) and then builds the (7,9,9)
+tensor in Python. Candidates, to be profile-ranked before building (the
+training box will paste a cProfile of `collect_game` on request):
+
+  a) C++ `fill_planes(out)` on GameState writing the 7x9x9 input planes
+     straight into a caller-provided numpy buffer -- one crossing per
+     leaf, zero Python plane math. Batch variant taking a wave of states.
+  b) Vectorized wave tensor build: one numpy op for all ~12 leaves of a
+     wave instead of 12 sequential per-leaf builds.
+  c) Tree-in-C++ (node storage, PUCT select, backprop) -- biggest lift;
+     only if profiling shows tree ops still dominate after (a)/(b).
+
+Skill-neutrality: pure infra, byte-identical outputs, parity-gated like
+batch_opponents (`verify_opponent_batch_parity` precedent) -- may land
+mid-segment, no gen judgment needed. Multiplies with S4 (faster workers
+x more workers) and raises S4's per-worker ceiling.
 
 ---
 
@@ -249,12 +367,26 @@ hand at every promotion.
 ## Suggested order
 
 1. S0 immediately (non-behavioral).  [DONE 2026-07-13]
-2. S1 pre-step (raw-vs-d2 baseline, seconds), then S1 for one full gen.
-   [AUTHORED 2026-07-13 -- training box executes the PENDING.md runbook]
+2. S1 for one full gen.  [LIVE 2026-07-13 -- gen-8 is the judgment gen]
 3. S2 for one gen, judged against S1's trajectory.  [AUTHORED 2026-07-13 --
-   opt-in `--value_blend`; enable the segment after S1 per the runbook]
-4. S3 or S4 next, chosen with S0's timing data; never both in one segment.
-5. S5/S6 anytime -- they do not touch the run.
+   opt-in `--value_blend`; enable at the first promotion after S1 is judged]
+4. Speed track (ALL formally requested by the owner 2026-07-14 -- "every
+   speedup that does not cost agent skill"):
+   - Behavioral items, one segment each per rule 3: S3 (playout-cap,
+     ~1.4-1.8x, smallest diff) then S7 (tree reuse, ~1.3-1.5x). Default
+     slotting is the two segments after S2; pulling them ahead of S2 is
+     the owner's call if wall-clock is the current pain -- either order
+     is fine, just one behavioral change per segment.
+   - Infra items, parity/A-B gated, no gen judgment: S8 (hot path,
+     byte-identical) may land mid-segment; S4 (multiprocess actors,
+     distribution-preserving) lands at a promotion boundary. Both can be
+     AUTHORED anytime in parallel with the segments above.
+   - Compounded honest estimate on this hardware: S3 x S7 x S4 ~= 5-10x
+     games/hour; S8 raises S4's per-worker ceiling further. Measured
+     anchors: cheap/full ratio 0.40, batch-256 = 6x GPU headroom, 24
+     cores at 1-2 used.
+5. S5a re-sized after S1 lands (100 sims is not "Brutal" vs d3); S6
+   anytime -- they do not touch the run.
 
 Context for the queue's pace: certification of gen-6+ is deliberately
 deferred (owner decision 2026-07-12) until the compounded margin justifies

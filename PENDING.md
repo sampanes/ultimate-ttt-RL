@@ -104,10 +104,34 @@ segment, judged by the fixed 300-game panels only. Context: certification of
 gen-6+ is deliberately deferred (2026-07-12) until the compounded margin
 justifies interrupting the run.
 
-Status 2026-07-13: **S0 DONE, S1 + S2 AUTHORED (both opt-in)** -- see the
-runbook above. S3/S4 wait on the S0 timing data; S4 (cross-game batched
-generation) is the next authoring-box build, developable behind a parity
-gate while the S1/S2 segments run.
+Status 2026-07-14: **S0 DONE, S1 LIVE (gen-8 = the judgment gen), S2
+AUTHORED** -- runbook above executed through step 3; T0 data package in
+RESULT_S1.md (baseline, gen-7 series, GPU/timing diagnostics, the
+champion-vs-gregory ladder).
+
+**SPEED TRACK -- formal owner request 2026-07-14** ("every speedup that
+does not cost agent skill, asked for formally"). Four items, specs +
+skill-safety conditions + landing rules in STRENGTH_NEXT.md:
+
+  - **S3 playout-cap randomization** -- ~1.4-1.8x games/hour (measured
+    cheap/full ratio 0.40); policy examples only from full searches.
+    Behavioral -> own one-gen segment. Smallest diff, build first.
+  - **S7 tree reuse between moves (NEW)** -- ~1.3-1.5x effective sims;
+    adopt the played child's subtree, re-noise the root. Behavioral ->
+    own segment.
+  - **S4 multiprocess game actors (RE-SCOPED)** -- the big one, 3-5x.
+    Generation is ~90% Python (RESULT_S1.md 5e), GPU only ~9%, box has
+    24 cores with 1-2 used. Single-process forward-coalescing is dead as
+    designed; N worker processes + optional shared eval server. Infra,
+    A/B-gated, land at a promotion boundary.
+  - **S8 per-sim hot path (NEW)** -- C++ fill_planes / vectorized wave
+    tensor build / pybind-crossing cuts (rules are ALREADY C++). Pure
+    infra, byte-identical, parity-gated, may land mid-segment. Raises
+    S4's per-worker ceiling.
+
+Compounded honest ceiling ~5-10x games/hour on current hardware. S8 and
+S4 can be AUTHORED now in parallel with the S1/S2 segments; S3/S7 slot
+one per segment (default: after S2, owner may pull them ahead).
 
 ---
 
