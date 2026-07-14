@@ -4,54 +4,56 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AlphaZero Training</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b9eff' stroke-width='2' stroke-linecap='round'><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e31f26' stroke-width='2' stroke-linecap='round'><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/></svg>" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,300;0,400;0,700;0,900;1,700;1,900&display=swap');
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:       #0a0d13;
-      --surface:  #131722;
-      --surface2: #1b212e;
-      --border:   #29313f;
-      --text:     #e6edf3;
-      --muted:    #8b97a8;
-      --accent:   #3b9eff;
-      --cyan:     #22d3ee;
+      /* surfaces: deep navy page, carbon panes, slate hairlines */
+      --bg:       #1e2a3a;
+      --surface:  #252729;
+      --surface2: #474748;
+      --border:   #4a5568;
+      --text:     #cbd5e0;
+      --muted:    #828282;
+      /* one hot accent, darkened (never lightened) on interaction */
+      --accent:        #e31f26;
+      --accent-hover:  #ce1a20;
+      --accent-active: #ac161b;
+      /* cool support tones for series/aux chrome */
+      --cyan:     #7d9bc1;   /* steel */
+      --purple:   #cbd5e0;   /* mist */
+      --pink:     #b5b6b6;   /* silver */
+      /* semantic signals (unchanged meaning) */
       --green:    #22c55e;
-      --red:      #ef4444;
+      --red:      #e31f26;
       --yellow:   #f59e0b;
-      --purple:   #a78bfa;
-      --pink:     #ec4899;
+      /* geometry + motion: square-dominant, functional-only */
+      --radius:      4px;
+      --radius-pill: 999px;
+      --t-fast: 120ms;
+      --t:      160ms;
     }
 
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      font-family: 'Lato', 'Segoe UI', system-ui, sans-serif;
       min-height: 100vh;
-      padding: 1.1rem;
+      padding: 24px;
       position: relative;
       overflow-x: hidden;
     }
-    /* animated aurora backdrop */
-    body::before {
-      content: "";
-      position: fixed; inset: -40%;
-      background:
-        radial-gradient(ellipse 40% 30% at 20% 10%, rgba(59,158,255,0.09), transparent 60%),
-        radial-gradient(ellipse 35% 30% at 85% 20%, rgba(167,139,250,0.08), transparent 60%),
-        radial-gradient(ellipse 45% 35% at 60% 90%, rgba(34,211,238,0.06), transparent 60%);
-      animation: aurora 24s ease-in-out infinite alternate;
-      pointer-events: none; z-index: 0;
-    }
-    @keyframes aurora {
-      0%   { transform: translate(0, 0) scale(1); }
-      50%  { transform: translate(3%, -2%) scale(1.06); }
-      100% { transform: translate(-3%, 2%) scale(1); }
-    }
     body > * { position: relative; z-index: 1; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     /* record celebration: edge glow */
     #edge-glow {
@@ -80,25 +82,20 @@
     }
     .header-left { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
     .header-title {
-      font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em;
-      background: linear-gradient(90deg, var(--text), var(--accent), var(--cyan), var(--text));
-      background-size: 300% 100%;
-      -webkit-background-clip: text; background-clip: text;
-      -webkit-text-fill-color: transparent;
-      animation: titleshine 8s linear infinite;
+      font-size: 1.15rem; font-weight: 900; font-style: italic;
+      text-transform: uppercase; letter-spacing: 0.02em;
+      color: var(--text);
     }
-    @keyframes titleshine {
-      0% { background-position: 0% 0; } 100% { background-position: 300% 0; }
-    }
+    .header-title .title-accent { color: var(--accent); }
     .pulse-ring {
       display: inline-block; width: 8px; height: 8px; border-radius: 50%;
       background: var(--cyan);
       animation: pulse 2s infinite;
     }
     @keyframes pulse {
-      0%   { box-shadow: 0 0 0 0 rgba(34,211,238,0.4); }
-      70%  { box-shadow: 0 0 0 8px rgba(34,211,238,0); }
-      100% { box-shadow: 0 0 0 0 rgba(34,211,238,0); }
+      0%   { box-shadow: 0 0 0 0 rgba(125,155,193,0.4); }
+      70%  { box-shadow: 0 0 0 8px rgba(125,155,193,0); }
+      100% { box-shadow: 0 0 0 0 rgba(125,155,193,0); }
     }
     .live-badge {
       display: flex; align-items: center; gap: 0.4rem;
@@ -114,50 +111,47 @@
 
     .level-chip {
       display: flex; align-items: center; gap: 0.45rem;
-      font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
-      padding: 0.2rem 0.65rem; border-radius: 999px;
-      background: linear-gradient(90deg, rgba(167,139,250,0.18), rgba(236,72,153,0.14));
-      border: 1px solid rgba(167,139,250,0.45);
-      color: var(--purple);
+      font-size: 0.72rem; font-weight: 900; letter-spacing: 0.06em;
+      padding: 0.2rem 0.65rem; border-radius: var(--radius-pill);
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
       text-transform: uppercase;
     }
-    .level-chip .lv-num { color: var(--pink); }
+    .level-chip .lv-num { color: var(--text); }
 
     .header-right { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
     .btn {
-      background: var(--surface2); color: var(--text);
-      border: 1px solid var(--border); border-radius: 7px;
-      padding: 0.4rem 0.8rem; font-size: 0.8rem; font-weight: 600;
-      cursor: pointer; transition: border-color 0.15s;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 8px 16px; font-size: 0.8rem; font-weight: 700;
+      font-family: inherit;
+      cursor: pointer; transition: border-color var(--t), background var(--t);
     }
     .btn:hover { border-color: var(--accent); }
+    .btn:active { background: var(--accent-active); color: #fff; }
     .btn.active {
-      border-color: var(--accent); color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+      border-color: var(--accent); color: #fff;
+      background: var(--accent);
     }
+    .btn.active:hover { background: var(--accent-hover); }
 
     /* ==== hype banner ==== */
     .hype {
-      margin-bottom: 1rem;
+      margin-bottom: 16px;
       padding: 0.65rem 1rem;
-      border-radius: 12px;
+      border-radius: var(--radius);
       border: 1px solid var(--border);
-      background:
-        linear-gradient(90deg, rgba(59,158,255,0.10), rgba(34,211,238,0.06), rgba(167,139,250,0.10));
+      border-left: 3px solid var(--accent);
+      background: var(--surface);
       display: flex; align-items: center; gap: 0.8rem;
       overflow: hidden; position: relative;
     }
-    .hype::after {
-      content: ""; position: absolute; top: 0; bottom: 0; width: 40%;
-      background: linear-gradient(105deg, transparent, rgba(230,237,243,0.05), transparent);
-      animation: shimmer 5s linear infinite;
-    }
-    @keyframes shimmer { 0% { left: -45%; } 100% { left: 105%; } }
     .hype-tag {
       flex: 0 0 auto;
-      font-size: 0.6rem; font-weight: 800; letter-spacing: 0.12em;
-      color: var(--cyan); border: 1px solid rgba(34,211,238,0.45);
-      border-radius: 4px; padding: 0.12rem 0.45rem; text-transform: uppercase;
+      font-size: 0.6rem; font-weight: 900; letter-spacing: 0.12em;
+      color: var(--accent); border: 1px solid var(--accent);
+      border-radius: var(--radius-pill); padding: 0.12rem 0.5rem; text-transform: uppercase;
     }
     .hype-text {
       font-size: 0.95rem; font-weight: 700; letter-spacing: -0.01em;
@@ -165,8 +159,8 @@
     }
     .hype-text.fade { opacity: 0; }
     .hype.record {
-      border-color: var(--yellow);
-      background: linear-gradient(90deg, rgba(245,158,11,0.18), rgba(236,72,153,0.10));
+      border-color: var(--yellow); border-left-color: var(--yellow);
+      background: color-mix(in srgb, var(--yellow) 8%, var(--surface));
     }
     .hype.record .hype-tag { color: var(--yellow); border-color: rgba(245,158,11,0.6); }
 
@@ -174,14 +168,14 @@
     .stat-row {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 0.7rem;
-      margin-bottom: 1rem;
+      gap: 16px;
+      margin-bottom: 16px;
     }
     .stat-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 0.8rem 1rem;
+      border-radius: var(--radius);
+      padding: 16px;
       position: relative; overflow: hidden;
       transition: border-color 0.3s, box-shadow 0.3s;
       cursor: pointer;
@@ -190,11 +184,11 @@
     /* ephemeral tap-to-explain popover for stat cards */
     #card-info {
       position: fixed; z-index: 200; max-width: 270px;
-      background: var(--surface2, #1c2430); color: var(--text);
-      border: 1px solid var(--accent); border-radius: 8px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--accent); border-radius: var(--radius);
       padding: 0.6rem 0.75rem; font-size: 0.72rem; line-height: 1.45;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.55);
-      opacity: 0; pointer-events: none; transition: opacity 0.15s;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.45);
+      opacity: 0; pointer-events: none; transition: opacity var(--t-fast);
     }
     #card-info.show { opacity: 1; pointer-events: auto; }
     #card-info .ci-title {
@@ -204,15 +198,15 @@
     .stat-card.bump { animation: bump 0.55s ease; }
     @keyframes bump {
       0%   { transform: scale(1); }
-      30%  { transform: scale(1.035); box-shadow: 0 0 18px rgba(59,158,255,0.25); }
+      30%  { transform: scale(1.035); box-shadow: 0 0 18px rgba(227,31,38,0.22); }
       100% { transform: scale(1); }
     }
     .stat-label {
-      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.07em;
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
       color: var(--muted); text-transform: uppercase; margin-bottom: 0.3rem;
     }
     .stat-value {
-      font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+      font-size: 1.5rem; font-weight: 900; letter-spacing: -0.02em; line-height: 1;
       font-variant-numeric: tabular-nums;
     }
     .stat-sub {
@@ -229,29 +223,29 @@
 
     /* mini progress bar inside stat cards */
     .mini-bar {
-      margin-top: 0.45rem; height: 5px; border-radius: 3px;
+      margin-top: 0.45rem; height: 5px; border-radius: 2px;
       background: var(--surface2); overflow: hidden;
     }
     .mini-bar > div {
       height: 100%; width: 0%;
-      border-radius: 3px;
-      background: linear-gradient(90deg, var(--purple), var(--pink));
+      border-radius: 2px;
+      background: var(--accent);
       transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .mini-bar.gold > div { background: linear-gradient(90deg, var(--yellow), var(--pink)); }
-    .mini-bar.aqua > div { background: linear-gradient(90deg, var(--accent), var(--cyan)); }
+    .mini-bar.gold > div { background: var(--yellow); }
+    .mini-bar.aqua > div { background: var(--cyan); }
 
     /* ==== chart grid ==== */
     .chart-grid {
       display: grid;
       grid-template-columns: 2fr 1fr;
-      gap: 0.7rem;
-      margin-bottom: 0.7rem;
+      gap: 16px;
+      margin-bottom: 16px;
     }
     .chart-grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.7rem;
+      gap: 16px;
     }
     @media (max-width: 860px) {
       .chart-grid, .chart-grid-2 { grid-template-columns: 1fr; }
@@ -260,8 +254,8 @@
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 0.9rem 1rem 1rem;
+      border-radius: var(--radius);
+      padding: 16px;
     }
     .card-title {
       font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
@@ -273,13 +267,14 @@
     .mini-btn {
       font-size: 0.65rem; padding: 0.15rem 0.4rem;
       background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 4px; cursor: pointer; color: var(--muted);
-      transition: color 0.12s, border-color 0.12s;
+      border-radius: var(--radius); cursor: pointer; color: var(--text);
+      font-family: inherit;
+      transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
     }
-    .mini-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .mini-btn:hover { border-color: var(--accent); }
     .mini-btn.active {
-      color: var(--accent); border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+      color: #fff; border-color: var(--accent);
+      background: var(--accent);
       font-weight: 700;
     }
 
@@ -294,8 +289,8 @@
     }
     .milestone {
       font-size: 0.62rem; padding: 0.15rem 0.5rem;
-      border-radius: 4px; border: 1px solid var(--border);
-      background: var(--surface2); color: var(--muted);
+      border-radius: var(--radius-pill); border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text);
       transition: background 0.3s, color 0.3s, border-color 0.3s;
     }
     .milestone.reached {
@@ -312,12 +307,12 @@
       font-variant-numeric: tabular-nums;
     }
     .nm-bar {
-      height: 8px; border-radius: 4px; background: var(--surface2);
+      height: 8px; border-radius: var(--radius); background: var(--surface2);
       overflow: hidden; border: 1px solid var(--border);
     }
     .nm-bar > div {
       height: 100%; width: 0%;
-      background: linear-gradient(90deg, var(--green), var(--cyan));
+      background: var(--green);
       transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
       box-shadow: 0 0 8px rgba(34,197,94,0.5);
     }
@@ -326,7 +321,7 @@
     .log-box {
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: var(--radius);
       padding: 0.5rem 0.7rem;
       font-size: 0.65rem;
       font-family: "Consolas", "SF Mono", monospace;
@@ -348,10 +343,10 @@
       display: flex; align-items: baseline; gap: 0.5rem;
       font-size: 0.68rem;
       padding: 0.3rem 0.55rem;
-      border-radius: 6px;
+      border-radius: var(--radius);
       background: var(--surface2);
       border: 1px solid var(--border);
-      color: var(--muted);
+      color: var(--text);
       font-variant-numeric: tabular-nums;
     }
     .reel-item .reel-iter {
@@ -360,9 +355,9 @@
     }
     .reel-item.kind-record  { border-color: rgba(245,158,11,0.5); color: var(--yellow); }
     .reel-item.kind-mile    { border-color: rgba(34,197,94,0.5);  color: var(--green); }
-    .reel-item.kind-games   { border-color: rgba(59,158,255,0.5); color: var(--accent); }
-    .reel-item.kind-loss    { border-color: rgba(34,211,238,0.5); color: var(--cyan); }
-    .reel-item.kind-level   { border-color: rgba(167,139,250,0.5); color: var(--purple); }
+    .reel-item.kind-games   { border-color: rgba(227,31,38,0.5);  color: var(--accent); }
+    .reel-item.kind-loss    { border-color: rgba(125,155,193,0.5); color: var(--cyan); }
+    .reel-item.kind-level   { border-color: rgba(203,213,224,0.4); color: var(--purple); }
     .reel-item:first-child  { animation: reelin 0.5s ease; }
     @keyframes reelin {
       from { transform: translateY(-6px); opacity: 0; }
@@ -380,17 +375,17 @@
     }
     .promo-name { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
     .promo-track {
-      position: relative; height: 12px; border-radius: 6px;
+      position: relative; height: 12px; border-radius: var(--radius);
       background: var(--surface2); border: 1px solid var(--border);
     }
     .promo-fill {
       position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
-      border-radius: 6px;
-      background: linear-gradient(90deg, var(--accent), var(--cyan));
+      border-radius: var(--radius);
+      background: var(--accent);
       transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
     }
     .promo-row.pass .promo-fill {
-      background: linear-gradient(90deg, var(--green), var(--cyan));
+      background: var(--green);
       box-shadow: 0 0 10px rgba(34,197,94,0.45);
     }
     .promo-target {
@@ -414,14 +409,14 @@
     .uttt-mini {
       position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
       gap: 3px; padding: 4px;
-      background: var(--surface2); border: 1px solid var(--border); border-radius: 7px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .uttt-mini.active { border-color: var(--cyan); box-shadow: 0 0 8px rgba(34,211,238,0.35); }
+    .uttt-mini.active { border-color: var(--cyan); box-shadow: 0 0 8px rgba(125,155,193,0.35); }
     .uttt-cell {
       display: flex; align-items: center; justify-content: center;
-      background: var(--bg); border-radius: 3px;
-      font-weight: 800; font-size: clamp(0.7rem, 2.6vw, 1.05rem);
+      background: var(--bg); border-radius: 2px;
+      font-weight: 900; font-size: clamp(0.7rem, 2.6vw, 1.05rem);
       color: var(--muted); user-select: none;
     }
     .uttt-cell.x { color: var(--accent); }
@@ -429,8 +424,8 @@
     .uttt-cell.last { outline: 2px solid var(--yellow); outline-offset: -2px; }
     .uttt-ovl {
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      font-size: 2.4rem; font-weight: 900; border-radius: 7px;
-      background: rgba(19,23,34,0.82);
+      font-size: 2.4rem; font-weight: 900; border-radius: var(--radius);
+      background: rgba(37,39,41,0.85);
       opacity: 0; transform: scale(0.6);
       transition: opacity 0.25s, transform 0.25s; pointer-events: none;
     }
@@ -462,8 +457,8 @@
     }
     #no-data code {
       background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 4px; padding: 0.1rem 0.4rem;
-      font-family: "Consolas", monospace; color: var(--cyan);
+      border-radius: var(--radius); padding: 0.1rem 0.4rem;
+      font-family: "Consolas", monospace; color: var(--text);
     }
   </style>
 </head>
@@ -475,7 +470,7 @@
 <!-- ==== header ==== -->
 <div class="header">
   <div class="header-left">
-    <div class="header-title">AlphaZero Training</div>
+    <div class="header-title"><span class="title-accent">AlphaZero</span> Training</div>
     <div class="live-badge" id="live-badge"><span class="pulse-ring"></span><span id="live-text">Live &middot; 5s</span></div>
     <div class="level-chip" id="level-chip" style="display:none;">
       <span>LVL <span class="lv-num" id="lv-num">1</span></span>
@@ -740,8 +735,9 @@
 
 <script>
 // ==== Chart defaults =======================================================
-const GRID   = 'rgba(41,49,63,0.5)';
-const TICK   = '#64748b';
+Chart.defaults.font.family = "'Lato', 'Segoe UI', system-ui, sans-serif";
+const GRID   = 'rgba(74,85,104,0.35)';
+const TICK   = '#828282';
 const MAX_PTS = 4000;
 
 function _baseOpts(yLabel, yColor) {
@@ -763,10 +759,10 @@ function _baseOpts(yLabel, yColor) {
       },
     },
     plugins: {
-      legend: { labels: { usePointStyle: true, color: '#8b97a8', font: { size: 11 }, padding: 12 } },
+      legend: { labels: { usePointStyle: true, color: '#b5b6b6', font: { size: 11 }, padding: 12 } },
       tooltip: {
-        backgroundColor: '#131722', borderColor: '#29313f', borderWidth: 1,
-        titleColor: '#e6edf3', bodyColor: '#8b97a8', padding: 9,
+        backgroundColor: '#252729', borderColor: '#4a5568', borderWidth: 1,
+        titleColor: '#cbd5e0', bodyColor: '#b5b6b6', padding: 9,
       },
       zoom: {
         pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
@@ -785,19 +781,19 @@ function _mkDataset(label, color, dash) {
 }
 
 // ==== Loss chart ===========================================================
-const lossOpts = _baseOpts('loss', '#ef4444');
+const lossOpts = _baseOpts('loss', '#e31f26');
 lossOpts.scales.yRight = {
   position: 'right', grid: { drawOnChartArea: false },
   ticks: { color: TICK, font: { size: 10 } },
-  title: { display: true, text: 'value loss', color: '#22d3ee', font: { size: 10 } },
+  title: { display: true, text: 'value loss', color: '#7d9bc1', font: { size: 10 } },
   beginAtZero: false,
 };
 const chartLoss = new Chart(document.getElementById('chart-loss'), {
   type: 'line',
   data: { labels: [], datasets: [
-    { ..._mkDataset('Total loss', '#ef4444'), yAxisID: 'y' },
+    { ..._mkDataset('Total loss', '#e31f26'), yAxisID: 'y' },
     { ..._mkDataset('Policy loss', '#f59e0b', [7,4]), yAxisID: 'y' },
-    { ..._mkDataset('Value loss', '#22d3ee', [4,3]), yAxisID: 'yRight' },
+    { ..._mkDataset('Value loss', '#7d9bc1', [4,3]), yAxisID: 'yRight' },
   ]},
   options: lossOpts,
 });
@@ -822,19 +818,19 @@ const chartWr = new Chart(document.getElementById('chart-wr'), {
 // (10%) + sampled first 10 plies, both constant, plus the LR decay clock that
 // restarts every promotion -- the actual explore->exploit dial per gen. The
 // entropy line is the MCTS visit targets' open-mindedness in nats.
-const exploreOpts = _baseOpts('learning rate (log)', '#a78bfa');
+const exploreOpts = _baseOpts('learning rate (log)', '#cbd5e0');
 exploreOpts.scales.y.type = 'logarithmic';
 exploreOpts.scales.yRight = {
   position: 'right', grid: { drawOnChartArea: false },
   ticks: { color: TICK, font: { size: 10 } },
-  title: { display: true, text: 'target entropy (nats)', color: '#22d3ee', font: { size: 10 } },
+  title: { display: true, text: 'target entropy (nats)', color: '#7d9bc1', font: { size: 10 } },
   beginAtZero: true,
 };
 const chartExplore = new Chart(document.getElementById('chart-explore'), {
   type: 'line',
   data: { labels: [], datasets: [
-    { ..._mkDataset('learning rate', '#a78bfa'), yAxisID: 'y' },
-    { ..._mkDataset('target entropy', '#22d3ee', [4,3]), yAxisID: 'yRight' },
+    { ..._mkDataset('learning rate', '#cbd5e0'), yAxisID: 'y' },
+    { ..._mkDataset('target entropy', '#7d9bc1', [4,3]), yAxisID: 'yRight' },
   ]},
   options: exploreOpts,
 });
@@ -842,7 +838,7 @@ const chartExplore = new Chart(document.getElementById('chart-explore'), {
 // ==== Gauntlet chart =======================================================
 // Sparse: only iterations where a gauntlet ran carry these fields -- spanGaps
 // connects the dots.
-const gauntletOpts = _baseOpts('score (draws = 0.5)', '#a78bfa');
+const gauntletOpts = _baseOpts('score (draws = 0.5)', '#cbd5e0');
 gauntletOpts.scales.y.min = 0; gauntletOpts.scales.y.max = 1;
 function _mkGDataset(label, color, dash) {
   return { ..._mkDataset(label, color, dash), spanGaps: true, pointRadius: 2.5, pointHoverRadius: 5 };
@@ -850,11 +846,11 @@ function _mkGDataset(label, color, dash) {
 const chartGauntlet = new Chart(document.getElementById('chart-gauntlet'), {
   type: 'line',
   data: { labels: [], datasets: [
-    _mkGDataset('vs anchor (day-one / teacher)', '#a78bfa'),
-    _mkGDataset('vs past self', '#3b9eff'),
+    _mkGDataset('vs anchor (day-one / teacher)', '#cbd5e0'),
+    _mkGDataset('vs past self', '#7d9bc1'),
     _mkGDataset('vs win/block bot', '#f59e0b'),
-    _mkGDataset('MCTS edge over raw net', '#ec4899', [5,4]),
-    { ..._mkDataset('parity', '#4b5563', [2,4]), borderWidth: 1, pointRadius: 0, spanGaps: true },
+    _mkGDataset('MCTS edge over raw net', '#e31f26', [5,4]),
+    { ..._mkDataset('parity', '#4a5568', [2,4]), borderWidth: 1, pointRadius: 0, spanGaps: true },
   ]},
   options: gauntletOpts,
 });
@@ -868,15 +864,15 @@ qualOpts.scales.y.min = 0; qualOpts.scales.y.max = 1;
 qualOpts.scales.yRight = {
   position: 'right', grid: { drawOnChartArea: false },
   ticks: { color: TICK, font: { size: 10 } },
-  title: { display: true, text: 'avg game length', color: '#8b97a8', font: { size: 10 } },
+  title: { display: true, text: 'avg game length', color: '#828282', font: { size: 10 } },
   beginAtZero: false,
 };
 const chartQual = new Chart(document.getElementById('chart-quality'), {
   type: 'line',
   data: { labels: [], datasets: [
     { ..._mkDataset('draw rate', '#f59e0b'), spanGaps: true },
-    { ..._mkDataset('target sharpness', '#a78bfa'), spanGaps: true },
-    { ..._mkDataset('avg game length', '#64748b', [4,3]), yAxisID: 'yRight', spanGaps: true, borderWidth: 1.5 },
+    { ..._mkDataset('target sharpness', '#cbd5e0'), spanGaps: true },
+    { ..._mkDataset('avg game length', '#828282', [4,3]), yAxisID: 'yRight', spanGaps: true, borderWidth: 1.5 },
   ]},
   options: qualOpts,
 });
@@ -1005,7 +1001,7 @@ function _titleFor(bestWR) {
 const _cCanvas = document.getElementById('confetti-canvas');
 const _cCtx = _cCanvas.getContext('2d');
 let _cParts = [], _cRunning = false;
-const _cColors = ['#3b9eff', '#22d3ee', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#ef4444'];
+const _cColors = ['#e31f26', '#cbd5e0', '#22c55e', '#f59e0b', '#7d9bc1', '#b5b6b6', '#ce1a20'];
 
 function _confetti(count) {
   _cCanvas.width = window.innerWidth;
