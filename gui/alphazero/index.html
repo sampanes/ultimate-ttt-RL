@@ -32,6 +32,10 @@
       --green:    #22c55e;
       --red:      #e31f26;
       --yellow:   #f59e0b;
+      /* game viewer sides: OUR net is always hot, the opponent always cold.
+         Bound to the side that moved, never to the X/O glyph. */
+      --us:       #e31f26;
+      --them:     #7f8792;
       /* geometry + motion: square-dominant, functional-only */
       --radius:      4px;
       --radius-pill: 999px;
@@ -39,15 +43,18 @@
       --t:      160ms;
     }
 
+    /* Mobile-first: base rules target the narrow phone viewport, min-width
+       queries add breathing room as the screen grows. */
     body {
       background: var(--bg);
       color: var(--text);
       font-family: 'Lato', 'Segoe UI', system-ui, sans-serif;
       min-height: 100vh;
-      padding: 24px;
+      padding: 10px;
       position: relative;
       overflow-x: hidden;
     }
+    @media (min-width: 700px) { body { padding: 24px; } }
     body > * { position: relative; z-index: 1; }
 
     @media (prefers-reduced-motion: reduce) {
@@ -167,9 +174,15 @@
     /* ==== stat cards ==== */
     .stat-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 16px;
-      margin-bottom: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    @media (min-width: 700px) {
+      .stat-row {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 16px; margin-bottom: 16px;
+      }
     }
     .stat-card {
       background: var(--surface);
@@ -238,37 +251,40 @@
     /* ==== chart grid ==== */
     .chart-grid {
       display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 16px;
-      margin-bottom: 16px;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
     }
     .chart-grid-2 {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
+      grid-template-columns: 1fr;
+      gap: 10px;
     }
-    @media (max-width: 860px) {
-      .chart-grid, .chart-grid-2 { grid-template-columns: 1fr; }
+    @media (min-width: 861px) {
+      .chart-grid   { grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
+      .chart-grid-2 { grid-template-columns: 1fr 1fr; gap: 16px; }
     }
 
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px;
+      padding: 12px;
     }
+    @media (min-width: 700px) { .card { padding: 16px; } }
     .card-title {
       font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
       color: var(--muted); text-transform: uppercase;
       margin-bottom: 0.6rem;
       display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+      flex-wrap: wrap;
     }
-    .card-title-actions { display: flex; gap: 0.35rem; }
+    .card-title-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; min-width: 0; }
     .mini-btn {
-      font-size: 0.65rem; padding: 0.15rem 0.4rem;
+      font-size: 0.65rem; padding: 0.3rem 0.5rem;
       background: var(--surface2); border: 1px solid var(--border);
       border-radius: var(--radius); cursor: pointer; color: var(--text);
-      font-family: inherit;
+      font-family: inherit; max-width: 100%;
       transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
     }
     .mini-btn:hover { border-color: var(--accent); }
@@ -366,12 +382,17 @@
 
     /* ==== promotion gates ==== */
     .promo-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem 1.6rem;
+      display: grid; grid-template-columns: 1fr; gap: 0.55rem;
     }
-    @media (max-width: 860px) { .promo-grid { grid-template-columns: 1fr; } }
+    @media (min-width: 861px) {
+      .promo-grid { grid-template-columns: 1fr 1fr; gap: 0.55rem 1.6rem; }
+    }
     .promo-row {
-      display: grid; grid-template-columns: 118px 1fr 96px;
-      align-items: center; gap: 0.6rem;
+      display: grid; grid-template-columns: 96px 1fr 76px;
+      align-items: center; gap: 0.45rem;
+    }
+    @media (min-width: 700px) {
+      .promo-row { grid-template-columns: 118px 1fr 96px; gap: 0.6rem; }
     }
     .promo-name { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
     .promo-track {
@@ -401,10 +422,18 @@
     .promo-note { margin-top: 0.55rem; font-size: 0.66rem; color: var(--muted); }
 
     /* ==== live game viewer ==== */
-    .uttt-layout { display: flex; gap: 1.1rem; flex-wrap: wrap; align-items: flex-start; }
+    /* Board first, side panel under it; they sit side by side once there is room.
+       Widths are container-relative (never vw) so the card padding cannot push
+       the board past the right edge. */
+    .uttt-layout { display: flex; flex-direction: column; gap: 0.9rem; align-items: stretch; }
     .uttt-board {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px;
-      width: min(420px, 92vw); aspect-ratio: 1 / 1; flex: 0 0 auto;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
+      width: 100%; max-width: 420px; margin: 0 auto;
+      aspect-ratio: 1 / 1; flex: 0 0 auto;
+    }
+    @media (min-width: 760px) {
+      .uttt-layout { flex-direction: row; gap: 1.1rem; align-items: flex-start; }
+      .uttt-board  { gap: 7px; margin: 0; }
     }
     .uttt-mini {
       position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
@@ -416,11 +445,13 @@
     .uttt-cell {
       display: flex; align-items: center; justify-content: center;
       background: var(--bg); border-radius: 2px;
-      font-weight: 900; font-size: clamp(0.7rem, 2.6vw, 1.05rem);
+      font-weight: 900; font-size: clamp(0.65rem, 3.2vw, 1.05rem);
       color: var(--muted); user-select: none;
     }
-    .uttt-cell.x { color: var(--accent); }
-    .uttt-cell.o { color: var(--pink); }
+    /* Side colors are keyed to WHO MOVED, not to the glyph: our net is always
+       hot, the opponent always cold, whichever of X/O it happens to be. */
+    .uttt-cell.us   { color: var(--us); }
+    .uttt-cell.them { color: var(--them); }
     .uttt-cell.last { outline: 2px solid var(--yellow); outline-offset: -2px; }
     .uttt-ovl {
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -430,18 +461,29 @@
       transition: opacity 0.25s, transform 0.25s; pointer-events: none;
     }
     .uttt-ovl.show { opacity: 1; transform: scale(1); }
-    .uttt-ovl.x { color: var(--accent); }
-    .uttt-ovl.o { color: var(--pink); }
-    .uttt-ovl.d { color: var(--muted); font-size: 1.3rem; }
-    .uttt-side { flex: 1 1 220px; min-width: 200px; display: flex; flex-direction: column; gap: 0.6rem; }
+    .uttt-ovl.us   { color: var(--us); }
+    .uttt-ovl.them { color: var(--them); }
+    .uttt-ovl.d    { color: var(--muted); font-size: 1.3rem; }
+    .uttt-side { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 0.6rem; }
     .uttt-status { font-size: 0.7rem; color: var(--muted); line-height: 1.55; }
     .uttt-result { font-size: 1rem; font-weight: 800; min-height: 1.2rem; }
     .uttt-result.win  { color: var(--green); }
     .uttt-result.loss { color: var(--red); }
     .uttt-result.draw { color: var(--yellow); }
-    .uttt-legend { font-size: 0.7rem; color: var(--muted); line-height: 1.6; }
-    .uttt-legend .lg-x { color: var(--accent); font-weight: 800; }
-    .uttt-legend .lg-o { color: var(--pink); font-weight: 800; }
+    /* Legend: one row per side, glyph badge + who it is, same colors as the board. */
+    .uttt-legend { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.72rem; }
+    .lg-row { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+    .lg-badge {
+      flex: 0 0 auto; width: 1.35rem; height: 1.35rem;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 900; border-radius: var(--radius);
+      border: 1px solid currentColor;
+    }
+    .lg-who  { font-weight: 900; letter-spacing: 0.04em; text-transform: uppercase; }
+    .lg-desc { color: var(--muted); overflow-wrap: anywhere; }
+    .lg-row.us   { color: var(--us); }
+    .lg-row.us   .lg-badge { background: color-mix(in srgb, var(--us) 15%, transparent); }
+    .lg-row.them { color: var(--them); }
 
     /* ==== footer ==== */
     .footer {
@@ -1846,10 +1888,16 @@ async function _gvPlay() {
 function _gvAnimate(j) {
   const speed = parseInt(document.getElementById('game-speed').value, 10) || 140;
   const stuSym = j.student_side, oppSym = stuSym === 'X' ? 'O' : 'X';
+  // Our net owns stuSym this game -- side classes follow the player, not the glyph.
+  const sideCls = sym => (sym === stuSym ? 'us' : 'them');
   document.getElementById('game-legend').innerHTML =
-    '<span class="lg-' + stuSym.toLowerCase() + '">' + stuSym + '</span> student (gen-' +
-    (isFinite(j.teacher_gen) ? j.teacher_gen : '?') + ' lineage) &nbsp;vs&nbsp; <span class="lg-' +
-    oppSym.toLowerCase() + '">' + oppSym + '</span> ' + j.opp_label;
+    '<div class="lg-row us"><span class="lg-badge">' + stuSym + '</span>' +
+      '<span class="lg-who">Our net</span>' +
+      '<span class="lg-desc">student, gen-' +
+      (isFinite(j.teacher_gen) ? j.teacher_gen : '?') + ' lineage</span></div>' +
+    '<div class="lg-row them"><span class="lg-badge">' + oppSym + '</span>' +
+      '<span class="lg-who">Opponent</span>' +
+      '<span class="lg-desc">' + j.opp_label + '</span></div>';
   document.getElementById('game-status').textContent =
     'Server played it in ' + j.elapsed_ms + ' ms -- replaying ' + j.plies + ' plies...';
   const doneMinis = new Set();
@@ -1859,7 +1907,7 @@ function _gvAnimate(j) {
     const mv = j.moves[i];
     const el = _gvCells[mv.cell];
     el.textContent = mv.side;
-    el.classList.add(mv.side.toLowerCase());
+    el.classList.add(sideCls(mv.side));
     if (lastCell !== null) _gvCells[lastCell].classList.remove('last');
     el.classList.add('last');
     lastCell = mv.cell;
@@ -1867,7 +1915,8 @@ function _gvAnimate(j) {
       doneMinis.add(mv.mini);
       const ovl = _gvOvls[mv.mini];
       ovl.textContent = mv.mini_won === 'D' ? 'full' : mv.mini_won;
-      ovl.className = 'uttt-ovl show ' + mv.mini_won.toLowerCase();
+      ovl.className = 'uttt-ovl show ' +
+        (mv.mini_won === 'D' ? 'd' : sideCls(mv.mini_won));
       if (mv.mini_won === stuSym) _confetti(25);
     }
     document.querySelectorAll('.uttt-mini.active').forEach(x => x.classList.remove('active'));
