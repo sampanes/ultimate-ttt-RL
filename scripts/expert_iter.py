@@ -72,6 +72,7 @@ from agents.mcts import MCTS
 from agents.neural_net_agent_pg import NeuralNetAgentPG
 from agents.random_agent import RandomAgent
 from scripts.game_actors import GameActorPool, build_actor_cfg
+from scripts.eval_server import EvalServerActorPool
 from scripts.train_alphazero import (NETWORK_CONFIGS, ReplayBuffer,
                                      _policy_move, collect_game,
                                      train_on_examples)
@@ -345,6 +346,14 @@ def main():
                          "~300 MB of CUDA context. Distribution-preserving, NOT "
                          "byte-identical: the main process still draws the "
                          "opponent mix; actors draw their own per-game noise.")
+    ap.add_argument("--eval_server", action="store_true",
+                    help="STRENGTH_NEXT S5: route every actor's forward through "
+                         "ONE GPU-owning eval server (batched, single CUDA "
+                         "context) instead of a model replica per actor. Removes "
+                         "the S4 context-serialization wall (RESULT_S4 sec 3); "
+                         "actors become pure-CPU so --actors can rise well past "
+                         "8. Requires --actors > 0. Same distribution-preserving "
+                         "contract as the first cut.")
     ap.add_argument("--train_steps", type=int, default=100,
                     help="SGD steps per block.")
     ap.add_argument("--batch_size", type=int, default=256)
@@ -590,10 +599,19 @@ def main():
     actor_pool = None
     if args.actors > 0:
         actor_cfg = build_actor_cfg(args, device, teacher_path, teacher_tanh)
-        actor_pool = GameActorPool(args.actors, actor_cfg)
-        print(f"[S4] {args.actors} game actors up "
-              f"(generation runs in worker processes; "
-              f"sequential path is --actors 0)", flush=True)
+        if args.eval_server:
+            # S5: one GPU-owning server batches all actors' forwards; actors are
+            # pure-CPU. Same play_block/reload_weights/close interface as the
+            # first-cut pool, so the generation loop below is unchanged.
+            actor_pool = EvalServerActorPool(args.actors, actor_cfg)
+            print(f"[S5] eval server + {args.actors} CPU game actors up "
+                  f"(one CUDA context, batched forwards; "
+                  f"drop --eval_server for a context per actor)", flush=True)
+        else:
+            actor_pool = GameActorPool(args.actors, actor_cfg)
+            print(f"[S4] {args.actors} game actors up "
+                  f"(generation runs in worker processes; "
+                  f"sequential path is --actors 0)", flush=True)
 
     raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
     best_heur = (saved_state.get("best_heur") if saved_state else None)
