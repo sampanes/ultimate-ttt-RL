@@ -173,8 +173,7 @@ Implications for the queue:
 
 Per the runbook step 5: the promote_gregory series before/after restart,
 `greg_games` > 0 proof, the S0 gen/train split from the NEW metrics fields,
-and the segment's promotion lines. Will be appended here as "S1 segment
-verdict".
+and the segment's promotion lines. **Delivered: see section 9.**
 
 ## 8. Index
 
@@ -184,3 +183,128 @@ verdict".
 - Diagnostics ran from throwaway scripts against repo APIs only
   (`_play_fixed_match`, `collect_game`, `MCTSAgent`); protocols and seeds
   are fully specified above for codification if wanted.
+
+---
+
+# 9. S1 segment verdict -- PASS (with caveats)
+
+*Appended 2026-07-15, the day gen-8 promoted. Gen-8 is the judgment gen: its
+entire 19,424-game window was generated on the S1 mix.*
+
+## 9a. The segment
+
+    [**] INFERENCE PROMOTION: raw student beat raw teacher 55% | winblock 42%
+         | random 90% | gregory 17% -> gen 7    (2026-07-14, games_total 71,488)
+    [**] INFERENCE PROMOTION: raw student beat raw teacher 55% | winblock 50%
+         | random 90% | gregory 18% -> gen 8    (2026-07-15, games_total 90,912)
+
+Gen-8 segment: 62 promotion checks, 19,424 games, promoted at head 0.5517 /
+winblock 0.4983 / random 0.8967 / gregory 0.1750, lr at the 1e-4 floor.
+Weights preserved: `models/expert_iter_v2/snapshots/teacher_gen8.pt`
+(SHA-256 `113a63c2...9747`, payload verified gen=8, value_tanh=True,
+24 tensors / 6,766,386 params). NOT certified or shipped (standing hold).
+
+## 9b. Mix proof -- the S1 slice ran at exactly its target
+
+`greg_games` across 1,512 instrumented blocks: 2,431 gregory(d2) games,
+mean **1.61 per 16-game block = 10.05%** against a `--greg_mix 0.10` target.
+Distribution 0-7/block (490 blocks at 1, 423 at 2, 275 at 0, 225 at 3, ...)
+-- i.e. per-block sampling, not a fixed quota. S0 split at the gen-8
+promotion block: `gen_secs 74.4`, `train_secs 1.7` (generation is ~98% of a
+non-eval block; matches section 5c).
+
+## 9c. The ruler: gregory(d3) per rebuild segment
+
+Segment N = the student's rebuild toward teacher gen N (rows measured against
+teacher N-1, closed by the promotion row). Never trained against: training
+uses d2, the ruler is d3.
+
+    seg |  n | mean  | 1st half -> 2nd half | half-over-half | max
+      3 | 18 |  6.53 |  5.90 ->  7.17       | +1.27          |  9.0
+      4 | 21 |  8.09 |  6.73 ->  9.32       | +2.59          | 12.5
+      5 | 33 | 10.00 |  9.03 -> 10.92       | +1.89          | 14.5
+      6 | 44 | 11.62 | 10.46 -> 12.77       | +2.31          | 16.7
+      7 | 66 | 14.20 | 12.66 -> 15.74       | +3.08          | 21.5   <- pre-S1
+      8 | 62 | 18.29 | 16.15 -> 20.44       | +4.29          | 25.2   <- S1
+      9 |  5 | 15.70 | (rebuild in progress)                 | 17.2
+
+Section 4 set the bar: "call S1 real if the gregory slope visibly steepens
+past ~+4 pts/gen post-restart." Gen-8 = **+4.29**. That clears it, but only
+just, and the slope alone would be a thin result. The stronger evidence is
+the level shift, below.
+
+## 9d. Did gregory outrun GENERAL strength? (the confound that matters)
+
+The null hypothesis: gen-8 just got stronger across the board and gregory
+rode along. Test it against the panels that contain no minimax at all.
+Gen-over-gen change in segment mean:
+
+    step | gregory(d3) |  winblock |   random |    head
+    3->4 |      +1.56  |    +3.35  |   +2.15  |   -1.59
+    4->5 |      +1.91  |    +2.96  |   +1.82  |   -1.42
+    5->6 |      +1.63  |    +3.74  |   +2.80  |   +0.74
+    6->7 |      +2.58  |    +5.10  |   +2.03  |   -0.89
+    7->8 |      +4.09  |    +4.17  |   +1.95  |   +0.00   <- S1
+
+    same, relative to the previous segment mean:
+    3->4 |     +23.9%  |   +16.4%  |   +2.8%  |   -3.1%
+    4->5 |     +23.6%  |   +12.5%  |   +2.3%  |   -2.8%
+    5->6 |     +16.3%  |   +14.0%  |   +3.5%  |   +1.5%
+    6->7 |     +22.2%  |   +16.7%  |   +2.4%  |   -1.8%
+    7->8 |     +28.8%  |   +11.7%  |   +2.3%  |    0.0%   <- S1
+
+Read it this way:
+- **Gregory posted its best-ever gain (+4.09 pts, 1.58x the previous best
+  +2.58) in the same segment where winblock posted a BELOW-trend one**
+  (+4.17 vs gen-7's +5.10). General strength did not surge in gen-8;
+  gregory did.
+- Relative-gain ratio gregory/winblock: 1.46, 1.89, 1.16, 1.33 historically
+  -> **2.46 in gen-8**. First segment where the minimax ruler moved ~2.5x
+  faster than general strength.
+- `head` sits at ~48-50 every segment BY CONSTRUCTION (promotion fires when
+  it crosses 55, so the segment mean cannot drift) -- it carries no signal
+  here. `random` is saturating (87.5) and is a floor, not a yardstick.
+
+## 9e. Instrument note: do NOT judge this from the promotion line
+
+The promotion-boundary readings tell the OPPOSITE story from the segment
+means, and the boundary is the biased one:
+
+    boundary gregory: .080 .125 .138 .143 .168 .175   (gen-8 delta: +0.7 pts)
+    boundary winblock: .247 .295 .350 .382 .422 .498  (gen-8 delta: +7.7 pts)
+
+That looks like winblock surged and gregory stalled -- exactly backwards from
+9d. Cause: **promotion requires winblock >= best + 0.02, so a promotion row is
+by definition a row where winblock came in high.** The boundary winblock is a
+selected sample, biased upward, and is not a valid gen-over-gen measurement.
+Gregory has only a no-regression floor (never a "must be high" bar), so its
+boundary value is unbiased -- but it is a single 300-game panel (SE ~2 pts),
+which is why +0.7 there is noise, not a finding. **The 62-check segment mean
+is the statistic; the promotion line is an announcement.** Same family of
+error as the retired self-oracle criterion (CHAMPIONS.md).
+
+## 9f. Verdict
+
+**S1 PASS.** The gregory(d2) training slice is doing what it was bought to
+do: the independent d3 ruler moved +4.09 pts of segment mean (best ever, 1.6x
+the prior record) and steepened to +4.29 half-over-half (past the pre-set ~+4
+bar), while the no-minimax panels moved at or below their own trend. Keep the
+mix at `--greg_mix 0.10`.
+
+Caveats, stated plainly:
+- **n = 1 generation, uncontrolled.** There is no gen-8-without-S1 to compare
+  against. The argument rests on gen-8 breaking a 5-segment trend line, not
+  on a counterfactual.
+- **Gregory's base is low** (14.20 vs winblock's 35.60), so relative-gain
+  comparisons flatter it mechanically. This is why 9d leads with absolute pts
+  (+4.09 vs its own +2.58 record) rather than the +28.8%.
+- **We are still losing to gregory(d3) roughly 4:1** (0.175 = it wins ~82%).
+  S1 bent the slope; it did not close the gap. Section 6's finding stands:
+  a millisecond-cheap alpha-beta still outplays our best mode.
+- Gen-9's rebuild opened at gregory 15.7 mean over 5 checks -- the normal
+  post-promotion dip (the student restarts against a stronger teacher), not
+  a regression.
+
+Next per the runbook: S2 (`--value_blend 0.4`) is authored and sign-test
+green; enable it at a promotion boundary keeping the S1 flags. Gen-8's
+promotion (2026-07-15) is that boundary.
