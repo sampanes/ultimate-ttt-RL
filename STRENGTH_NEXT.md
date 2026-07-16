@@ -220,12 +220,22 @@ and judge by promotion wall-clock and panel slopes, not loss curves.
 If S2 has landed, cheap-move positions can optionally record value-only
 examples (KataGo records value everywhere, policy only on full searches).
 
-## S4. Parallel generation  [REQUESTED 2026-07-14 -- biggest multiplier, RE-SCOPED]
+## S4. Parallel generation  [FIRST CUT DONE + LIVE 2026-07-15 -- see RESULT_S4.md]
 
-**Status: formally requested, re-scoped by measurement (RESULT_S1.md 5e).**
-The original design below -- single-process coalescing of leaf evals across
-games -- is DEAD as a primary lever: the GPU is only ~9% of generation
-time, so batching forwards alone caps near 1.1x. The redirect:
+**Status: first cut (independent actor processes) LANDED. Measured +3.2x
+games/hour on the live run (median block generation 84s -> 26s), --actors 8
+in start_goat.bat. commit 0d04bc0.** Full record: RESULT_S4.md.
+
+Key correction to the estimate: the "3-5x" assumed cores were the limit. They
+are not -- it saturates on the GPU. 12 actors peg the GPU at 95% while 9 of 24
+cores sit idle, because N tiny batch-12 forwards serialize across N CUDA
+contexts (no MPS on this consumer card). So the first cut's ceiling is
+~2.6-2.8x isolated / ~3.2x warm, NOT 5x. The remaining multiple is behind the
+SECOND CUT (shared eval server, below), now promoted to the top of the queue.
+
+**The original design below -- single-process coalescing of leaf evals across
+games -- was DEAD as a primary lever** (GPU only ~9% of generation time), which
+is why the first cut used independent actors instead. The redirect, as built:
 
 - N game-actor PROCESSES, each owning whole games end to end (tree ops,
   clones, tensor building -- the ~90% Python term). Multiprocessing, not
@@ -235,12 +245,12 @@ time, so batching forwards alone caps near 1.1x. The redirect:
   sizes; measured batch-12 latency equals batch-1). Workers return
   finished games' examples to the parent over a queue; shard writes,
   buffer, and the block train step stay in the parent, single-writer.
-- Second cut, only if (a) shows GPU contention: one shared eval server
+- Second cut, NOW CONFIRMED NEEDED (the first cut showed exactly the GPU
+  contention it was gated on -- RESULT_S4.md sec 3): one shared eval server
   process coalescing leaf waves from all workers toward the measured
-  batch-256 sweet spot (78.6k pos/s, 6x ceiling).
-- Sizing: 24 logical cores on the box, the run uses 1-2 today. 6-10
-  workers -> honest 3-5x games/hour; leave cores for the OS/dashboard
-  and the periodic weekly-scan contention.
+  batch-256 sweet spot (78.6k pos/s, 6x ceiling). THIS IS THE NEXT BUILD.
+- Sizing (as landed): 8 actors is the knee. Isolated A/B gave 2.46x at 8 /
+  2.80x at 12; live warm pool gives 3.2x at 8. VRAM 5.7/10.2 GiB at 8.
 
 Skill-neutrality: distribution-preserving, NOT byte-identical -- each
 worker needs its own seeded RNG stream (per-root Dirichlet stays per-game
