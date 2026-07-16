@@ -71,6 +71,7 @@ from agents.gregory import GregoryAgent
 from agents.mcts import MCTS
 from agents.neural_net_agent_pg import NeuralNetAgentPG
 from agents.random_agent import RandomAgent
+from scripts.game_actors import GameActorPool, build_actor_cfg
 from scripts.train_alphazero import (NETWORK_CONFIGS, ReplayBuffer,
                                      _policy_move, collect_game,
                                      train_on_examples)
@@ -335,6 +336,15 @@ def main():
                     help="MCTS sims per teacher move during generation.")
     ap.add_argument("--games_per_block", type=int, default=16,
                     help="Teacher self-play games per generate/train block.")
+    ap.add_argument("--actors", type=int, default=0,
+                    help="STRENGTH_NEXT S4: run generation across N game-actor "
+                         "PROCESSES instead of one sequential loop. 0 (default) "
+                         "keeps the sequential path byte-for-byte. Generation is "
+                         "~90%% Python and ~9%% GPU (RESULT_S1 5e), so this is "
+                         "the throughput lever on a 24-core box. Each actor pays "
+                         "~300 MB of CUDA context. Distribution-preserving, NOT "
+                         "byte-identical: the main process still draws the "
+                         "opponent mix; actors draw their own per-game noise.")
     ap.add_argument("--train_steps", type=int, default=100,
                     help="SGD steps per block.")
     ap.add_argument("--batch_size", type=int, default=256)
@@ -572,6 +582,19 @@ def main():
     # above must never appear in the training data (STRENGTH_NEXT rule 1).
     greg_train = (GregoryAgent(depth=args.greg_mix_depth)
                   if args.greg_mix > 0 else None)
+
+    # STRENGTH_NEXT S4: optional multiprocess generation. Built AFTER the
+    # teacher is final and teacher_path holds its weights (both the resume and
+    # the gen-0-seed branch guarantee that above), because actors load their
+    # replicas from that file rather than inheriting the parent's CUDA state.
+    actor_pool = None
+    if args.actors > 0:
+        actor_cfg = build_actor_cfg(args, device, teacher_path, teacher_tanh)
+        actor_pool = GameActorPool(args.actors, actor_cfg)
+        print(f"[S4] {args.actors} game actors up "
+              f"(generation runs in worker processes; "
+              f"sequential path is --actors 0)", flush=True)
+
     raw_teacher = _raw_fn(teacher.model, device, sample_moves=0)
     best_heur = (saved_state.get("best_heur") if saved_state else None)
     best_random = (saved_state.get("best_random") if saved_state else None)
@@ -635,49 +658,77 @@ def main():
             mini_tac_wins = 0
             mini_tac_blocks = 0
             with torch.no_grad():
-                for _ in range(args.games_per_block):
-                    opponent_fn = None
-                    opponent_game = False
-                    tag = _opponent_slice(random.random(), args.opp_mix,
-                                          args.rnd_mix, args.greg_mix)
-                    if tag == "heur":
-                        opponent_fn = lambda s: heur.select_move(s)
-                        opponent_games += 1
-                        opponent_game = True
-                    elif tag == "rnd":
-                        # Random-opponent slice: mini tactics stay OFF here --
-                        # the point is teacher-search targets on blunder-created
-                        # positions, not the WinBlock motif.
-                        opponent_fn = lambda s: rnd.select_move(s)
-                        rnd_games += 1
-                    elif tag == "greg":
-                        # Gregory slice (STRENGTH_NEXT S1): teacher-search
-                        # targets on positions a minimax-style opponent forces.
-                        # Mini tactics stay OFF, same reasoning as the random
-                        # slice.
-                        opponent_fn = lambda s: greg_train.select_move(s)
-                        greg_games += 1
-                    exs, winner, gstats = collect_game(
-                        model=teacher.model,
-                        device=device,
-                        n_sims=args.teacher_sims,
-                        c_puct=1.5,
-                        dir_alpha=args.dir_alpha,
-                        dir_eps=args.dir_eps,
-                        wave_size=64,   # MCTS clamps to n_sims // 16 internally
-                        temperature_moves=args.temperature_moves,
-                        use_tactics=True,
-                        use_mini_tactics=(
-                            args.mini_tactic_opp and opponent_game),
-                        opponent_fn=opponent_fn,
-                        value_blend=args.value_blend,
-                    )
-                    new_examples.extend(exs)
-                    moves_total += gstats["moves"]
-                    mini_tac_wins += gstats.get("mini_tac_wins", 0)
-                    mini_tac_blocks += gstats.get("mini_tac_blocks", 0)
-                    if winner == DRAW:
-                        draws += 1
+                if actor_pool is not None:
+                    # S4 path. The opponent mix is drawn HERE, from the main
+                    # RNG, so the slice distribution is exactly the sequential
+                    # one; actors receive a tag plus a seed and draw only
+                    # per-game noise. Results arrive in completion order, which
+                    # is safe: every consumer below is order-independent
+                    # (extend / sum / count).
+                    tags = [_opponent_slice(random.random(), args.opp_mix,
+                                            args.rnd_mix, args.greg_mix)
+                            for _ in range(args.games_per_block)]
+                    seeds = [random.getrandbits(31)
+                             for _ in range(args.games_per_block)]
+                    for res in actor_pool.play_block(tags, seeds):
+                        tag = res["tag"]
+                        if tag == "heur":
+                            opponent_games += 1
+                        elif tag == "rnd":
+                            rnd_games += 1
+                        elif tag == "greg":
+                            greg_games += 1
+                        gstats = res["stats"]
+                        new_examples.extend(res["examples"])
+                        moves_total += gstats["moves"]
+                        mini_tac_wins += gstats.get("mini_tac_wins", 0)
+                        mini_tac_blocks += gstats.get("mini_tac_blocks", 0)
+                        if res["winner"] == DRAW:
+                            draws += 1
+                else:
+                    for _ in range(args.games_per_block):
+                        opponent_fn = None
+                        opponent_game = False
+                        tag = _opponent_slice(random.random(), args.opp_mix,
+                                              args.rnd_mix, args.greg_mix)
+                        if tag == "heur":
+                            opponent_fn = lambda s: heur.select_move(s)
+                            opponent_games += 1
+                            opponent_game = True
+                        elif tag == "rnd":
+                            # Random-opponent slice: mini tactics stay OFF here
+                            # -- the point is teacher-search targets on
+                            # blunder-created positions, not the WinBlock motif.
+                            opponent_fn = lambda s: rnd.select_move(s)
+                            rnd_games += 1
+                        elif tag == "greg":
+                            # Gregory slice (STRENGTH_NEXT S1): teacher-search
+                            # targets on positions a minimax-style opponent
+                            # forces. Mini tactics stay OFF, same reasoning as
+                            # the random slice.
+                            opponent_fn = lambda s: greg_train.select_move(s)
+                            greg_games += 1
+                        exs, winner, gstats = collect_game(
+                            model=teacher.model,
+                            device=device,
+                            n_sims=args.teacher_sims,
+                            c_puct=1.5,
+                            dir_alpha=args.dir_alpha,
+                            dir_eps=args.dir_eps,
+                            wave_size=64,   # MCTS clamps to n_sims//16 inside
+                            temperature_moves=args.temperature_moves,
+                            use_tactics=True,
+                            use_mini_tactics=(
+                                args.mini_tactic_opp and opponent_game),
+                            opponent_fn=opponent_fn,
+                            value_blend=args.value_blend,
+                        )
+                        new_examples.extend(exs)
+                        moves_total += gstats["moves"]
+                        mini_tac_wins += gstats.get("mini_tac_wins", 0)
+                        mini_tac_blocks += gstats.get("mini_tac_blocks", 0)
+                        if winner == DRAW:
+                            draws += 1
             games_total += args.games_per_block
             games_since_promotion += args.games_per_block
             shard_idx += 1
@@ -799,6 +850,11 @@ def main():
                         teacher_tanh = _promote_teacher(teacher, student)
                         _save_teacher(teacher_path, teacher.model,
                                       teacher_tanh, teacher_gen)
+                        if actor_pool is not None:
+                            # Actors hold their own replicas; without this they
+                            # would generate from the OLD teacher forever. Must
+                            # follow _save_teacher -- they reload from that file.
+                            actor_pool.reload_weights(teacher_path)
                         best_heur = promote_heur
                         best_random = max(best_random, promote_random)
                         best_gregory = max(best_gregory, promote_greg)
@@ -855,6 +911,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[!] Interrupted -- saving state...")
     finally:
+        if actor_pool is not None:
+            # Actors are daemons, but a Ctrl+C must not leave 8 processes
+            # holding CUDA contexts while the supervisor relaunches us.
+            actor_pool.close()
         save_all()
         print(f"State saved to {args.model_dir} "
               f"({format_elapsed(time.time() - t_start)} this session). "
