@@ -21,14 +21,17 @@ REM S1 segment (2026-07-13, STRENGTH_NEXT/PENDING runbook): gregory-d2 slice
 REM at 0.10, donated equally from opp_mix (0.35->0.30) and rnd_mix (0.15->0.10)
 REM so pure self-play stays 0.50. Baseline before enabling: raw gen-6 teacher
 REM scored 0.138 vs d2 AND d3 (300 games, seed 8801) -- huge headroom, ENABLE.
-REM S4 (2026-07-15): --actors 8 runs generation in 8 worker PROCESSES. Measured
-REM on an idle box vs the sequential path, gen-8 teacher, this exact mix:
-REM   sequential 775 games/hr | 4 actors 1784 (2.30x) | 8 actors 1909 (2.46x)
-REM   12 actors 2021-2173 (2.6-2.8x, GPU pegged at 95%)
-REM 8 is the knee: ~2.5x for ~2.1 GiB of extra VRAM. Distribution-preserving
-REM (the parent still draws the opponent mix), NOT byte-identical. Drop to
-REM --actors 0 to fall back to the sequential path exactly as it was.
-start "goat-train" cmd /c "set CUBLAS_WORKSPACE_CONFIG=:4096:8&& .venv\Scripts\python -u -m scripts.goat_supervisor --resume --greg_mix 0.10 --opp_mix 0.30 --rnd_mix 0.10 --actors 8 >> loss_logs\goat_console.log 2>&1"
+REM S5+S8 (2026-07-16): --eval_server routes every actor's forward through ONE
+REM GPU-owning server (batched, single CUDA context); --actors 16 pure-CPU game
+REM workers. S8 (C++ fill_planes) cuts each actor's plane build 54x. A/B on the
+REM gen-9 teacher, this exact mix, GENERATION games/hr vs the sequential anchor:
+REM   sequential 714 (1.00x) | first-cut a12 +S8 2491 (3.49x)
+REM   eval-server +S8: a8 9518 (13.3x) | a12 10462 (14.6x)
+REM   a16 11509 (16.1x, knee) | a24 10875 (15.2x, past the knee)
+REM 16 actors match the 16-game block (one parallel wave). Distribution-preserving,
+REM NOT byte-identical. REVERT: drop --eval_server (first-cut context per actor)
+REM or --actors 0 (sequential path exactly as it was). See RESULT_S5.md.
+start "goat-train" cmd /c "set CUBLAS_WORKSPACE_CONFIG=:4096:8&& .venv\Scripts\python -u -m scripts.goat_supervisor --resume --greg_mix 0.10 --opp_mix 0.30 --rnd_mix 0.10 --actors 16 --eval_server >> loss_logs\goat_console.log 2>&1"
 
 echo.
 echo Running check:  tasklist /FI "WINDOWTITLE eq goat-train*"

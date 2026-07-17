@@ -222,9 +222,14 @@ examples (KataGo records value everywhere, policy only on full searches).
 
 ## S4. Parallel generation  [FIRST CUT DONE + LIVE 2026-07-15 -- see RESULT_S4.md]
 
-**Status: first cut (independent actor processes) LANDED. Measured +3.2x
-games/hour on the live run (median block generation 84s -> 26s), --actors 8
-in start_goat.bat. commit 0d04bc0.** Full record: RESULT_S4.md.
+**Status: BOTH CUTS LANDED + LIVE (2026-07-16).** First cut (independent actor
+processes) gave +3.2x. SECOND CUT (shared eval server) + the S8 hot path now LIVE
+at `--eval_server --actors 16`: generation is **16x over sequential** (a16 bench
+11,509 games/hr, matched live at 5s/16-game block), **~3.9x over the first cut**
+end to end (the ~2s train step is now the fixed cost). commits 204f7b3 (eval
+server), 1889c01 (S8). Full record: RESULT_S5.md (the 'S5' label there is the
+eval-server deliverable -- distinct from the S5 deploy-side section below). First
+cut record: RESULT_S4.md.
 
 Key correction to the estimate: the "3-5x" assumed cores were the limit. They
 are not -- it saturates on the GPU. 12 actors peg the GPU at 95% while 9 of 24
@@ -245,12 +250,18 @@ is why the first cut used independent actors instead. The redirect, as built:
   sizes; measured batch-12 latency equals batch-1). Workers return
   finished games' examples to the parent over a queue; shard writes,
   buffer, and the block train step stay in the parent, single-writer.
-- Second cut, NOW CONFIRMED NEEDED (the first cut showed exactly the GPU
-  contention it was gated on -- RESULT_S4.md sec 3): one shared eval server
-  process coalescing leaf waves from all workers toward the measured
-  batch-256 sweet spot (78.6k pos/s, 6x ceiling). THIS IS THE NEXT BUILD.
-- Sizing (as landed): 8 actors is the knee. Isolated A/B gave 2.46x at 8 /
-  2.80x at 12; live warm pool gives 3.2x at 8. VRAM 5.7/10.2 GiB at 8.
+- Second cut, DONE + LIVE (RESULT_S5.md): one shared eval server process owns
+  the only generation CUDA context and batches every actor's forward. Actors
+  went PURE-CPU (no context each), collapsing N contexts to 1 and removing the
+  serialization wall. Measured 4.2x over the first cut at the same actor count
+  (14.65x vs 3.49x at a12). This was the real multiple behind the batch-256
+  ceiling.
+- S8 (C++ fill_planes) landed with it: plane build was 46% of an actor's CPU,
+  now ~3.6% (54x faster per call, 1.84x actor CPU isolated). RESULT_S5 sec 3.
+- Sizing (as landed): 16 actors is the knee for the 16-game block (one parallel
+  wave). eval-server A/B: a8 13.3x / a12 14.6x / a16 16.1x / a24 15.2x. VRAM
+  3.1/10.2 GiB (one context, not eight). Next lever: raise games_per_block to
+  amortize the fixed ~2s train step (now ~30% of a block).
 
 Skill-neutrality: distribution-preserving, NOT byte-identical -- each
 worker needs its own seeded RNG stream (per-root Dirichlet stays per-game
@@ -324,9 +335,17 @@ Behavioral (pi targets sharpen slightly) -> one-gen segment per rule 3.
 Expected ~1.3-1.5x effective sims per wall-clock second; multiplies with
 S3 (cheap searches reuse too) and S4 (per worker).
 
-## S8. Per-sim hot path: tensor build + pybind crossings  [NEW ASK 2026-07-14]
+## S8. Per-sim hot path: tensor build + pybind crossings  [DONE + LIVE 2026-07-16]
 
-**Status: formally requested.** The rules are ALREADY C++ (`engine/game.py`
+**Status: DONE (a + b), landed with the eval server.** Profiled first (as asked):
+board_to_tensor was 46% of an actor's non-GPU CPU, the tree only 16%, so (a) C++
+`fill_planes` + (b) vectorized `wave_planes` were built and (c) tree-in-C++ was
+NOT (correctly skipped). Result: actor CPU 167s -> 90.7s (1.84x), fill_planes
+2.7us/call vs ~146us (54x), plane build 46% -> 3.6%. Byte-identical (parity-gated,
+test_hot_path). New top actor cost is `_expand_from_logits` (ragged per-leaf
+softmax), deferred. commit 1889c01. Full record: RESULT_S5.md sec 3.
+
+Original ask (kept for context). The rules are ALREADY C++ (`engine/game.py`
 loads the pybind GameState; clone/make_move/valid_moves), so the residual
 ~90%-Python generation cost is MCTS tree bookkeeping,
 `board_to_tensor_from_gamestate`, and pybind attribute crossings -- every
