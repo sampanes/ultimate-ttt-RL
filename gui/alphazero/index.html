@@ -527,6 +527,28 @@
     body.tab-speed #main-content,
     body.tab-speed #no-data { display: none !important; }
 
+    /* ==== chart range bar (mobile-first zoom to recent) ==== */
+    .range-bar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
+      margin-bottom: 0.8rem;
+    }
+    .range-label {
+      font-size: 0.62rem; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--muted); margin-right: 0.15rem; flex: 0 0 auto;
+    }
+    .range-btn {
+      flex: 1 1 auto; min-width: 3.2rem; min-height: 2.4rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text);
+      font-family: inherit; font-size: 0.85rem; font-weight: 700;
+      cursor: pointer; transition: border-color var(--t), background var(--t), color var(--t);
+    }
+    .range-btn:hover { border-color: var(--accent); }
+    .range-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    @media (min-width: 700px) {
+      .range-btn { flex: 0 0 auto; min-width: 3rem; min-height: 2rem; }
+    }
+
     /* ==== speed view ==== */
     .spd-hero {
       display: grid; grid-template-columns: 1fr; gap: 0.7rem;
@@ -742,10 +764,19 @@
     <div class="mini-bar gold" title="progress to next WR milestone"><div id="next-bar"></div></div>
   </div>
   <div class="stat-card purple" id="card-day1">
-    <div class="stat-label">vs anchor net</div>
+    <div class="stat-label">vs current teacher</div>
     <div class="stat-value" id="s-day1">--</div>
     <div class="stat-sub" id="s-day1-sub">&nbsp;</div>
   </div>
+</div>
+
+<!-- ==== chart range bar: tap to zoom the time-series charts to recent iterations ==== -->
+<div class="range-bar" id="range-bar">
+  <span class="range-label">Zoom charts to recent:</span>
+  <button class="range-btn" data-range="200"  onclick="_setRange(200)">Last 200</button>
+  <button class="range-btn" data-range="1000" onclick="_setRange(1000)">Last 1k</button>
+  <button class="range-btn" data-range="5000" onclick="_setRange(5000)">Last 5k</button>
+  <button class="range-btn active" data-range="0" onclick="_setRange(0)">All</button>
 </div>
 
 <!-- ==== charts row 1 ==== -->
@@ -939,6 +970,18 @@
       because the fixed ~2s training step and periodic evaluation gates are now the main cost, not
       the games themselves.
     </div>
+  </div>
+
+  <!-- generations: difficulty vs speed -->
+  <div class="card chart-mid" style="margin-bottom:1rem;">
+    <div class="card-title">
+      Generations: difficulty vs speed
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+        one step = one promotion &middot; bars = games to beat the teacher &middot; line = throughput
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-gens"></canvas></div>
+    <div class="spd-note" id="gens-summary">&nbsp;</div>
   </div>
 
   <!-- hardware -->
@@ -1135,7 +1178,7 @@ function _mkGDataset(label, color, dash) {
 const chartGauntlet = new Chart(document.getElementById('chart-gauntlet'), {
   type: 'line',
   data: { labels: [], datasets: [
-    _mkGDataset('vs anchor (day-one / teacher)', '#cbd5e0'),
+    _mkGDataset('vs current teacher (parity by design)', '#cbd5e0'),
     _mkGDataset('vs past self', '#7d9bc1'),
     _mkGDataset('vs win/block bot', '#f59e0b'),
     _mkGDataset('MCTS edge over raw net', '#e31f26', [5,4]),
@@ -1165,6 +1208,97 @@ const chartQual = new Chart(document.getElementById('chart-quality'), {
   ]},
   options: qualOpts,
 });
+
+// ==== Generations chart (Speed tab) ========================================
+// Per-generation aggregate from the same metrics rows: how many self-play games
+// it took to beat the teacher (difficulty, speed-independent) vs the throughput
+// that produced them (the speedup). "Time between generations" = wall-clock,
+// surfaced in the tooltip + the summary line. active = wall minus pauses (>4min
+// gaps: resumes/cutovers) so the games/hr figure reflects real running time.
+let chartGens = null;
+function _genStats(data) {
+  const rows = data
+    .filter(d => d.t != null && isFinite(d.t) && isFinite(d.teacher_gen) && isFinite(d.games_total))
+    .slice().sort((a, b) => a.t - b.t);
+  if (rows.length < 2) return [];
+  const byGen = new Map();
+  for (const r of rows) {
+    if (!byGen.has(r.teacher_gen)) byGen.set(r.teacher_gen, []);
+    byGen.get(r.teacher_gen).push(r);
+  }
+  const gens = [...byGen.keys()].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < gens.length - 1; i++) {          // last gen is in progress
+    const rr = byGen.get(gens[i]);
+    const t0 = rr[0].t, t1 = byGen.get(gens[i + 1])[0].t;
+    const wall = t1 - t0;
+    let paused = 0;
+    for (let j = 1; j < rr.length; j++) {
+      const gap = rr[j].t - rr[j - 1].t;
+      if (gap > 240) paused += gap;
+    }
+    const active = Math.max(1, wall - paused);
+    const games = byGen.get(gens[i + 1])[0].games_total - rr[0].games_total;
+    out.push({ label: gens[i] + '->' + gens[i + 1], games,
+               hours: wall / 3600, ghr: games / active * 3600 });
+  }
+  return out;
+}
+
+function _renderGens(data) {
+  const canvas = document.getElementById('chart-gens');
+  if (!canvas) return;
+  const stats = _genStats(data);
+  if (!stats.length) return;
+  const labels = stats.map(s => s.label);
+  const games  = stats.map(s => Math.round(s.games));
+  const ghr    = stats.map(s => Math.round(s.ghr));
+
+  if (!chartGens) {
+    const opts = _baseOpts('games to beat the teacher', '#e31f26');
+    opts.scales.x.title.text = 'generation';
+    opts.scales.y.beginAtZero = true;
+    opts.scales.yRight = {
+      position: 'right', grid: { drawOnChartArea: false },
+      ticks: { color: TICK, font: { size: 10 } },
+      title: { display: true, text: 'games / hour', color: '#7d9bc1', font: { size: 10 } },
+      beginAtZero: true,
+    };
+    delete opts.plugins.zoom;
+    opts.plugins.tooltip.callbacks = {
+      afterBody: (items) => ['wall-clock: ' + stats[items[0].dataIndex].hours.toFixed(1) + 'h'],
+    };
+    chartGens = new Chart(canvas, {
+      type: 'bar',
+      data: { labels, datasets: [
+        { type: 'bar', label: 'games to promote', data: games, yAxisID: 'y',
+          backgroundColor: 'rgba(227,31,38,0.55)', borderColor: '#e31f26',
+          borderWidth: 1, borderRadius: 0, categoryPercentage: 0.7, barPercentage: 0.9 },
+        { type: 'line', label: 'throughput (games/hr)', data: ghr, yAxisID: 'yRight',
+          borderColor: '#7d9bc1', backgroundColor: '#7d9bc1', borderWidth: 2,
+          pointRadius: 3, pointHoverRadius: 5, tension: 0.25, fill: false },
+      ]},
+      options: opts,
+    });
+  } else {
+    chartGens.data.labels           = labels;
+    chartGens.data.datasets[0].data = games;
+    chartGens.data.datasets[1].data = ghr;
+    chartGens.update('none');
+  }
+
+  const first = stats[0], last = stats[stats.length - 1];
+  const peak = stats.reduce((a, b) => b.hours > a.hours ? b : a, stats[0]);
+  const gm = last.games / Math.max(1, first.games);
+  const sm = last.ghr  / Math.max(1, first.ghr);
+  document.getElementById('gens-summary').innerHTML =
+    'Difficulty climbed ~' + gm.toFixed(0) + 'x in games-to-promote (' +
+    _fmtBig(first.games) + ' -> ' + _fmtBig(last.games) + '). Longest gap: gen ' +
+    peak.label + ' at ' + peak.hours.toFixed(0) + 'h. The speedups lifted throughput ~' +
+    sm.toFixed(0) + 'x, so gen ' + last.label + ' took just ' + last.hours.toFixed(0) +
+    'h despite needing the most games -- at the old rate that would have been ~' +
+    _fmtBig(last.games / Math.max(1, first.ghr)) + 'h.';
+}
 
 // ==== State ================================================================
 let _lastLen   = -1;
@@ -1361,10 +1495,25 @@ function _resetZoom() {
   [chartLoss, chartWr, chartExplore, chartGauntlet, chartQual].forEach(c => c.resetZoom());
 }
 
+// ==== Chart range (mobile-first zoom to recent iterations) =================
+// _rangeN = null shows all history; N shows the last N iterations. _redraw
+// windows the source data, so the charts re-render at full resolution on the
+// recent slice and keep following live as new blocks arrive.
+let _rangeN = null;
+function _setRange(n) {
+  _rangeN = (n && n > 0) ? n : null;
+  document.querySelectorAll('#range-bar .range-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.range, 10) === (_rangeN || 0)));
+  _redraw();
+  _resetZoom();   // clear any pinch/drag zoom so the tapped window is what shows
+}
+
 // ==== Redraw ===============================================================
 function _redraw() {
-  const data = _allData;
-  if (!data.length) return;
+  const full = _allData;
+  if (!full.length) return;
+  const start = _rangeN ? Math.max(0, full.length - _rangeN) : 0;
+  const data  = full.slice(start);
 
   const n      = data.length;
   const losses = data.map(d => d.loss);
@@ -1377,7 +1526,7 @@ function _redraw() {
   const smPloss  = _ds(_smooth ? _ma(plosses, W)  : plosses, MAX_PTS);
   const smVloss  = _ds(_smooth ? _ma(vlosses, W)  : vlosses, MAX_PTS);
   const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR -- milestone detection uses raw
-  const labels   = _dsLabels(n, MAX_PTS);
+  const labels   = _dsLabels(n, MAX_PTS).map(v => v + start);
   const bestLine = smWr.map(() => _bestWR > 0 ? _bestWR : NaN);
 
   chartLoss.data.labels                = labels;
@@ -1440,11 +1589,18 @@ function _throughput(data) {
 
 // ==== Tabs =================================================================
 function _showTab(name) {
-  document.body.classList.toggle('tab-speed', name === 'speed');
+  const speed = name === 'speed';
+  document.body.classList.toggle('tab-speed', speed);
   const t = document.getElementById('tab-training');
   const s = document.getElementById('tab-speed');
-  if (t) t.classList.toggle('active', name !== 'speed');
-  if (s) s.classList.toggle('active', name === 'speed');
+  if (t) t.classList.toggle('active', !speed);
+  if (s) s.classList.toggle('active', speed);
+  // the gens chart is built inside a hidden container (0x0 canvas); re-render
+  // and resize once it is actually visible so Chart.js lays it out correctly.
+  if (speed) {
+    _renderGens(_allData);
+    if (chartGens) requestAnimationFrame(() => chartGens.resize());
+  }
 }
 
 // Fill the Speed tab's live cells from the same throughput the cards use.
@@ -1589,7 +1745,7 @@ function _updateCards(data) {
     document.getElementById('s-sharp-sub').textContent = 'needs pi_ent field';
   }
 
-  // vs day-one self (latest gauntlet line)
+  // vs current teacher raw (latest gauntlet line) -- ~parity is by design
   let gLast = null;
   for (let i = data.length - 1; i >= 0; i--) {
     if (isFinite(data[i].wr_anchor)) { gLast = data[i]; break; }
@@ -1716,7 +1872,7 @@ function _deriveEvents(data) {
       if (!anchorHit.has(t) && isFinite(d.wr_anchor) && d.wr_anchor >= t) {
         anchorHit.add(t);
         events.push({ iter, kind: 'level',
-          text: 'beating the anchor net ' + (t * 100).toFixed(0) + '%+' });
+          text: 'beating the current teacher ' + (t * 100).toFixed(0) + '%+' });
       }
       if (!heurHit.has(t) && isFinite(d.wr_heur) && d.wr_heur >= t) {
         heurHit.add(t);
@@ -1808,8 +1964,8 @@ function _buildHype(data) {
     if (isFinite(data[i].wr_anchor)) { g = data[i]; break; }
   }
   if (g) {
-    if (g.wr_anchor >= 0.75) msgs.push('crushing the anchor net ' + _fmtWR(g.wr_anchor) + ' -- the glow-up is real');
-    else msgs.push('scoring ' + _fmtWR(g.wr_anchor) + ' against the anchor net');
+    if (g.wr_anchor >= 0.75) msgs.push('crushing the current teacher ' + _fmtWR(g.wr_anchor) + ' -- the glow-up is real');
+    else msgs.push('scoring ' + _fmtWR(g.wr_anchor) + ' against the current teacher');
     if (isFinite(g.wr_heur)) {
       msgs.push(g.wr_heur >= 0.6
         ? 'farming the win/block bot at ' + _fmtWR(g.wr_heur)
@@ -1855,7 +2011,7 @@ function _updateLog(data) {
     const wr   = isFinite(d.winrate) && d.winrate > 0 ? ` wr=${(d.winrate*100).toFixed(1)}%` : '';
     const vl   = isFinite(d.value_loss) ? ` vl=${d.value_loss.toFixed(4)}` : '';
     const buf  = d.buffer ? ` buf=${d.buffer.toLocaleString()}` : '';
-    const g    = isFinite(d.wr_anchor) ? ` anc=${(d.wr_anchor*100).toFixed(0)}%` : '';
+    const g    = isFinite(d.wr_anchor) ? ` tchr=${(d.wr_anchor*100).toFixed(0)}%` : '';
     const dr   = isFinite(d.sp_draws) ? ` d=${(d.sp_draws*100).toFixed(0)}%` : '';
     return `iter ${iter.toString().padStart(6)} | loss=${d.loss.toFixed(4)}${vl}${wr}${buf}${dr}${g}`;
   });
@@ -1983,6 +2139,7 @@ async function _fetch() {
     _updateLiveBadge(data);
     _updateReel(data);
     _updatePromo(data);
+    _renderGens(data);
     _redraw();
 
     _hypeMsgs = _buildHype(data);
@@ -2239,7 +2396,7 @@ const CARD_INFO = {
   'card-tac':       ['Kill shots / game', 'Immediate tactical moves per self-play game: taking a mini-board win or blocking one. Ground-truth tactics injected during generation so the targets always contain the forced move when one exists.'],
   'card-sharp':     ['Target sharpness', '1 - entropy/ln(81) of the MCTS visit targets. 0% = search returned a uniform shrug (the old plateau smoking gun), 100% = all visits on one move. Healthy search on a real position sits well above 50%.'],
   'card-next':      ['Next milestone', 'The next win-rate-vs-random threshold not yet crossed, and progress toward it. Pure dopamine plumbing.'],
-  'card-day1':      ['vs anchor net', 'Raw student vs the raw CURRENT teacher net on a fixed, color-swapped opening panel. Gen 0 is the independently selected Arena-22 HOF checkpoint. Promotions also require absolute WinBlock improvement and no material random-opponent regression.'],
+  'card-day1':      ['vs current teacher', 'Raw student vs the raw CURRENT teacher net on a fixed, color-swapped opening panel. Gen 0 is the independently selected Arena-22 HOF checkpoint. Promotions also require absolute WinBlock improvement and no material random-opponent regression.'],
 };
 (function () {
   const pop = document.createElement('div');
