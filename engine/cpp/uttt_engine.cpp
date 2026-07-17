@@ -1,7 +1,8 @@
 #include "uttt_engine.hpp"
+#include <algorithm>           // std::fill
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>      // auto-converts std::vector <-> Python list
-#include <pybind11/numpy.h>    // for zero-copy numpy later if desired
+#include <pybind11/numpy.h>    // fill_planes writes straight into a numpy buffer
 namespace py = pybind11;
 
 // ============================================================
@@ -227,6 +228,34 @@ PYBIND11_MODULE(uttt_engine, m) {
         .def("get_mini_winners", &GameState::get_mini_winners)
         // Fast C++ clone: returns a copy by value (trivial memcpy of arrays+ints).
         .def("clone", [](const GameState& s) { return s; })
+        // S8 hot path: write the 7x9x9 input planes straight into a caller
+        // numpy buffer -- one pybind crossing per leaf, zero Python plane math.
+        // MUST stay byte-identical to board_to_tensor_from_gamestate
+        // (agents/agent_base.py); a parity test gates it. Channel order:
+        // 0=X, 1=O, 2=player(+1/-1), 3=valid, 4=mini winners(+1/-1), 5=last, 6=bias.
+        // Flat layout is C-contiguous (7,9,9): index = channel*81 + cell.
+        .def("fill_planes", [](const GameState& s, py::array_t<float> out) {
+            auto buf = out.request();
+            if (buf.size < 7 * 81)
+                throw std::runtime_error(
+                    "fill_planes: output buffer must hold at least 7*81 floats");
+            float* p = static_cast<float*>(buf.ptr);
+            std::fill(p, p + 7 * 81, 0.0f);
+            float pl = (s.player == X) ? 1.0f : -1.0f;
+            for (int idx = 0; idx < 81; idx++) {
+                int v = s.board[idx];
+                if (v == X)      p[0 * 81 + idx] = 1.0f;   // ch0: X positions
+                else if (v == O) p[1 * 81 + idx] = 1.0f;   // ch1: O positions
+                p[2 * 81 + idx] = pl;                      // ch2: current player
+                int mini = (idx / 9 / 3) * 3 + (idx % 9 / 3);
+                int mw = s.mini_winners[mini];             // ch4: mini winners
+                if (mw != EMPTY) p[4 * 81 + idx] = (mw == X) ? 1.0f : -1.0f;
+                p[6 * 81 + idx] = 1.0f;                    // ch6: bias
+            }
+            for (int mv : s.valid_moves()) p[3 * 81 + mv] = 1.0f;   // ch3: valid
+            if (s.last_move != NO_LAST_MOVE)                       // ch5: last move
+                p[5 * 81 + s.last_move] = 1.0f;
+        })
         // Raw int accessors for winner/last_move (-1 sentinel; Python layer
         // translates to None via property overrides in game.py).
         .def("_raw_winner",    [](const GameState& s) { return s.winner; })

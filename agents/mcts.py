@@ -52,7 +52,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .agent_base import Agent, board_to_tensor_from_gamestate
+from .agent_base import Agent, board_to_tensor_from_gamestate, wave_planes
 from engine.rules import rule_utl_valid_moves
 from engine.constants import X, O, DRAW
 
@@ -215,9 +215,9 @@ class MCTS:
         # Batch forward pass for all unique leaves.
         leaf_values = {}    # id(node) -> float
         if to_eval:
-            xs = torch.stack([
-                board_to_tensor_from_gamestate(s) for _, _, s in to_eval
-            ]).to(self.device)                              # (K, 7, 9, 9)
+            # S8: fill all K leaves into one buffer (C++ fill_planes when
+            # available) instead of K per-leaf builds + torch.stack.
+            xs = wave_planes([s for _, _, s in to_eval], self.device)  # (K,7,9,9)
 
             logits_b, values_b = self.model.forward_both(xs)
             # forward_both squeezes batch=1 to (81,)/scalar; restore dims.

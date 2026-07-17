@@ -89,7 +89,46 @@ def board_to_tensor(board):# TODO, player=None):
     arr[arr == O] = -1.0
     return torch.from_numpy(arr).view(-1)  # flatten to vector
 
+_FILL_PLANES = None   # tri-state cache: None=unknown, then bool (per engine)
+
+
+def _has_fill_planes(state) -> bool:
+    """True when the C++ engine exposes fill_planes (S8 fast path)."""
+    global _FILL_PLANES
+    if _FILL_PLANES is None:
+        _FILL_PLANES = hasattr(state, "fill_planes")
+    return _FILL_PLANES
+
+
+def wave_planes(states, device) -> torch.Tensor:
+    """S8: build (K, 7, 9, 9) planes for a wave of leaf states in ONE buffer.
+
+    The C++ fast path fills each leaf straight into the buffer (one pybind
+    crossing per leaf, no per-leaf torch allocation, no torch.stack). Profiling
+    showed board_to_tensor was ~46% of an actor's non-GPU CPU. Byte-identical to
+    the per-leaf fallback, used when the pure-Python engine is active.
+    """
+    k = len(states)
+    buf = np.empty((k, 7, 9, 9), dtype=np.float32)
+    if k and _has_fill_planes(states[0]):
+        for i, s in enumerate(states):
+            s.fill_planes(buf[i])
+    else:
+        for i, s in enumerate(states):
+            buf[i] = board_to_tensor_from_gamestate(s).numpy()
+    return torch.from_numpy(buf).to(device)
+
+
 def board_to_tensor_from_gamestate(gamestate, v_computed=None) -> torch.Tensor:
+    # S8 fast path: the C++ engine writes all 7 planes in one crossing,
+    # byte-identical to the numpy path below (gated by test_hot_path). v_computed
+    # is unused here -- fill_planes recomputes valid moves in C++, cheaper than
+    # the Python call v_computed was meant to save.
+    if _has_fill_planes(gamestate):
+        buf = np.empty((7, 9, 9), dtype=np.float32)
+        gamestate.fill_planes(buf)
+        return torch.from_numpy(buf)
+
     tensor = torch.zeros((7, 9, 9), dtype=torch.float32)
 
     # Channels 0,1: X and O positions -- vectorized
