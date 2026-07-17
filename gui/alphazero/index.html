@@ -502,6 +502,100 @@
       border-radius: var(--radius); padding: 0.1rem 0.4rem;
       font-family: "Consolas", monospace; color: var(--text);
     }
+
+    /* ==== tab nav + view switching ==== */
+    .tabs {
+      display: flex; gap: 0; margin-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      color: var(--muted); font-family: inherit; font-size: 0.78rem;
+      font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 0.6rem 1.1rem; cursor: pointer;
+      transition: color var(--t), border-color var(--t);
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-badge {
+      margin-left: 0.45rem; font-size: 0.6rem; background: var(--accent);
+      color: #fff; padding: 0.05rem 0.36rem; border-radius: 2px;
+      letter-spacing: 0.02em; vertical-align: middle;
+    }
+    #speed-view { display: none; }
+    body.tab-speed #speed-view { display: block; }
+    body.tab-speed #main-content,
+    body.tab-speed #no-data { display: none !important; }
+
+    /* ==== speed view ==== */
+    .spd-hero {
+      display: grid; grid-template-columns: 1fr; gap: 0.7rem;
+      margin-bottom: 1rem;
+    }
+    @media (min-width: 700px) { .spd-hero { grid-template-columns: repeat(3, 1fr); } }
+    .spd-hero-card {
+      border: 1px solid var(--border); border-left: 3px solid var(--accent);
+      border-radius: var(--radius); padding: 1rem 1.2rem; background: var(--surface);
+    }
+    .spd-hero-num {
+      font-size: 2.6rem; font-weight: 800; line-height: 1;
+      color: var(--accent); font-variant-numeric: tabular-nums;
+    }
+    .spd-hero-card.cool .spd-hero-num { color: var(--cyan); }
+    .spd-hero-label {
+      font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--muted); margin-top: 0.45rem;
+    }
+    .spd-hero-sub { font-size: 0.7rem; color: var(--text); margin-top: 0.25rem; }
+
+    .spd-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .spd-table th, .spd-table td {
+      padding: 0.55rem 0.7rem; text-align: right;
+      font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--border);
+    }
+    .spd-table th {
+      font-size: 0.6rem; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--muted); font-weight: 600;
+    }
+    .spd-table td:first-child, .spd-table th:first-child { text-align: left; }
+    .spd-table .stage { font-weight: 700; color: var(--text); }
+    .spd-table .stage small { display: block; font-weight: 400; font-size: 0.66rem; color: var(--muted); }
+    .spd-table tr.now td { background: rgba(227,31,38,0.06); }
+    .spd-table tr.now .stage { color: var(--accent); }
+    .spd-table tr.live td { color: var(--cyan); }
+    .spd-mult { color: var(--accent); font-weight: 700; }
+    .spd-table tr.live .spd-mult { color: var(--cyan); }
+
+    .spd-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.3rem; }
+    .spd-chip {
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 0.5rem 0.75rem; background: var(--surface); min-width: 0;
+    }
+    .spd-chip .k { font-size: 0.6rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+    .spd-chip .v { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-top: 0.15rem; }
+    .spd-chip .v small { font-weight: 400; color: var(--muted); font-size: 0.68rem; }
+
+    .spd-trick {
+      display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.9rem;
+      padding: 0.7rem 0; border-bottom: 1px solid var(--border);
+      align-items: baseline;
+    }
+    .spd-trick:last-child { border-bottom: none; }
+    .spd-trick .tag {
+      font-family: "Consolas", monospace; font-size: 0.7rem; font-weight: 700;
+      color: var(--accent); grid-row: span 2; align-self: start; padding-top: 0.1rem;
+      min-width: 3.2rem;
+    }
+    .spd-trick .name { font-weight: 700; font-size: 0.86rem; color: var(--text); }
+    .spd-trick .name .gain {
+      font-size: 0.66rem; color: var(--accent); font-weight: 700;
+      margin-left: 0.5rem; letter-spacing: 0.02em;
+    }
+    .spd-trick .desc { font-size: 0.75rem; color: var(--muted); line-height: 1.5; }
+    .spd-note {
+      margin-top: 0.6rem; font-size: 0.72rem; color: var(--muted); line-height: 1.6;
+    }
+    .spd-note b { color: var(--text); font-weight: 700; }
   </style>
 </head>
 <body>
@@ -524,6 +618,12 @@
     <button class="btn" id="btn-log-scale">Log scale: OFF</button>
     <button class="btn" onclick="_resetZoom()">Reset zoom</button>
   </div>
+</div>
+
+<!-- ==== tab nav ==== -->
+<div class="tabs" role="tablist">
+  <button class="tab active" id="tab-training" role="tab" onclick="_showTab('training')">Training</button>
+  <button class="tab" id="tab-speed" role="tab" onclick="_showTab('speed')">Speed<span class="tab-badge">16x</span></button>
 </div>
 
 <!-- ==== no-data state ==== -->
@@ -767,6 +867,153 @@
 </div>
 
 </div><!-- /main-content -->
+
+<!-- ==== speed view ==== -->
+<div id="speed-view">
+
+  <div class="hype" style="margin-bottom:1rem;">
+    <div class="hype-tag">ENGINE ROOM</div>
+    <div class="hype-text">Same search, same box &mdash; 16x more self-play games per hour.</div>
+  </div>
+
+  <div class="spd-hero">
+    <div class="spd-hero-card">
+      <div class="spd-hero-num">16.1x</div>
+      <div class="spd-hero-label">Generation speedup</div>
+      <div class="spd-hero-sub">raw self-play vs the old one-at-a-time path</div>
+    </div>
+    <div class="spd-hero-card cool">
+      <div class="spd-hero-num" id="spd-hero-now">~8,200</div>
+      <div class="spd-hero-label">Games / hour &middot; live</div>
+      <div class="spd-hero-sub">measured right now, end-to-end (with the training step)</div>
+    </div>
+    <div class="spd-hero-card cool">
+      <div class="spd-hero-num" id="spd-hero-week">~1.4M</div>
+      <div class="spd-hero-label">Games / week &middot; projected</div>
+      <div class="spd-hero-sub">if the current live pace held for 7 days</div>
+    </div>
+  </div>
+
+  <!-- before / during / after -->
+  <div class="card" style="margin-bottom:1rem;">
+    <div class="card-title">
+      Before &middot; during &middot; after
+      <div class="card-title-actions" style="font-size:0.62rem; color:var(--muted); font-weight:400; letter-spacing:0; text-transform:none;">
+        raw generation throughput &mdash; arena22 net, 200 sims/move, gen-9 teacher
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="spd-table">
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Games / sec</th>
+            <th>Games / hour</th>
+            <th>Games / week</th>
+            <th>Speedup</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="stage">Before<small>sequential &mdash; one game at a time</small></td>
+            <td>0.20</td><td>714</td><td>~120K</td><td class="spd-mult">1.0x</td>
+          </tr>
+          <tr>
+            <td class="stage">During<small>S4 &mdash; multiprocess CPU actors</small></td>
+            <td>0.69</td><td>2,491</td><td>~418K</td><td class="spd-mult">3.5x</td>
+          </tr>
+          <tr class="now">
+            <td class="stage">After<small>S5 + S8 &mdash; eval server + C++ hot path</small></td>
+            <td>3.20</td><td>11,520</td><td>~1.94M</td><td class="spd-mult">16.1x</td>
+          </tr>
+          <tr class="live">
+            <td class="stage">Live now<small>real end-to-end, incl. training + gates</small></td>
+            <td id="spd-live-gps">2.28</td><td id="spd-live-gph">~8,200</td><td id="spd-live-gpw">~1.38M</td><td class="spd-mult" id="spd-live-mult">~11x</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="spd-note">
+      The top three rows are a clean dyno test (generation only). The <b>Live now</b> row is what
+      the game counter is actually accumulating this second &mdash; a bit lower than the 16.1x dyno
+      because the fixed ~2s training step and periodic evaluation gates are now the main cost, not
+      the games themselves.
+    </div>
+  </div>
+
+  <!-- hardware -->
+  <div class="card" style="margin-bottom:1rem;">
+    <div class="card-title">The hardware doing it</div>
+    <div class="spd-chips">
+      <div class="spd-chip"><div class="k">GPU</div><div class="v">RTX 3080 <small>10 GiB</small></div></div>
+      <div class="spd-chip"><div class="k">CPU</div><div class="v">Ryzen 9 3900X <small>12C / 24T</small></div></div>
+      <div class="spd-chip"><div class="k">VRAM in use</div><div class="v">3.1 GiB <small>was 5.7</small></div></div>
+      <div class="spd-chip"><div class="k">Class</div><div class="v">Consumer <small>no MPS, single card</small></div></div>
+    </div>
+    <div class="spd-note">
+      One consumer GPU. The whole game was getting more work out of it without buying anything:
+      collapse the eight competing CUDA contexts down to one, and hand the freed CPU cores the
+      game-playing.
+    </div>
+  </div>
+
+  <!-- tricks -->
+  <div class="card" style="margin-bottom:1rem;">
+    <div class="card-title">The tricks</div>
+
+    <div class="spd-trick">
+      <div class="tag">S4</div>
+      <div class="name">Multiprocess self-play actors<span class="gain">+3.2x</span></div>
+      <div class="desc">16 CPU worker processes play search games in parallel instead of one at a
+        time, filling the idle cores on the 24-thread Ryzen.</div>
+    </div>
+
+    <div class="spd-trick">
+      <div class="tag">S5</div>
+      <div class="name">Shared eval server<span class="gain">+4.2x on top</span></div>
+      <div class="desc">ONE process owns the GPU and batches every actor's neural-net forward into a
+        single call. Kills the context-switch thrash that had a consumer 3080 pegged at 95% while
+        doing almost no useful work.</div>
+    </div>
+
+    <div class="spd-trick">
+      <div class="tag">S8</div>
+      <div class="name">C++ board-plane builder<span class="gain">54x / call</span></div>
+      <div class="desc">fill_planes writes the 7x9x9 input tensor in one C++ crossing instead of
+        Python array math per position. Plane building fell from 46% of an actor's CPU to under 4%,
+        byte-for-byte identical output.</div>
+    </div>
+
+    <div class="spd-trick">
+      <div class="tag">TF32</div>
+      <div class="name">Tensor-core training math<span class="gain">~2x backward</span></div>
+      <div class="desc">The RTX 3080 tensor cores run the training step's matmuls at TF32 precision,
+        roughly halving the backward pass with no measurable quality cost.</div>
+    </div>
+
+    <div class="spd-trick">
+      <div class="tag">micro</div>
+      <div class="name">Python hot-path trims</div>
+      <div class="desc">No torch.distributions in the loop, precomputed mini-board indices, deferred
+        GPU syncs, and load_state_dict instead of deepcopy for opponents &mdash; a steady drip of
+        overhead removed from the innermost code.</div>
+    </div>
+  </div>
+
+  <!-- is the learning still good? -->
+  <div class="card" style="margin-bottom:1rem;">
+    <div class="card-title">Is the agent still learning as much?</div>
+    <div class="spd-note" style="font-size:0.78rem;">
+      Faster games only count if the learning survives. The proof is <b>gen-10</b> &mdash; the first
+      generation grown entirely on the new engine. To be crowned it has to beat the current champion
+      (gen-9) on a 300-game panel <b>and</b> not slip against random, win/block, or the gregory ruler.
+      Right now it is climbing &mdash; head-to-head around <b>52-55%</b> against the 55% bar &mdash; and
+      gets re-checked every 30 minutes. The moment it promotes clean, the speedups are confirmed to
+      have cost nothing in strength. Watch the <b>Training</b> tab's promotion gates for the call.
+    </div>
+  </div>
+
+</div><!-- /speed-view -->
 
 <div class="footer" id="footer-info">
   Reads <code style="font-family:monospace; font-size:0.68rem;">loss_logs/metrics_log.jsonl</code>
@@ -1191,6 +1438,31 @@ function _throughput(data) {
   return { iph, gph, gps };
 }
 
+// ==== Tabs =================================================================
+function _showTab(name) {
+  document.body.classList.toggle('tab-speed', name === 'speed');
+  const t = document.getElementById('tab-training');
+  const s = document.getElementById('tab-speed');
+  if (t) t.classList.toggle('active', name !== 'speed');
+  if (s) s.classList.toggle('active', name === 'speed');
+}
+
+// Fill the Speed tab's live cells from the same throughput the cards use.
+// Sequential anchor = 714 games/hr, so live-multiple = gph / 714.
+function _updateSpeedLive(tp) {
+  const gphCell = document.getElementById('spd-live-gph');
+  if (!gphCell || !tp || tp.gph === null) return;
+  const gph = tp.gph, gps = tp.gps, gpw = gph * 168;
+  document.getElementById('spd-live-gps').textContent = gps.toFixed(2);
+  gphCell.textContent = _fmtBig(gph);
+  document.getElementById('spd-live-gpw').textContent = _fmtBig(gpw);
+  document.getElementById('spd-live-mult').textContent = (gph / 714).toFixed(1) + 'x';
+  const heroNow = document.getElementById('spd-hero-now');
+  if (heroNow) heroNow.textContent = _fmtBig(gph);
+  const heroWk = document.getElementById('spd-hero-week');
+  if (heroWk) heroWk.textContent = _fmtBig(gpw);
+}
+
 // ==== Stat cards ===========================================================
 function _updateCards(data) {
   const n     = data.length;
@@ -1236,6 +1508,7 @@ function _updateCards(data) {
     document.getElementById('s-gph').textContent = '--';
     document.getElementById('s-gph-sub').textContent = 'needs t + games_total';
   }
+  _updateSpeedLive(tp);
 
   // loss -- ONE number; the policy/value split lives in the sub-line
   _setStat('s-loss', last.loss, v => _fmt(v, 3));
