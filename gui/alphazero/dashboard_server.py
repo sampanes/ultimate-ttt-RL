@@ -3,7 +3,7 @@
 Drop-in replacement for the bare `python -m http.server 7654` the dashboard
 used before. Static behavior is identical -- it serves the repo root, so the
 page still reads loss_logs/metrics_log.jsonl and
-models/expert_iter_v2/state.json as plain files. Two JSON endpoints are added:
+models/expert_iter_v2/state.json as plain files. JSON endpoints are added:
 
     GET /api/play?opp=teacher|winblock|random|gregory
         Plays ONE game on CPU -- the CURRENT student.pt (weights reloaded on
@@ -20,9 +20,22 @@ models/expert_iter_v2/state.json as plain files. Two JSON endpoints are added:
     GET /api/health
         Liveness probe: {"ok": true, "brain": "cold"|"warm"}.
 
-Viewer-only by design: the training run never imports this file, and this
-file never writes to the training run's state. If this server dies mid-game,
-training does not notice.
+    GET  /api/control
+        Run status: {"state": "running"|"stopped"|"stopping"|"starting",
+        "teacher_gen": N, "last": <last op result or null>}.
+    POST /api/control?action=stop|start
+        Pause / resume the training run. This NEVER kills a process or writes
+        a checkpoint itself -- it only shells out to the same graceful scripts
+        you run by hand: stop_goat.bat (Ctrl+C, so the trainer's finally block
+        saves resume state -- the best agent is never lost) and start_goat.bat
+        (--resume, idempotent). Runs the batch in a background thread and
+        returns 202 immediately; status flips running<->stopping<->stopped as
+        the graceful stop (up to ~2 min) completes. 409 if an op is already in
+        flight, if stopping an already-stopped run, or starting a running one.
+
+Never force-kills, never touches the training run's state directly: the static
+files and /api/play are read-only, and control only invokes the graceful
+start/stop scripts. If this server dies, training does not notice.
 
 Run (from repo root; start_dashboard.bat wraps this):
     .venv\\Scripts\\python -m gui.alphazero.dashboard_server
@@ -32,6 +45,7 @@ import argparse
 import json
 import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -43,6 +57,15 @@ MODEL_DIR = os.path.join(REPO_ROOT, "models", "expert_iter_v2")
 OPPONENTS = ("teacher", "winblock", "random", "gregory")
 GREGORY_DEPTH = 3  # mirrors scripts.expert_iter --gregory_depth default
 
+# Run control shells out ONLY to these two existing graceful scripts -- never a
+# force-kill, never a checkpoint write -- so a pause cannot lose the best agent.
+STOP_BAT = os.path.join(REPO_ROOT, "stop_goat.bat")
+START_BAT = os.path.join(REPO_ROOT, "start_goat.bat")
+# Give the spawned batch its own hidden console: nothing flashes on screen, and
+# there is zero console cross-talk with this server (send_ctrl_c.py inside
+# stop_goat.bat detaches and re-attaches to the goat-train console on its own).
+_CREATE_NO_WINDOW = 0x08000000
+
 # Heavy machinery (torch, agents, engine) is imported lazily on the first
 # /api/play so the static server is up instantly and a metrics-only viewer
 # session never pays the torch import at all.
@@ -50,6 +73,14 @@ _brain = {"ready": False}
 _brain_lock = threading.Lock()
 # One game at a time: burst-clicking the button queues 429s, not CPU work.
 _play_lock = threading.Lock()
+
+# Run control state. One pause/resume in flight at a time; the worker thread
+# clears op when the graceful script returns. Nothing here touches a checkpoint.
+_control = {"op": None, "since": 0.0, "last": None}  # op: None|'stopping'|'starting'
+_control_lock = threading.Lock()
+# Small TTL cache so many watchers (phone + desktop) don't each spawn a wmic.
+_alive_cache = {"t": 0.0, "val": False}
+_ALIVE_TTL = 2.5
 
 
 def _ensure_brain():
@@ -217,6 +248,119 @@ def _play_game(b, opp_name):
     }
 
 
+# ==== run control (pause / resume) =========================================
+
+def _goat_alive_raw():
+    """One uncached process check: True/False, or None on a transient error.
+
+    Uses the same commandline match stop_goat.bat waits on, so status reflects
+    the exact truth the stopper uses -- not a window-title guess.
+    """
+    try:
+        out = subprocess.run(
+            ["wmic", "process", "where",
+             "name='python.exe' and (commandline like '%goat_supervisor%' "
+             "or commandline like '%scripts.expert_iter%')",
+             "get", "processid"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=_CREATE_NO_WINDOW)
+        return any(tok.strip().isdigit() for tok in out.stdout.split())
+    except Exception:
+        return None
+
+
+def _goat_alive():
+    """Cached liveness (a couple of seconds) so many watchers don't each wmic."""
+    now = time.time()
+    if now - _alive_cache["t"] < _ALIVE_TTL:
+        return _alive_cache["val"]
+    val = _goat_alive_raw()
+    if val is None:
+        val = _alive_cache["val"]  # transient wmic hiccup: keep the last truth
+    _alive_cache.update(t=now, val=val)
+    return val
+
+
+def _control_status():
+    with _control_lock:
+        op = _control["op"]
+        last = _control["last"]
+    # While an op runs, report it; the process check is meaningless mid-cutover.
+    state = op if op else ("running" if _goat_alive() else "stopped")
+    return {"state": state, "teacher_gen": _read_state().get("teacher_gen"),
+            "last": last}
+
+
+def _run_control_worker(kind):
+    """Run the graceful start/stop script, then clear the op.
+
+    stop and start are NOT symmetric on Windows:
+      - stop_goat.bat is synchronous (Ctrl+C, then a bounded wait) and returns
+        only once the run is fully down -- safe to capture output and wait on.
+      - start_goat.bat spawns a DETACHED training daemon. That daemon inherits
+        this process's stdout handle, so capturing output would block until the
+        WHOLE run exits. So for start we send output to DEVNULL (the run logs
+        itself to loss_logs) and hold the 'starting' state until the supervisor
+        is actually detected -- giving the UI a clean starting -> running flip
+        instead of a 4-minute false 'starting'.
+    """
+    result = {"kind": kind}
+    try:
+        if kind == "stop":
+            proc = subprocess.run(
+                ["cmd", "/c", STOP_BAT], cwd=REPO_ROOT,
+                capture_output=True, text=True, timeout=240,
+                creationflags=_CREATE_NO_WINDOW)
+            result["rc"] = proc.returncode
+            tail = (proc.stdout or "")[-400:].strip()
+            if tail:
+                result["out"] = tail
+        else:
+            subprocess.run(
+                ["cmd", "/c", START_BAT], cwd=REPO_ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=200, creationflags=_CREATE_NO_WINDOW)
+            up = False
+            for _ in range(30):          # ~30s for the supervisor to appear
+                if _goat_alive_raw() is True:
+                    up = True
+                    break
+                time.sleep(1)
+            result["rc"] = 0 if up else -1
+            if not up:
+                result["error"] = "launched, but no training process detected yet"
+    except subprocess.TimeoutExpired:
+        result["rc"] = -1
+        result["error"] = "control script timed out"
+    except Exception as e:  # never let the worker die silently
+        result["rc"] = -1
+        result["error"] = "%s: %s" % (type(e).__name__, e)
+    result["when"] = time.time()
+    with _control_lock:
+        _control["op"] = None
+        _control["last"] = result
+    _alive_cache["t"] = 0.0  # force a fresh process check on the next status
+
+
+def _start_control(kind):
+    """Kick off a pause/resume in the background. Returns (http_code, payload)."""
+    alive = _goat_alive()  # outside the lock: wmic is slow, don't block status
+    with _control_lock:
+        if _control["op"] is not None:
+            return 409, {"error": "a %s is already in progress" % _control["op"]}
+        if kind == "stop" and not alive:
+            return 409, {"error": "training is not running"}
+        if kind == "start" and alive:
+            # start_goat.bat would stop-then-restart a healthy run; refuse so a
+            # stray click can never bounce a good run mid-generation.
+            return 409, {"error": "training is already running"}
+        op = "stopping" if kind == "stop" else "starting"
+        _control["op"] = op
+        _control["since"] = time.time()
+    threading.Thread(target=_run_control_worker, args=(kind,), daemon=True).start()
+    return 202, {"ok": True, "op": op}
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=REPO_ROOT, **kwargs)
@@ -239,7 +383,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             })
         if parsed.path == "/api/play":
             return self._api_play(parsed)
+        if parsed.path == "/api/control":
+            return self._json(200, _control_status())
         return super().do_GET()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/control":
+            query = urllib.parse.parse_qs(parsed.query)
+            action = (query.get("action") or [""])[0]
+            # Drain any request body so the socket closes cleanly on 4xx too.
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            if action not in ("stop", "start"):
+                return self._json(400, {"error": "action must be stop or start"})
+            code, payload = _start_control(action)
+            return self._json(code, payload)
+        return self._json(404, {"error": "not found"})
 
     def _api_play(self, parsed):
         query = urllib.parse.parse_qs(parsed.query)

@@ -527,6 +527,53 @@
     body.tab-speed #main-content,
     body.tab-speed #no-data { display: none !important; }
 
+    /* ==== run control (pause / resume) ==== */
+    .run-ctl {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 0.55rem 0.9rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--muted); border-radius: var(--radius);
+      padding: 0.7rem 0.9rem; margin-bottom: 1rem;
+    }
+    .run-ctl[data-state="running"]  { border-left-color: var(--green); }
+    .run-ctl[data-state="stopped"]  { border-left-color: var(--accent); }
+    .run-ctl[data-state="stopping"],
+    .run-ctl[data-state="starting"] { border-left-color: var(--yellow); }
+    .run-ctl-status { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    .run-ctl-dot {
+      width: 0.7rem; height: 0.7rem; border-radius: 50%;
+      background: var(--muted); flex: none;
+    }
+    .run-ctl[data-state="running"] .run-ctl-dot {
+      background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.7);
+    }
+    .run-ctl[data-state="stopped"] .run-ctl-dot { background: var(--accent); }
+    .run-ctl[data-state="stopping"] .run-ctl-dot,
+    .run-ctl[data-state="starting"] .run-ctl-dot {
+      background: var(--yellow); animation: rc-pulse 1s infinite;
+    }
+    @keyframes rc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    .run-ctl-label {
+      font-size: 0.82rem; font-weight: 700; letter-spacing: 0.02em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .run-ctl-btn {
+      margin-left: auto; font-family: inherit; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0.5rem 1.1rem; min-height: 2.4rem; cursor: pointer;
+      border-radius: var(--radius); border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text);
+      transition: background var(--t), border-color var(--t), color var(--t);
+    }
+    .run-ctl-btn:hover:not(:disabled) { border-color: var(--accent); }
+    .run-ctl-btn.pause  { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .run-ctl-btn.pause:hover:not(:disabled) { background: var(--accent-hover); }
+    .run-ctl-btn.resume { background: var(--green); border-color: var(--green); color: #08140b; }
+    .run-ctl-btn:disabled { opacity: 0.5; cursor: default; }
+    .run-ctl-note {
+      flex-basis: 100%; font-size: 0.62rem; color: var(--muted); letter-spacing: 0.01em;
+    }
+    @media (min-width: 700px) { .run-ctl-btn { min-width: 9rem; } }
+
     /* ==== chart range bar (mobile-first zoom to recent) ==== */
     .range-bar {
       display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
@@ -646,6 +693,16 @@
 <div class="tabs" role="tablist">
   <button class="tab active" id="tab-training" role="tab" onclick="_showTab('training')">Training</button>
   <button class="tab" id="tab-speed" role="tab" onclick="_showTab('speed')">Speed<span class="tab-badge">16x</span></button>
+</div>
+
+<!-- ==== run control (pause / resume) ==== -->
+<div class="run-ctl" id="run-ctl" data-state="unknown">
+  <div class="run-ctl-status">
+    <span class="run-ctl-dot"></span>
+    <span class="run-ctl-label" id="run-ctl-label">Checking run status...</span>
+  </div>
+  <button class="run-ctl-btn" id="run-ctl-btn" onclick="_runCtlClick()" disabled>--</button>
+  <div class="run-ctl-note" id="run-ctl-note">Graceful pause: sends Ctrl+C, the trainer saves its resume state and every checkpoint. Your best agent is never lost; resume picks up where it left off.</div>
 </div>
 
 <!-- ==== no-data state ==== -->
@@ -2100,11 +2157,100 @@ function _fetchState() {
     .catch(() => {});
 }
 
+// ==== Run control (pause / resume) =========================================
+// The card is always in the DOM (outside #main-content), so control works even
+// in the no-data / paused state. The button only ever asks the server to run
+// the graceful stop/start scripts -- it can never force-kill or lose a agent.
+let _ctlState = 'unknown';
+let _ctlBusy = false;      // a stop/start POST is outstanding from this client
+let _ctlFastUntil = 0;     // poll briskly until this ms timestamp
+
+function _renderControl(s) {
+  const state = (s && s.state) || 'unknown';
+  _ctlState = state;
+  const box   = document.getElementById('run-ctl');
+  const label = document.getElementById('run-ctl-label');
+  const btn   = document.getElementById('run-ctl-btn');
+  if (!box) return;
+  box.setAttribute('data-state', state);
+  const gen = (s && s.teacher_gen != null) ? (' -- teacher gen ' + s.teacher_gen) : '';
+  btn.classList.remove('pause', 'resume');
+  if (state === 'running') {
+    label.textContent = 'Training running' + gen;
+    btn.textContent = 'Pause training'; btn.classList.add('pause'); btn.disabled = _ctlBusy;
+  } else if (state === 'stopped') {
+    label.textContent = 'Training paused' + gen;
+    btn.textContent = 'Resume training'; btn.classList.add('resume'); btn.disabled = _ctlBusy;
+  } else if (state === 'stopping') {
+    label.textContent = 'Stopping -- saving resume state...';
+    btn.textContent = 'Stopping...'; btn.disabled = true;
+    _ctlFastUntil = Date.now() + 4000;
+  } else if (state === 'starting') {
+    label.textContent = 'Starting up...';
+    btn.textContent = 'Starting...'; btn.disabled = true;
+    _ctlFastUntil = Date.now() + 4000;
+  } else {
+    label.textContent = 'Checking run status...';
+    btn.textContent = '--'; btn.disabled = true;
+  }
+}
+
+function _pollControl() {
+  fetch('/api/control', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(s => { if (s) _renderControl(s); })
+    .catch(() => {});   // dashboard served by the old bare http.server: stay quiet
+}
+
+function _ctlFlash(msg) {
+  const note = document.getElementById('run-ctl-note');
+  if (!note) return;
+  if (!note.dataset.orig) note.dataset.orig = note.textContent;
+  note.textContent = msg;
+  note.style.color = 'var(--accent)';
+  clearTimeout(note._t);
+  note._t = setTimeout(() => {
+    note.textContent = note.dataset.orig;
+    note.style.color = '';
+  }, 6000);
+}
+
+function _runCtlClick() {
+  if (_ctlBusy) return;
+  let action;
+  if (_ctlState === 'running') {
+    action = 'stop';
+    const ok = window.confirm(
+      'Pause training?\n\n' +
+      'This gracefully stops the run (Ctrl+C). The trainer saves its resume ' +
+      'state and every checkpoint first -- your best agent is safe. ' +
+      'Resume anytime; it continues exactly where it left off.');
+    if (!ok) return;
+  } else if (_ctlState === 'stopped') {
+    action = 'start';               // resuming is safe -- no confirm
+  } else {
+    return;                          // busy / unknown -> ignore the click
+  }
+  _ctlBusy = true;
+  const btn = document.getElementById('run-ctl-btn');
+  btn.disabled = true;
+  btn.textContent = action === 'stop' ? 'Stopping...' : 'Starting...';
+  fetch('/api/control?action=' + action, { method: 'POST' })
+    .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
+    .then(({ ok, status, j }) => {
+      if (!ok) _ctlFlash('Could not ' + action + ': ' + ((j && j.error) || ('HTTP ' + status)));
+      _ctlFastUntil = Date.now() + 8000;   // watch the state flip through
+    })
+    .catch(e => _ctlFlash('Control request failed: ' + e))
+    .finally(() => { _ctlBusy = false; _pollControl(); });
+}
+
 // ==== Main fetch loop ======================================================
 async function _fetch() {
   if (_inFlight) return;
   _inFlight = true;
   _fetchState();
+  _pollControl();
   try {
     const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
     if (!res.ok) { _showNoData(); return; }
@@ -2448,6 +2594,11 @@ const CARD_INFO = {
 
 _fetch();
 setInterval(_fetch, 5000);
+
+// Run-control: steady 5s poll rides in _fetch; this burst poll only fires
+// during/after a pause/resume so the state flip feels immediate.
+_pollControl();
+setInterval(() => { if (Date.now() < _ctlFastUntil) _pollControl(); }, 1200);
 
 // Live clock -- ticks elapsed + badge every second when timestamps present
 setInterval(() => {
