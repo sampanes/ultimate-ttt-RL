@@ -51,23 +51,23 @@ missing the 5 MB gate, so it cannot be the pocket champion despite being stronge
 
 | Field | Value |
 |---|---|
-| Selector | `benchmarks/goat_certified.json` (expert_iter_v2 gen-5, promoted 2026-07-11) |
+| Selector | `benchmarks/goat_certified.json` (expert_iter_v2 gen-19, promoted 2026-07-20) |
 | Architecture | conv=`[64,256,256,32,256,64,128]` fc=`[256,1024]`, tanh value head |
 | Parameters | 6,766,386 |
 | fp32 bytes | 27,072,859 (27 MB) |
-| SHA-256 (fp32 source .pt) | `748e77329aad34120cf0a050741cf151eb2e8afd5e1da700046e1daa6f4d3258` |
-| Direct h2h vs prior champion | **0.698** (300 games, raw, fixed openings, color-swapped) |
-| M2 aggregates | raw 0.700, tactical 0.800, mcts_25 0.778, **mcts_100 0.856** (prior best-any-mode was 0.844) |
-| GOLD suite blunder (tactical, fixed 336 positions) | 3.57% (prior champion on same suite: 2.98% -- tie) |
+| SHA-256 (fp32 source .pt) | `671f67edd60a209a334275b2e55efd912f5a28afb3c6ebcd873add25b9489d72` |
+| ONNX SHA-256 (`docs/models/champion.onnx`) | `99954b12093e2a65099f8f2af33aa12a7102660bb9162046fe9523e5be9d7a2d` |
+| Direct h2h vs prior champion (gen-5) | **0.913** (300 games, raw, fixed openings, color-swapped, seed 9901) |
+| M2 aggregates | raw 0.955, tactical 0.978, mcts_25 0.961, **mcts_100 1.000** (gen-5 best-any-mode was 0.856) |
+| GOLD suite blunder (tactical, fixed 336 positions) | 2.98% (gen-5 on same suite: 3.57%) |
 | Ships as | fp32 ONNX `docs/models/champion.onnx` (browser opt-in) + `turn_based_games` UTTT solo bot |
 
-This is the M4/M5 bounded-value, search-trained champion the previous row
-anticipated: the expert-iteration teacher lineage (MCTS-200 over its own tanh
-net) seeded from `arena:22@hof` and promoted five times on fixed external
-panels. Search finally adds strength over the raw/tactical net (mcts_100
-0.856 > tactical 0.800) instead of losing it (incumbent: 0.700 < 0.844).
-Full certification: `RESULT_M2_5.md`. Superseded: `arena:22@hof` (SHA
-`400374b1...`, M2 tactical 0.844 -- see `RESULT_M2.md`).
+gen-19 of the expert-iteration teacher lineage (MCTS-200 over its own tanh
+net), seeded from `arena:22@hof` and promoted through fourteen further external-
+panel gates past the gen-5 champion. It beats gen-5 in every panel cell and
+closes the historic winblock blind spot (raw winblock 0.361 -> 0.861). Full
+certification: `RESULT_GEN19_CERT.md`. Superseded: expert_iter_v2 gen-5 (SHA
+`748e7732...`, h2h 0.698 vs its own incumbent -- see `RESULT_M2_5.md`).
 
 ## Provenance
 
