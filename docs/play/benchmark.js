@@ -120,8 +120,12 @@ async function _measureMcts(runner, nSims, reps, onProgress, base, span) {
   for (let r = 0; r < reps; r++) {
     const state = new GameState();
     const t0 = performance.now();
+    // Measure the SAME search path the device will actually play (batched on
+    // WebGPU, serial on WASM), so the per-sim cost -- and the autoSims we derive
+    // from it -- reflect real play, not a slower path.
     await _mctsSearch(state, runner.session, runner._policyName,
-                      runner._valueName, nSims, runner.cPuct || 1.5);
+                      runner._valueName, nSims, runner.cPuct || 1.5,
+                      0, runner.waveSize || 1);
     times.push(performance.now() - t0);
     if (onProgress) onProgress(base + span * ((r + 1) / reps));
   }
@@ -133,11 +137,18 @@ async function _measureMcts(runner, nSims, reps, onProgress, base, span) {
 // Interpretation
 // --------------------------------------------------------------------------
 
-function _tier(forwardsPerSec) {
-  if (forwardsPerSec >= 400) return { key: 'ultra', label: 'Desktop / high-end' };
-  if (forwardsPerSec >= 130) return { key: 'high',  label: 'Laptop / fast tablet' };
-  if (forwardsPerSec >= 35)  return { key: 'mid',   label: 'Phone / tablet' };
-  return { key: 'low', label: 'Low-end / older phone' };
+// Tier reflects the SEARCH DEPTH the device reaches in the ~1s move budget --
+// the thing that actually varies and decides play quality -- NOT a guess at the
+// hardware class. The pocket net is tiny, so raw forward throughput saturates on
+// any modern device (a fast phone posts nearly the same forwards/sec as a
+// desktop); per-sim search cost, which includes tree overhead, is what separates
+// them. Bucket on autoSims so a genuine potato reads "Shallow" and a fast phone
+// reads by what it can actually do, not a bogus "Desktop" label.
+function _tier(autoSims) {
+  if (autoSims >= 300) return { key: 'ultra', label: 'Deep search' };
+  if (autoSims >= 120) return { key: 'high',  label: 'Strong search' };
+  if (autoSims >= 40)  return { key: 'mid',   label: 'Moderate search' };
+  return { key: 'low', label: 'Shallow search' };
 }
 
 // Hard mode is time-bounded: every move takes ~_TARGET_MOVE_MS regardless of
@@ -183,15 +194,16 @@ async function runDeviceBenchmark(runner, onProgress) {
   const mcts50 = await _measureMcts(runner, 50, _MCTS_REPS, report, 0.77, 0.2);
   report(0.99);
 
-  const tier = _tier(fwd.forwardsPerSec);
   const rec  = _recommend(mcts50);
+  const tier = _tier(rec.autoSims);
 
   report(1.0);
   return {
     schema:  _BENCH_SCHEMA,
     ts:      Date.now(),
     model:   { name: runner.name, kind: (typeof _modelKind !== 'undefined' ? _modelKind : null) },
-    ep:      'wasm',
+    ep:      runner.ep || 'wasm',
+    waveSize: runner.waveSize || 1,
     caps,
     perf: {
       msPerForward:    Math.round(fwd.msPerForward * 100) / 100,
@@ -252,9 +264,13 @@ function formatBenchmark(res) {
   const accel = [c.wasmSimd ? 'WASM SIMD' : 'WASM (no SIMD)',
                  c.webgpu ? 'WebGPU avail' : null].filter(Boolean).join(', ');
   const stab  = (p.spreadPct != null) ? ` (+/-${p.spreadPct}% across rounds)` : '';
+  const engine = (res.ep === 'webgpu')
+    ? `WebGPU${(res.waveSize > 1) ? ` (batched x${res.waveSize})` : ''}`
+    : 'WASM (CPU)';
   return ''
     + `<div class="bench-tier bench-tier-${res.tier}">${res.tierLabel}</div>`
     + _row('Model tested', `${res.model.name}`)
+    + _row('Engine', engine)
     + _row('Speed', `${p.forwardsPerSec} forwards/sec (${p.msPerForward} ms each)${stab}`)
     + _row('Hard move (MCTS-50)', `${(p.mcts50ms / 1000).toFixed(2)} s`)
     + _row('Tuned search depth', `${res.recommend.autoSims} sims/move`)

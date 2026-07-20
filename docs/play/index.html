@@ -472,7 +472,8 @@
 <div id="bench-saved"></div>
 
 <!-- ─────────────────────────────────────────────── scripts ── -->
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<!-- webgpu bundle = WebGPU EP + WASM fallback in one; agent.js picks the faster per device -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
 <script src="uttt_engine.js"></script>
 <script src="agent.js"></script>
 <script src="benchmark.js"></script>
@@ -694,7 +695,9 @@ async function _selectModel(kind) {
         ? 'Fetching champion model (~26 MB, one-time)...'
         : 'Fetching model...';
       overlay.classList.add('show');
-      _models[kind] = await loadAgent(url);
+      // Race WebGPU vs WASM for the searching (pocket) net; champion is raw
+      // tactical (one forward per move) so its provider does not matter.
+      _models[kind] = await loadAgent(url, { race: kind !== 'champion' });
     } catch (err) {
       overlay.classList.remove('show');
       _setStatus('error', 'Could not load ' + kind + ' model: ' + err.message);
@@ -861,7 +864,7 @@ async function _init() {
 
   try {
     loadMsg.textContent = 'Fetching model config…';
-    _runner = await loadAgent('../models/model_config.json');
+    _runner = await loadAgent('../models/model_config.json', { race: true });
     _models.pocket = _runner;
     // Sync nSims/tactical with the active difficulty + model buttons.
     _applyAgentMode();

@@ -23,19 +23,40 @@ loop by wall clock instead of a fixed sim count.)
 The benchmark's job is to tell you HOW MUCH search you get in that second
 (the device tier and the estimated nodes/move), and to persist it.
 
+## Execution provider: WebGPU with a safe fallback
+
+At load, `loadAgent` (in `agent.js`) creates the searching net on WASM and, when
+the browser exposes `navigator.gpu`, also on WebGPU, then keeps whichever is
+**both faster AND numerically in agreement** with WASM on a probe forward (a
+buggy GPU backend cannot win on speed alone -- it is disqualified and WASM is
+kept). WASM devices are therefore unchanged. When WebGPU wins, the search also
+switches to a **batched (leaf-parallel) MCTS**: it descends to a wave of leaves
+using virtual loss and evaluates them all in ONE forward. A batch-of-K forward
+costs ~the same wall clock as batch-1 on a GPU, so the same ~1 s budget now buys
+many more simulations -- that is the depth that was previously left on the table.
+The batched search is bit-for-bit identical to the serial one at wave size 1
+(guarded by `scripts/test_batched_mcts.js`), so it is a pure speed lever, not a
+behavior change. The champion net is raw 1-ply tactical (one forward per move),
+so it stays on WASM; the provider choice there is irrelevant.
+
 ## What it measures
 
 - **Forward throughput**: several fixed ~1.5 s wall-clock rounds count completed
   `session.run` calls (warm-up discarded), reported as the median across rounds
   plus a spread %, so a thermal spike in one round does not skew the read. The
   fixed window self-scales: fast devices do thousands, slow devices do dozens.
-- **Real move cost**: actual MCTS searches at 16 and 50 sims (median of 5),
-  giving the true per-simulation cost including tree overhead.
+- **Real move cost**: actual MCTS searches at 16 and 50 sims (median of 5) on
+  the SAME engine the device will play (batched on WebGPU, serial on WASM),
+  giving the true per-simulation cost -- including tree overhead and any batching
+  benefit -- so the derived `autoSims` reflects real play.
 - **Capabilities** (best-effort, may be null): user-agent, core count,
   `navigator.deviceMemory`, WebGPU availability, WASM SIMD support, screen, DPR.
-- **Tier + tuned depth**: buckets by forwards/sec into low/mid/high/ultra, and
-  estimates `autoSims` = how many simulations fit in the ~1 s move budget
-  (from the measured per-sim cost). Shown as "about N search nodes per 1 s move".
+- **Tier + tuned depth**: estimates `autoSims` = how many simulations fit in the
+  ~1 s move budget (from the measured per-sim cost), then buckets on THAT into
+  shallow/moderate/strong/deep. Tier describes reachable search depth, not a
+  guess at the hardware class -- the pocket net is tiny enough that raw
+  forwards/sec saturates on any modern device (a fast phone matches a desktop),
+  so throughput cannot tell device classes apart; per-sim search cost can.
 
 ## Persistence
 
@@ -50,13 +71,14 @@ Running the test again overwrites it. Cleared if the user clears site data.
 {
   "schema": "uttt-devbench-2",
   "ts": 1721460000000,
-  "model": { "name": "expert-iter-v2 gen-19 (champion)", "kind": "champion" },
-  "ep": "wasm",
+  "model": { "name": "arena:21@hof", "kind": "pocket" },
+  "ep": "webgpu",
+  "waveSize": 32,
   "caps": { "ua": "...", "platform": "...", "cores": 8, "deviceMemGB": 8,
             "webgpu": true, "wasmSimd": true, "screen": "1920x1080", "dpr": 1 },
   "perf": { "msPerForward": 2.4, "forwardsPerSec": 417, "roundsMs": [2.3,2.4,2.5],
             "spreadPct": 8, "mcts16ms": 42, "mcts50ms": 130 },
-  "tier": "ultra", "tierLabel": "Desktop / high-end",
+  "tier": "ultra", "tierLabel": "Deep search",
   "recommend": { "autoSims": 384, "perSimMs": 2.6, "hard": "strong", "note": "..." },
   "benchMs": 9500
 }
