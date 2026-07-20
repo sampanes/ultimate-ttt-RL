@@ -331,6 +331,59 @@
       line-height: 1.5;
     }
     .eval-move .ev-pct { color: var(--muted); }
+
+    /* -- device benchmark panel -- */
+    #bench-panel {
+      display: none;
+      width: 100%;
+      max-width: 520px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem 1rem;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    #bench-panel.show { display: flex; }
+    #bench-head {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    #bench-title { font-size: 0.95rem; font-weight: 600; }
+    .bench-x {
+      background: none; border: none; color: var(--muted);
+      font-size: 0.75rem; cursor: pointer;
+    }
+    .bench-x:hover { color: var(--text); }
+    #bench-progress-wrap {
+      width: 100%; height: 4px; background: var(--surface2);
+      border-radius: 3px; overflow: hidden;
+    }
+    #bench-progress {
+      height: 100%; width: 0%; background: var(--accent);
+      transition: width 0.2s ease;
+    }
+    #bench-status { font-size: 0.78rem; color: var(--muted); }
+    .bench-tier { font-size: 0.95rem; font-weight: 700; padding: 0.2rem 0; }
+    .bench-tier-low   { color: var(--red); }
+    .bench-tier-mid   { color: var(--yellow); }
+    .bench-tier-high  { color: var(--accent2); }
+    .bench-tier-ultra { color: var(--green); }
+    .bench-row {
+      display: flex; justify-content: space-between; gap: 1rem;
+      font-size: 0.8rem; padding: 0.15rem 0;
+      border-bottom: 1px solid var(--surface2);
+    }
+    .bench-k { color: var(--muted); }
+    .bench-v { color: var(--text); text-align: right; }
+    .bench-note {
+      font-size: 0.78rem; color: var(--text); background: var(--surface2);
+      border-radius: 6px; padding: 0.5rem 0.6rem; margin-top: 0.3rem;
+      line-height: 1.5;
+    }
+    #bench-actions {
+      display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.3rem;
+    }
+    #bench-actions .btn { font-size: 0.78rem; padding: 0.4rem 0.8rem; }
   </style>
 </head>
 <body>
@@ -382,6 +435,22 @@
   <button class="btn primary" id="btn-new">New Game</button>
   <button class="btn" id="btn-swap">Swap Sides</button>
   <button class="btn" id="btn-eval">Show eval</button>
+  <button class="btn" id="btn-bench">Test device speed</button>
+</div>
+
+<div id="bench-panel">
+  <div id="bench-head">
+    <span id="bench-title">Device speed</span>
+    <button class="bench-x" id="bench-close">close</button>
+  </div>
+  <div id="bench-progress-wrap"><div id="bench-progress"></div></div>
+  <div id="bench-status">Measuring real inference on this device...</div>
+  <div id="bench-body"><!-- filled by JS --></div>
+  <div id="bench-actions">
+    <button class="btn" id="bench-apply">Apply recommended</button>
+    <button class="btn" id="bench-copy">Copy result</button>
+    <button class="btn" id="bench-share">Share anonymously</button>
+  </div>
 </div>
 
 <div id="model-info">
@@ -394,6 +463,7 @@
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
 <script src="uttt_engine.js"></script>
 <script src="agent.js"></script>
+<script src="benchmark.js"></script>
 <script>
 // ── Game state ───────────────────────────────────────────────────────────────
 let _game        = null;   // current GameState
@@ -630,6 +700,81 @@ function _newGame() {
   if (_humanSide !== _game.player) _scheduleAiMove();
 }
 
+// -- Device benchmark ---------------------------------------------------------
+let _lastBench = null;
+
+async function _runBench() {
+  if (!_runner || !_runner.session) {
+    _setStatus('error', 'Load a model first, then test device speed.');
+    return;
+  }
+  if (_aiThinking) return;
+  const panel   = document.getElementById('bench-panel');
+  const bar     = document.getElementById('bench-progress');
+  const statusEl= document.getElementById('bench-status');
+  const body    = document.getElementById('bench-body');
+  const actions = document.getElementById('bench-actions');
+  const btn     = document.getElementById('btn-bench');
+
+  panel.classList.add('show');
+  body.innerHTML = '';
+  actions.style.visibility = 'hidden';
+  statusEl.textContent = 'Measuring real inference on this device...';
+  bar.style.width = '0%';
+  btn.disabled = true;
+  try {
+    const res = await runDeviceBenchmark(_runner, p => {
+      bar.style.width = Math.round(p * 100) + '%';
+    });
+    _lastBench = res;
+    body.innerHTML = formatBenchmark(res);
+    statusEl.textContent =
+      `Done in ${(res.benchMs / 1000).toFixed(1)}s. Tested the ${res.model.name} net.`;
+    document.getElementById('bench-share').style.display =
+      BENCH_TELEMETRY_ENDPOINT ? '' : 'none';
+    actions.style.visibility = 'visible';
+  } catch (err) {
+    statusEl.textContent = 'Benchmark failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _applyRecommended() {
+  if (!_lastBench) return;
+  const smooth = _lastBench.recommend.hard === 'smooth';
+  const target = smooth
+    ? document.getElementById('btn-hard')
+    : document.querySelector('#diff-row .diff-btn[data-temp="0.45"]');
+  if (target) target.click();
+  document.getElementById('bench-status').textContent = smooth
+    ? 'Kept Hard -- your device handles it.'
+    : 'Switched to Medium for snappier moves.';
+}
+
+async function _copyBench() {
+  if (!_lastBench) return;
+  const el = document.getElementById('bench-copy');
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(_lastBench));
+    el.textContent = 'Copied';
+    setTimeout(() => { el.textContent = 'Copy result'; }, 1500);
+  } catch (_) {
+    console.log(JSON.stringify(_lastBench));
+    document.getElementById('bench-status').textContent =
+      'Clipboard blocked; result logged to console.';
+  }
+}
+
+async function _shareBench() {
+  if (!_lastBench) return;
+  const el = document.getElementById('bench-share');
+  el.disabled = true;
+  const ok = await shareBenchmark(_lastBench);
+  el.textContent = ok ? 'Shared. Thanks!' : 'Share unavailable';
+  el.disabled = false;
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function _init() {
   _buildBoard();
@@ -664,6 +809,14 @@ async function _init() {
   document.querySelectorAll('#model-row .diff-btn').forEach(btn => {
     btn.addEventListener('click', () => _selectModel(btn.dataset.model));
   });
+
+  // Device benchmark controls.
+  document.getElementById('btn-bench').addEventListener('click', () => _runBench());
+  document.getElementById('bench-close').addEventListener('click', () =>
+    document.getElementById('bench-panel').classList.remove('show'));
+  document.getElementById('bench-apply').addEventListener('click', () => _applyRecommended());
+  document.getElementById('bench-copy').addEventListener('click', () => _copyBench());
+  document.getElementById('bench-share').addEventListener('click', () => _shareBench());
 
   // Load the agent.
   const overlay = document.getElementById('loading-overlay');
