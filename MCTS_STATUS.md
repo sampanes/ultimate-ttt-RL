@@ -63,6 +63,14 @@ Not yet actioned -- this is the intended sequence, cheapest/cleanest first.
 2. **Tune `c_puct`.** Cheaper than anything structural and could materially move
    the curve. Sweep several values independently at 50, 100, and 200 sims -- the
    best exploration constant may differ by budget and by network generation.
+   RESULT (2026-07-18, gen-15 teacher, 50 sims vs gregory d3, 300 games seed
+   8801): 1.0 -> 0.697, 1.5 -> 0.765, 2.5 -> 0.738, 4.0 -> 0.750. The current
+   default 1.5 is ALREADY optimal at the page's budget; below it hurts (~2 SE),
+   above it is flat within the ~3-pt noise floor. No free win here at 50 sims.
+   100/200-sim sweeps remain unswept but are now low priority (the deployed and
+   teacher-generation budgets are what matter, and 50 is closed). Same sweep
+   incidentally showed gen-15 at 50 sims (0.765) ~= gen-13 at 200 sims (0.757):
+   +13.5 pts from two generations at FIXED search -- the network is the lever.
 
 3. **Exact-state neural-evaluation cache.** Before a true DAG, cache
    policy/value outputs by state hash so identical positions reached by different
