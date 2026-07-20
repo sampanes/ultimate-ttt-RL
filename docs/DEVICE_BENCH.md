@@ -26,14 +26,19 @@ The benchmark's job is to tell you HOW MUCH search you get in that second
 ## Execution provider: WebGPU with a safe fallback
 
 At load, `loadAgent` (in `agent.js`) creates the searching net on WASM and, when
-the browser exposes `navigator.gpu`, also on WebGPU, then keeps whichever is
-**both faster AND numerically in agreement** with WASM on a probe forward (a
-buggy GPU backend cannot win on speed alone -- it is disqualified and WASM is
-kept). WASM devices are therefore unchanged. When WebGPU wins, the search also
-switches to a **batched (leaf-parallel) MCTS**: it descends to a wave of leaves
-using virtual loss and evaluates them all in ONE forward. A batch-of-K forward
-costs ~the same wall clock as batch-1 on a GPU, so the same ~1 s budget now buys
-many more simulations -- that is the depth that was previously left on the table.
+the browser exposes `navigator.gpu`, also on WebGPU, then keeps the provider with
+the lowest **per-leaf forward cost for the workload it will actually run**: WASM
+serial (one batch-1 forward per leaf) vs WebGPU **batched** (one batch-wave
+forward per wave, cost divided by the wave size). This matters because a GPU
+loses a batch-1 latency race -- dispatch overhead swamps a tiny forward -- but
+wins decisively at batch-K, which is what the search actually does; racing
+batch-1 would wrongly bench the GPU and it would never engage. WebGPU is trusted
+only if it also **agrees numerically** with WASM at both batch-1 and every row of
+a batch-wave forward (a buggy GPU backend is disqualified; WASM is the floor, so
+WASM devices are unchanged). When WebGPU wins, the search runs a **batched
+(leaf-parallel) MCTS**: descend to a wave of leaves via virtual loss and evaluate
+them all in ONE forward. A batch-of-K forward costs ~the same wall clock as
+batch-1 on a GPU, so the same ~1 s budget buys many more simulations.
 The batched search is bit-for-bit identical to the serial one at wave size 1
 (guarded by `scripts/test_batched_mcts.js`), so it is a pure speed lever, not a
 behavior change. The champion net is raw 1-ply tactical (one forward per move),

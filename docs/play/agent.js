@@ -402,25 +402,35 @@ class AgentRunner {
 // loadAgent -- public entry point
 // ---------------------------------------------------------------------------
 
-// Probe a session on a fixed representative board: return { ms, pol, val } where
-// ms is the per-forward time (warm-up discarded) and pol/val are the raw outputs
-// used to check that an alternative provider AGREES with WASM before we trust it.
-async function _probeSession(session, policyName, valueName, reps = 8) {
+// A fixed representative mid-game board for probing (read-only; safe to share).
+function _probeBoard() {
   const g = new GameState();
-  for (let i = 0; i < 3 && g.winner === null; i++) {  // a few legal plies: nontrivial input
+  for (let i = 0; i < 3 && g.winner === null; i++) {
     const v = g.validMoves();
     g.makeMove(v[Math.floor(v.length / 2)]);
   }
-  const input = _buildInputTensor(g);
+  return g;
+}
+
+// Time a batch-K forward on `states` (warm-up discarded) and return the
+// per-forward time plus each row's raw outputs. K=1 measures the serial workload
+// (WASM), K=wave measures the batched workload (WebGPU) -- so each provider is
+// raced on the SHAPE it will actually run, which is the whole point: a GPU loses
+// at batch-1 but wins decisively at batch-K, and only the batched number is fair.
+async function _probeForward(session, policyName, valueName, states, reps = 6) {
+  const input = _buildBatchTensor(states);      // [K,7,9,9]; K=1 matches single input
   for (let i = 0; i < 3; i++) await session.run({ input });   // warm / compile
   const t0 = performance.now();
   let last;
   for (let i = 0; i < reps; i++) last = await session.run({ input });
-  return {
-    ms:  (performance.now() - t0) / reps,
-    pol: Float32Array.from(last[policyName].data),
-    val: last[valueName].data[0],
-  };
+  const msPerForward = (performance.now() - t0) / reps;
+  const K = states.length;
+  const pol = last[policyName].data, val = last[valueName].data;
+  const rows = [];
+  for (let k = 0; k < K; k++) {
+    rows.push({ pol: Float32Array.from(pol.slice(k * 81, k * 81 + 81)), val: val[k] });
+  }
+  return { msPerForward, rows };
 }
 
 // Max abs difference of the softmax-over-81 policies plus the value gap. Used to
@@ -449,12 +459,15 @@ function _outputDisagreement(a, b) {
 const _WAVE_WEBGPU = 32;
 
 /**
- * Fetch model_config.json, configure ORT, create an inference session on the
- * fastest available execution provider, and return an AgentRunner.
+ * Fetch model_config.json, configure ORT, and return an AgentRunner on the
+ * execution provider with the lowest per-leaf forward cost for the workload it
+ * will actually run (WASM serial vs WebGPU batched), gated on WebGPU agreeing
+ * numerically with WASM at batch-1 and batch-wave.
  *
  * @param {string} configUrl  URL to model_config.json
  * @param {object} [opts]      { race: boolean } -- when true (the searching net)
- *   also try WebGPU and keep whichever provider measures faster.
+ *   also try WebGPU (batched) and keep it if it is both faster per leaf and in
+ *   numeric agreement with WASM; otherwise WASM (serial) is the floor.
  * @returns {Promise<AgentRunner>}
  */
 async function loadAgent(configUrl, opts = {}) {
@@ -504,36 +517,70 @@ async function loadAgent(configUrl, opts = {}) {
   }
 
   const polName = config.outputs.policy, valName = config.outputs.value;
-  const candidates = [];
+  const board   = _probeBoard();
+  const _AGREE_TOL = 0.05;
+
+  // Create every candidate session. WASM is created (and probed) first so it can
+  // serve as the trusted numeric reference for the others.
+  const created = [];
   for (const ep of eps) {
     try {
-      const s     = await ort.InferenceSession.create(source, {
+      const s = await ort.InferenceSession.create(source, {
         executionProviders:     [ep],
         graphOptimizationLevel:  'all',
       });
-      const probe = await _probeSession(s, polName, valName);
-      candidates.push({ session: s, ep, ms: probe.ms, probe });
+      created.push({ session: s, ep });
     } catch (_) { /* provider unsupported for this model/device -> skip */ }
   }
-  if (candidates.length === 0) {
+  if (created.length === 0) {
     throw new Error('No execution provider could load the model.');
   }
 
-  // WASM is the trusted reference. Disqualify any other provider whose numerics
-  // disagree with it (a broken GPU backend must never win on speed alone).
-  const ref = candidates.find(c => c.ep === 'wasm');
-  const _AGREE_TOL = 0.05;
-  const qualified = candidates.filter(c =>
-    c.ep === 'wasm' || !ref || _outputDisagreement(ref.probe, c.probe) <= _AGREE_TOL);
+  // Race each provider on the workload it will ACTUALLY run: WASM serial (one
+  // batch-1 forward per leaf), WebGPU batched (one batch-wave forward per wave).
+  // The figure of merit is per-leaf forward cost. A GPU loses at batch-1 but its
+  // whole point is batch-K, so comparing batch-1 latency would wrongly bench it.
+  const wasmCand = created.find(c => c.ep === 'wasm');
+  let refRow = null;
+  const scored = [];
+  if (wasmCand) {
+    const p = await _probeForward(wasmCand.session, polName, valName, [board]);
+    refRow = p.rows[0];
+    scored.push({ ...wasmCand, wave: 1, perLeafMs: p.msPerForward, ok: true });
+  }
+  for (const c of created) {
+    if (c.ep === 'wasm') continue;
+    try {
+      const p1 = await _probeForward(c.session, polName, valName, [board]);
+      const pW = await _probeForward(c.session, polName, valName,
+                                     new Array(_WAVE_WEBGPU).fill(board));
+      // Trust the GPU only if it agrees with WASM at BOTH batch-1 and every row
+      // of a batch-wave forward (guards the batched path's correctness on-device).
+      let disagree = 0;
+      if (refRow) {
+        disagree = _outputDisagreement(refRow, p1.rows[0]);
+        for (const r of pW.rows) disagree = Math.max(disagree, _outputDisagreement(refRow, r));
+      }
+      scored.push({
+        ...c,
+        wave:      _WAVE_WEBGPU,
+        perLeafMs: pW.msPerForward / _WAVE_WEBGPU,
+        ok:        !refRow || disagree <= _AGREE_TOL,
+      });
+    } catch (_) {
+      scored.push({ ...c, wave: 1, perLeafMs: Infinity, ok: false });
+    }
+  }
 
-  qualified.sort((a, b) => a.ms - b.ms);
-  const winner = qualified[0];
-  for (const c of candidates) {
-    if (c !== winner) { try { c.session.release(); } catch (_) { /* best-effort */ } }
+  const qualified = scored.filter(c => c.ok);
+  qualified.sort((a, b) => a.perLeafMs - b.perLeafMs);
+  const winner = qualified[0] || scored.find(c => c.ep === 'wasm') || scored[0];
+  for (const c of created) {
+    if (c.session !== winner.session) { try { c.session.release(); } catch (_) { /* best-effort */ } }
   }
 
   const runner = new AgentRunner(winner.session, config);
   runner.ep       = winner.ep;
-  runner.waveSize = (winner.ep === 'webgpu') ? _WAVE_WEBGPU : 1;
+  runner.waveSize = winner.wave;
   return runner;
 }
