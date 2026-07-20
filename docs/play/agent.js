@@ -345,10 +345,16 @@ class AgentRunner {
         state, this.session, this._policyName, this._valueName,
         this.nSims, this.cPuct, this.moveBudgetMs, this.waveSize,
       );
-      // Argmax over legal moves by visit count.
-      let best = valid[0], bestN = pi[valid[0]], totalN = 0;
-      for (const cell of valid) {
-        totalN += pi[cell];
+      // Pick the most-visited move -- but when the tactical guard is on, choose
+      // within the 1-ply win/block pool so search noise can never miss a forced
+      // win or walk into a one-move loss (the pool is winning moves if any exist,
+      // else moves that do not hand the opponent an immediate win). This is the
+      // safety net that keeps a strong-net search from the occasional blunder.
+      const pool = this.tactical ? _tacticalPool(state) : valid;
+      let totalN = 0;
+      for (const cell of valid) totalN += pi[cell];
+      let best = pool[0], bestN = pi[pool[0]];
+      for (const cell of pool) {
         if (pi[cell] > bestN) { bestN = pi[cell]; best = cell; }
       }
       const topCells = valid.slice().sort((a, b) => pi[b] - pi[a]).slice(0, 3);

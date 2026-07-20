@@ -12,13 +12,16 @@ Implementation: `docs/play/benchmark.js` (self-contained; reuses
 
 ## Constant-time play, device-scaled quality
 
-Hard mode is **time-bounded**: the MCTS runs until a fixed ~1 s per-move budget
+**Impossible** (the searching tier -- champion net + tactical-guarded MCTS) is
+**time-bounded**: the MCTS runs until a fixed ~1 s per-move budget
 (`_MOVE_BUDGET_MS` in `index.html`), then plays its best move. So every device
 answers in about the same wall-clock time; the number of simulations it fits in
 that second -- and therefore the move quality -- scales with the hardware. A
-gaming PC searches deep; an old phone searches shallow; both reply in ~1 s.
-(`agent.js` `_mctsSearch` takes an optional `deadlineMs`; when set it caps the
-loop by wall clock instead of a fixed sim count.)
+gaming PC (esp. on WebGPU) searches deep; an old phone searches shallow; both
+reply in ~1 s. (`agent.js` `_mctsSearch` takes an optional `deadlineMs`; when set
+it caps the loop by wall clock instead of a fixed sim count.) The other tiers are
+a single forward: Easy/Medium the pocket net, Hard the champion net with a 1-ply
+tactical overlay and no search.
 
 The benchmark's job is to tell you HOW MUCH search you get in that second
 (the device tier and the estimated nodes/move), and to persist it.

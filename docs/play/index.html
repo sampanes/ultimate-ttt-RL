@@ -416,14 +416,10 @@
 </div>
 
 <div class="diff-row" id="diff-row">
-  <button class="diff-btn" data-temp="1.8" data-sims="0">Easy</button>
-  <button class="diff-btn" data-temp="0.45" data-sims="0">Medium</button>
-  <button class="diff-btn active" data-temp="0.0" data-sims="50" id="btn-hard">Hard (MCTS)</button>
-</div>
-
-<div class="diff-row" id="model-row">
-  <button class="diff-btn active" data-model="pocket">Pocket (fast)</button>
-  <button class="diff-btn" data-model="champion">Champion (26 MB)</button>
+  <button class="diff-btn" data-diff="easy">Easy</button>
+  <button class="diff-btn active" data-diff="medium">Medium</button>
+  <button class="diff-btn" data-diff="hard">Hard</button>
+  <button class="diff-btn" data-diff="impossible" id="btn-impossible">Impossible</button>
 </div>
 
 <div id="board-area">
@@ -464,8 +460,8 @@
 </div>
 
 <div id="model-info">
-  Model: <span id="model-name">loading…</span>
-  &nbsp;·&nbsp;
+  Engine: <span id="model-name">loading...</span>
+  &nbsp;-&nbsp;
   <a href="https://github.com/sampanes/ultimate-ttt-RL" target="_blank" rel="noopener">source</a>
 </div>
 
@@ -645,75 +641,90 @@ async function _doAiMove() {
   _updateEvalPanel(_runner && _runner.lastEval);
 }
 
-// -- Model selection ----------------------------------------------------------
-// Pocket (default): 1.3 MB int8-class net, Hard = time-bounded MCTS (~1s/move;
-// the search depth, and so the quality, scales with the device -- see the
-// device benchmark).
-// Champion: the certified strongest net, ~26 MB fp32, lazily fetched on first
-// selection; Hard = certified 1-ply tactical argmax (a 26 MB net searching in
-// WASM is too slow, and tactical certified stronger anyway).
-const _models = { pocket: null, champion: null };
-let _modelKind = 'pocket';
+// -- Difficulty ladder --------------------------------------------------------
+// One ladder; the underlying net is hidden from the user. Each tier is a
+// coherent (net, mode) combo:
+//   Easy       pocket net, raw policy with temperature (weak, blunders)
+//   Medium     pocket net, raw policy argmax (the weak net's best -- beatable)
+//   Hard       champion net, raw + 1-ply tactical, NO search (strong + instant)
+//   Impossible champion net, tactical-guarded MCTS, batched on WebGPU (all stops)
+// Hard is "a strong combo minus search, for speed"; Impossible pulls everything.
+const DIFFICULTY = {
+  easy:       { net: 'pocket',   temp: 1.6, search: false, tactical: false },
+  medium:     { net: 'pocket',   temp: 0.0, search: false, tactical: false },
+  hard:       { net: 'champion', temp: 0.0, search: false, tactical: true  },
+  impossible: { net: 'champion', temp: 0.0, search: true,  tactical: true  },
+};
 
-const _MOVE_BUDGET_MS = 1000;   // Hard mode: ~1s per move on every device
+const _models = { pocket: null, champion: null };
+let _difficulty = 'medium';
+let _modelKind  = 'pocket';   // net behind the active tier (benchmark payload)
+
+const _MOVE_BUDGET_MS = 1000;   // Impossible: ~1s per move on every device
 const _HARD_SIMS_CAP  = 4096;   // safety cap; the time budget is the real limit
 
-function _applyAgentMode() {
-  const btn = document.querySelector('#diff-row .diff-btn.active');
-  if (!btn) return;
-  _temperature = parseFloat(btn.dataset.temp);
-  document.getElementById('btn-hard').textContent =
-    (_modelKind === 'champion') ? 'Hard (tactical)' : 'Hard (~1s)';
-  if (!_runner) return;
-  if (_modelKind === 'champion') {
-    _runner.nSims        = 0;
-    _runner.moveBudgetMs = 0;
-    _runner.tactical     = (_temperature === 0.0);
-  } else {
-    const sims = parseInt(btn.dataset.sims || '0', 10);
-    _runner.tactical = false;
-    if (sims > 0) {                        // Hard: time-bounded search (~1s/move)
-      _runner.moveBudgetMs = _MOVE_BUDGET_MS;
-      _runner.nSims        = _HARD_SIMS_CAP;
-    } else {                               // Easy / Medium: instant raw policy
-      _runner.moveBudgetMs = 0;
-      _runner.nSims        = 0;
-    }
-  }
+function _engineLabel(runner) {
+  if (!runner) return '...';
+  return (runner.ep === 'webgpu')
+    ? ((runner.waveSize > 1) ? 'WebGPU (batched)' : 'WebGPU')
+    : 'CPU';
 }
 
-async function _selectModel(kind) {
-  if (_aiThinking || kind === _modelKind) return;
+function _syncDiffButtons() {
+  document.querySelectorAll('#diff-row .diff-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.diff === _difficulty));
+}
+
+// Configure the active runner's play mode for a tier.
+function _configureRunnerFor(key) {
+  const cfg = DIFFICULTY[key];
+  _temperature = cfg.temp;
+  _modelKind   = cfg.net;
+  if (!_runner) return;
+  _runner.tactical = cfg.tactical;
+  if (cfg.search) {                        // Impossible: time-bounded search (~1s)
+    _runner.moveBudgetMs = _MOVE_BUDGET_MS;
+    _runner.nSims        = _HARD_SIMS_CAP;
+  } else {                                 // Easy / Medium / Hard: single forward
+    _runner.moveBudgetMs = 0;
+    _runner.nSims        = 0;
+  }
+  document.getElementById('model-name').textContent = _engineLabel(_runner);
+}
+
+// Load a net on demand (raced webgpu/wasm). The champion is big and fetched only
+// when the user first reaches Hard / Impossible.
+async function _ensureNet(net) {
+  if (_models[net]) return _models[net];
   const overlay = document.getElementById('loading-overlay');
   const loadMsg = document.getElementById('loading-msg');
-
-  if (!_models[kind]) {
-    const url = (kind === 'champion') ? '../models/champion_config.json'
-                                      : '../models/model_config.json';
-    try {
-      loadMsg.textContent = (kind === 'champion')
-        ? 'Fetching champion model (~26 MB, one-time)...'
-        : 'Fetching model...';
-      overlay.classList.add('show');
-      // Race WebGPU vs WASM for the searching (pocket) net; champion is raw
-      // tactical (one forward per move) so its provider does not matter.
-      _models[kind] = await loadAgent(url, { race: kind !== 'champion' });
-    } catch (err) {
-      overlay.classList.remove('show');
-      _setStatus('error', 'Could not load ' + kind + ' model: ' + err.message);
-      return;
-    }
+  const url = (net === 'champion') ? '../models/champion_config.json'
+                                   : '../models/model_config.json';
+  try {
+    loadMsg.textContent = (net === 'champion')
+      ? 'Loading the strongest model (~27 MB, one-time)...'
+      : 'Loading model...';
+    overlay.classList.add('show');
+    _models[net] = await loadAgent(url, { race: true });
+  } catch (err) {
     overlay.classList.remove('show');
+    _setStatus('error', 'Could not load model: ' + err.message);
+    return null;
   }
+  overlay.classList.remove('show');
+  return _models[net];
+}
 
-  _modelKind = kind;
-  _runner = _models[kind];
-  document.querySelectorAll('#model-row .diff-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.model === kind));
-  document.getElementById('model-name').textContent = _runner.name;
-  _applyAgentMode();
+async function _setDifficulty(key) {
+  if (_aiThinking || !DIFFICULTY[key]) return;
+  const runner = await _ensureNet(DIFFICULTY[key].net);
+  if (!runner) { _syncDiffButtons(); return; }   // load failed: keep prior tier
+  _runner     = runner;
+  _difficulty = key;
+  _configureRunnerFor(key);
+  _syncDiffButtons();
   _updateStatus();
-  // If it is the AI's turn under the new model, let it move.
+  // If it is now the AI's turn, let it move.
   if (_game && _game.winner === null && _humanSide !== _game.player) _scheduleAiMove();
 }
 
@@ -781,14 +792,20 @@ async function _runBench() {
 
 function _applyRecommended() {
   if (!_lastBench) return;
-  const deep = _lastBench.recommend.autoSims >= 40;
-  const target = deep
-    ? document.getElementById('btn-hard')
-    : document.querySelector('#diff-row .diff-btn[data-temp="0.45"]');
-  if (target) target.click();
-  document.getElementById('bench-status').textContent = deep
-    ? 'Set to Hard -- ~1s per move, device-tuned search depth.'
-    : 'Set to Medium (instant) -- search is shallow on this device.';
+  const r = _lastBench;
+  let key, msg;
+  if (r.ep === 'webgpu') {
+    key = 'impossible';
+    msg = 'Set to Impossible -- your GPU can search the strongest net (~1s/move).';
+  } else if (r.recommend.autoSims >= 200) {
+    key = 'hard';
+    msg = 'Set to Hard -- strongest net, instant tactical play.';
+  } else {
+    key = 'medium';
+    msg = 'Set to Medium -- best kept instant on this device.';
+  }
+  _setDifficulty(key);
+  document.getElementById('bench-status').textContent = msg;
 }
 
 async function _copyBench() {
@@ -838,15 +855,7 @@ async function _init() {
   });
 
   document.querySelectorAll('#diff-row .diff-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('#diff-row .diff-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      _applyAgentMode();
-    });
-  });
-
-  document.querySelectorAll('#model-row .diff-btn').forEach(btn => {
-    btn.addEventListener('click', () => _selectModel(btn.dataset.model));
+    btn.addEventListener('click', () => _setDifficulty(btn.dataset.diff));
   });
 
   // Device benchmark controls.
@@ -863,15 +872,15 @@ async function _init() {
   const nameEl  = document.getElementById('model-name');
 
   try {
-    loadMsg.textContent = 'Fetching model config…';
+    loadMsg.textContent = 'Loading model...';
     _runner = await loadAgent('../models/model_config.json', { race: true });
     _models.pocket = _runner;
-    // Sync nSims/tactical with the active difficulty + model buttons.
-    _applyAgentMode();
+    // Configure for the default tier (Medium) and sync the buttons.
+    _configureRunnerFor(_difficulty);
+    _syncDiffButtons();
     // Restore a saved device benchmark (same-device return visit).
     const _savedBench = loadBenchResult();
     if (_savedBench) { _lastBench = _savedBench; _updateBenchChip(_savedBench); }
-    nameEl.textContent = _runner.name;
     overlay.classList.remove('show');
     _newGame();
   } catch (err) {
