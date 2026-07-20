@@ -135,10 +135,12 @@ async function _mctsExpand(node, state, session, policyName, valueName) {
  * Run PUCT MCTS for `nSims` simulations.
  * @returns {Float32Array} visit-count distribution over 81 cells (unnormalised)
  */
-async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPuct) {
+async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPuct, deadlineMs) {
   const root = new _MCTSNode(null, 0.0, -1);
   await _mctsExpand(root, rootState, session, policyName, valueName);
 
+  const _deadline = deadlineMs ? performance.now() + deadlineMs : Infinity;
+  let _completed = 0;
   for (let sim = 0; sim < nSims; sim++) {
     let   node  = root;
     const state = rootState.clone();
@@ -167,6 +169,14 @@ async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPu
     // Backup: alternate sign each ply (zero-sum).
     let v = value, n = node;
     while (n !== null) { n.N += 1; n.W += v; v = -v; n = n.parent; }
+
+    // Time budget: stop early once the per-move deadline passes, so every move
+    // takes ~the same wall clock on every device and the depth (quality) is
+    // whatever fits. Checked every sim for tight adherence -- each sim already
+    // runs a millisecond-scale WASM forward, so performance.now() is negligible.
+    // deadlineMs falsy -> run the full fixed nSims (unchanged path).
+    _completed++;
+    if (deadlineMs && performance.now() >= _deadline) break;
   }
 
   // Return visit-count distribution + MCTS value at root (from root player's perspective).
@@ -175,7 +185,7 @@ async function _mctsSearch(rootState, session, policyName, valueName, nSims, cPu
     pi[parseInt(mv, 10)] = child.N;
   }
   const rootValue = root.N > 0 ? root.W / root.N : 0.0;
-  return { pi, rootValue };
+  return { pi, rootValue, sims: _completed };
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +208,7 @@ class AgentRunner {
     this._valueName   = config.outputs.value;
     this.nSims        = 50;    // MCTS budget for Hard mode; set to 0 to use raw policy
     this.cPuct        = 1.5;
+    this.moveBudgetMs = 0;     // >0 = time-bounded search: constant move time, depth scales with device
     this.tactical     = false; // 1-ply win/block pool on the argmax path (certified mode)
     this.lastEval     = null;  // { xAdv, topMoves, mode } — updated after each selectMove
   }
@@ -216,7 +227,7 @@ class AgentRunner {
     if (temperature === 0.0 && this.nSims > 0) {
       const { pi, rootValue } = await _mctsSearch(
         state, this.session, this._policyName, this._valueName,
-        this.nSims, this.cPuct,
+        this.nSims, this.cPuct, this.moveBudgetMs,
       );
       // Argmax over legal moves by visit count.
       let best = valid[0], bestN = pi[valid[0]], totalN = 0;

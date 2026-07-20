@@ -384,6 +384,16 @@
       display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.3rem;
     }
     #bench-actions .btn { font-size: 0.78rem; padding: 0.4rem 0.8rem; }
+
+    #bench-saved {
+      display: none;
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-align: center;
+      max-width: 520px;
+      line-height: 1.6;
+    }
+    #bench-saved b { color: var(--accent2); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -458,6 +468,8 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/sampanes/ultimate-ttt-RL" target="_blank" rel="noopener">source</a>
 </div>
+
+<div id="bench-saved"></div>
 
 <!-- ─────────────────────────────────────────────── scripts ── -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
@@ -633,26 +645,39 @@ async function _doAiMove() {
 }
 
 // -- Model selection ----------------------------------------------------------
-// Pocket (default): 1.3 MB int8-class net, Hard = MCTS-50 in the browser.
-// Champion: the certified strongest net (RESULT_M2_5.md), ~26 MB fp32, lazily
-// fetched on first selection; Hard = certified 1-ply tactical argmax (a 26 MB
-// net at 50 sims is too slow in WASM, and tactical certified stronger anyway).
+// Pocket (default): 1.3 MB int8-class net, Hard = time-bounded MCTS (~1s/move;
+// the search depth, and so the quality, scales with the device -- see the
+// device benchmark).
+// Champion: the certified strongest net, ~26 MB fp32, lazily fetched on first
+// selection; Hard = certified 1-ply tactical argmax (a 26 MB net searching in
+// WASM is too slow, and tactical certified stronger anyway).
 const _models = { pocket: null, champion: null };
 let _modelKind = 'pocket';
+
+const _MOVE_BUDGET_MS = 1000;   // Hard mode: ~1s per move on every device
+const _HARD_SIMS_CAP  = 4096;   // safety cap; the time budget is the real limit
 
 function _applyAgentMode() {
   const btn = document.querySelector('#diff-row .diff-btn.active');
   if (!btn) return;
   _temperature = parseFloat(btn.dataset.temp);
   document.getElementById('btn-hard').textContent =
-    (_modelKind === 'champion') ? 'Hard (tactical)' : 'Hard (MCTS)';
+    (_modelKind === 'champion') ? 'Hard (tactical)' : 'Hard (~1s)';
   if (!_runner) return;
   if (_modelKind === 'champion') {
-    _runner.nSims    = 0;
-    _runner.tactical = (_temperature === 0.0);
+    _runner.nSims        = 0;
+    _runner.moveBudgetMs = 0;
+    _runner.tactical     = (_temperature === 0.0);
   } else {
-    _runner.nSims    = parseInt(btn.dataset.sims || '0', 10);
+    const sims = parseInt(btn.dataset.sims || '0', 10);
     _runner.tactical = false;
+    if (sims > 0) {                        // Hard: time-bounded search (~1s/move)
+      _runner.moveBudgetMs = _MOVE_BUDGET_MS;
+      _runner.nSims        = _HARD_SIMS_CAP;
+    } else {                               // Easy / Medium: instant raw policy
+      _runner.moveBudgetMs = 0;
+      _runner.nSims        = 0;
+    }
   }
 }
 
@@ -703,6 +728,15 @@ function _newGame() {
 // -- Device benchmark ---------------------------------------------------------
 let _lastBench = null;
 
+function _updateBenchChip(res) {
+  const el = document.getElementById('bench-saved');
+  if (!el || !res || !res.recommend) return;
+  el.innerHTML =
+    `Your device: <b>${res.tierLabel}</b> -- about ${res.recommend.autoSims} search `
+    + `nodes per ~1s move (tested ${benchRelTime(res.ts)}). Hard is tuned to this.`;
+  el.style.display = 'block';
+}
+
 async function _runBench() {
   if (!_runner || !_runner.session) {
     _setStatus('error', 'Load a model first, then test device speed.');
@@ -727,9 +761,11 @@ async function _runBench() {
       bar.style.width = Math.round(p * 100) + '%';
     });
     _lastBench = res;
+    saveBenchResult(res);
+    _updateBenchChip(res);
     body.innerHTML = formatBenchmark(res);
     statusEl.textContent =
-      `Done in ${(res.benchMs / 1000).toFixed(1)}s. Tested the ${res.model.name} net.`;
+      `Done in ${(res.benchMs / 1000).toFixed(1)}s (saved to this device). Tested the ${res.model.name} net.`;
     document.getElementById('bench-share').style.display =
       BENCH_TELEMETRY_ENDPOINT ? '' : 'none';
     actions.style.visibility = 'visible';
@@ -742,14 +778,14 @@ async function _runBench() {
 
 function _applyRecommended() {
   if (!_lastBench) return;
-  const smooth = _lastBench.recommend.hard === 'smooth';
-  const target = smooth
+  const deep = _lastBench.recommend.autoSims >= 40;
+  const target = deep
     ? document.getElementById('btn-hard')
     : document.querySelector('#diff-row .diff-btn[data-temp="0.45"]');
   if (target) target.click();
-  document.getElementById('bench-status').textContent = smooth
-    ? 'Kept Hard -- your device handles it.'
-    : 'Switched to Medium for snappier moves.';
+  document.getElementById('bench-status').textContent = deep
+    ? 'Set to Hard -- ~1s per move, device-tuned search depth.'
+    : 'Set to Medium (instant) -- search is shallow on this device.';
 }
 
 async function _copyBench() {
@@ -829,6 +865,9 @@ async function _init() {
     _models.pocket = _runner;
     // Sync nSims/tactical with the active difficulty + model buttons.
     _applyAgentMode();
+    // Restore a saved device benchmark (same-device return visit).
+    const _savedBench = loadBenchResult();
+    if (_savedBench) { _lastBench = _savedBench; _updateBenchChip(_savedBench); }
     nameEl.textContent = _runner.name;
     overlay.classList.remove('show');
     _newGame();
