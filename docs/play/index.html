@@ -46,6 +46,7 @@
       display: flex;
       align-items: center;
       gap: 0.75rem;
+      flex-wrap: wrap;   /* version tag drops below rather than overflowing on narrow screens */
     }
     .back-link {
       color: var(--muted);
@@ -60,6 +61,15 @@
       letter-spacing: -0.01em;
     }
     .top-bar h1 span { color: var(--accent); }
+    .version-tag {
+      margin-left: auto;
+      font-size: 0.65rem;
+      color: var(--muted);
+      opacity: 0.6;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
 
     /* ── status bar ── */
     #status-bar {
@@ -407,6 +417,7 @@
 <div class="top-bar">
   <a class="back-link" href="../">&#8592; Back</a>
   <h1>Ultimate Tic-Tac-Toe <span>AI</span></h1>
+  <span class="version-tag" id="version-tag">v2.0 - 2026-07-20</span>
 </div>
 
 <div id="status-bar">

@@ -151,10 +151,10 @@ function _tier(autoSims) {
   return { key: 'low', label: 'Shallow search' };
 }
 
-// Hard mode is time-bounded: every move takes ~_TARGET_MOVE_MS regardless of
-// device, and the search depth (quality) is whatever the device fits in it.
-// autoSims is the estimated depth reached in that budget, from the MEASURED
-// per-sim cost (mcts50 includes tree overhead, not just the raw forward).
+// The Impossible tier is time-bounded: every move takes ~_TARGET_MOVE_MS
+// regardless of device, and the search depth (quality) is whatever the device
+// fits in it. autoSims is the estimated depth reached in that budget, from the
+// MEASURED per-sim cost (mcts50 includes tree overhead, not just the raw forward).
 function _recommend(mcts50ms) {
   const perSimMs = mcts50ms / 50;
   const autoSims = Math.max(_SIMS_FLOOR,
@@ -163,14 +163,14 @@ function _recommend(mcts50ms) {
   let hard, note;
   if (autoSims >= 200) {
     hard = 'strong';
-    note = `Strong: in ~${budgetS}s per move your device searches ~${autoSims} nodes -- deep, sharp play.`;
+    note = `Fast: this net fits ~${autoSims} search nodes in a ~${budgetS}s move here -- deep, sharp play. Impossible will hum.`;
   } else if (autoSims >= 40) {
     hard = 'ok';
-    note = `Moderate: ~${autoSims} nodes per ~${budgetS}s move -- solid search depth.`;
+    note = `Moderate: ~${autoSims} search nodes in a ~${budgetS}s move on the tested net -- Impossible is playable, if a touch slower.`;
   } else {
     hard = 'shallow';
-    note = `Shallow: only ~${autoSims} nodes fit in ~${budgetS}s here, so Hard moves are quick but weaker. `
-         + 'Medium (the instant raw net) may play similarly and with no wait.';
+    note = `Shallow: only ~${autoSims} nodes fit in ~${budgetS}s here, so the searching tier (Impossible) is slow for little gain. `
+         + 'Hard -- the strong net, instant -- is the better pick on this device.';
   }
   return { autoSims, perSimMs: Math.round(perSimMs * 100) / 100, hard, note };
 }
