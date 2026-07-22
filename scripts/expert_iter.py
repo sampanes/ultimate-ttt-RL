@@ -293,7 +293,8 @@ def _promotion_decision(head_to_head, heur_score, random_score,
                         best_heur, best_random, threshold,
                         absolute_margin, random_tolerance,
                         gregory_score=None, best_gregory=None,
-                        gregory_tolerance=0.03, gregory_arm=0.10):
+                        gregory_tolerance=0.03, gregory_arm=0.10,
+                        gregory_hard_score=None, best_gregory_hard=None):
     """Return (promote, failed gates) for an inference-objective promotion.
 
     The gregory gate is a no-regression check against a depth-limited
@@ -302,6 +303,12 @@ def _promotion_decision(head_to_head, heur_score, random_score,
     gregory_arm the score is noise-floor territory (raw nets currently score
     ~0.03 vs depth 3) and regressions there are meaningless, so it is
     report-only until the lineage first reaches gregory_arm.
+
+    The optional gregory_hard gate is a second, deeper alpha-beta anchor with
+    identical self-arming semantics (same gregory_arm and gregory_tolerance).
+    It is the next honest ruler for when the shallower one saturates; while
+    the lineage is still below the arm against it (the common early case) it
+    is report-only and never blocks a promotion.
     """
     failed = []
     if head_to_head < threshold:
@@ -314,6 +321,10 @@ def _promotion_decision(head_to_head, heur_score, random_score,
             and best_gregory >= gregory_arm
             and gregory_score < best_gregory - gregory_tolerance):
         failed.append("gregory_regression")
+    if (gregory_hard_score is not None and best_gregory_hard is not None
+            and best_gregory_hard >= gregory_arm
+            and gregory_hard_score < best_gregory_hard - gregory_tolerance):
+        failed.append("gregory_hard_regression")
     return not failed, failed
 
 
@@ -462,6 +473,17 @@ def main():
                     help="The gregory no-regression gate arms only once "
                          "best_gregory first reaches this score; below it "
                          "the panel is noise-floor and report-only.")
+    ap.add_argument("--gregory_hard_depth", type=int, default=4,
+                    help="Depth of a SECOND, deeper alpha-beta anchor measured "
+                         "alongside --gregory_depth. It is the next honest "
+                         "ruler for when the shallower gregory saturates: raw "
+                         "nets score near zero against it, so its "
+                         "no-regression gate stays report-only (self-arms at "
+                         "--gregory_arm, reuses --gregory_tolerance) until the "
+                         "lineage first gets good enough. Measurement-only, "
+                         "like the d3 ruler -- never a training opponent. Set "
+                         "equal to --gregory_depth to disable the second "
+                         "anchor. One extra ~promote_games panel per gate.")
     ap.add_argument("--model_dir", type=str,
                     default=os.path.join("models", "expert_iter_v2"))
     ap.add_argument("--blocks", type=int, default=0, help="0 = run forever.")
@@ -481,6 +503,10 @@ def main():
     if args.greg_mix > 0 and args.greg_mix_depth >= args.gregory_depth:
         ap.error("--greg_mix_depth must be below --gregory_depth: never train "
                  "against the honest ruler (STRENGTH_NEXT rule 1)")
+    if args.gregory_hard_depth < args.gregory_depth:
+        ap.error("--gregory_hard_depth must be >= --gregory_depth (it is the "
+                 "DEEPER ruler); set it equal to --gregory_depth to disable "
+                 "the second anchor")
     if not 0.0 <= args.value_blend <= 0.5:
         ap.error("--value_blend must be in [0, 0.5]: past 0.5 the target "
                  "leans harder on the net's own root value than on the game "
@@ -587,6 +613,11 @@ def main():
     heur = WinBlockAgent()
     rnd = RandomAgent()
     greg = GregoryAgent(depth=args.gregory_depth)
+    # Second, DEEPER ruler -- the next honest anchor for when the shallow one
+    # saturates. Off (None) when --gregory_hard_depth == --gregory_depth.
+    # Measurement-only, exactly like greg above: never in the training data.
+    greg_hard_on = args.gregory_hard_depth > args.gregory_depth
+    greg_hard = GregoryAgent(depth=args.gregory_hard_depth) if greg_hard_on else None
     # Training-mix gregory is a SEPARATE, shallower instance -- the d3 ruler
     # above must never appear in the training data (STRENGTH_NEXT rule 1).
     greg_train = (GregoryAgent(depth=args.greg_mix_depth)
@@ -617,6 +648,8 @@ def main():
     best_heur = (saved_state.get("best_heur") if saved_state else None)
     best_random = (saved_state.get("best_random") if saved_state else None)
     best_gregory = (saved_state.get("best_gregory") if saved_state else None)
+    best_gregory_hard = (saved_state.get("best_gregory_hard")
+                         if (saved_state and greg_hard_on) else None)
     if saved_state and saved_state.get("promote_panel") != args.promote_games:
         # Scores from different panel sizes are not comparable; rebase the
         # promotion baselines against the current teacher on the new panel.
@@ -626,6 +659,15 @@ def main():
         best_heur = None
         best_random = None
         best_gregory = None
+        best_gregory_hard = None
+    if (saved_state and greg_hard_on and best_gregory_hard is not None
+            and saved_state.get("gregory_hard_depth") != args.gregory_hard_depth):
+        # A different deeper depth is a different opponent; its baseline does
+        # not carry over. The shallow d{gregory_depth} baseline is untouched.
+        print(f"[!] gregory-hard depth changed "
+              f"({saved_state.get('gregory_hard_depth')} -> "
+              f"{args.gregory_hard_depth}) -- recomputing that baseline only")
+        best_gregory_hard = None
     if best_heur is None:
         best_heur = _play_fixed_match(
             raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
@@ -635,9 +677,14 @@ def main():
     if best_gregory is None:
         best_gregory = _play_fixed_match(
             raw_teacher, _agent_fn(greg), args.promote_games, seed=8801)
+    if greg_hard_on and best_gregory_hard is None:
+        best_gregory_hard = _play_fixed_match(
+            raw_teacher, _agent_fn(greg_hard), args.promote_games, seed=8802)
+    hard_str = (f" | gregory(d{args.gregory_hard_depth})={best_gregory_hard:.3f}"
+                if greg_hard_on else "")
     print(f"Inference promotion baseline | winblock={best_heur:.3f} | "
           f"random={best_random:.3f} | gregory(d{args.gregory_depth})="
-          f"{best_gregory:.3f}")
+          f"{best_gregory:.3f}{hard_str}")
     last_gate_t = 0.0      # fire the first gate after the first block
     last_promote_t = time.time()
     t_start = time.time()
@@ -654,9 +701,12 @@ def main():
                        "best_heur": best_heur,
                        "best_random": best_random,
                        "best_gregory": best_gregory,
+                       "best_gregory_hard": best_gregory_hard,
+                       "gregory_hard_depth": (args.gregory_hard_depth
+                                              if greg_hard_on else None),
                        "promote_panel": args.promote_games,
                        "network": args.network,
-                       "schema_version": 3}, f)
+                       "schema_version": 4}, f)
 
     print(f"Expert iteration on {device} | network={args.network} | "
           f"teacher_sims={args.teacher_sims} | window={args.window}")
@@ -850,11 +900,17 @@ def main():
                     promote_greg = _play_fixed_match(
                         stu_raw, _agent_fn(greg),
                         args.promote_games, seed=8801)
+                    promote_greg_hard = (_play_fixed_match(
+                        stu_raw, _agent_fn(greg_hard),
+                        args.promote_games, seed=8802)
+                        if greg_hard_on else None)
                     last_promote_t = time.time()
                     extra["promote_score"] = round(score, 4)
                     extra["promote_heur"] = round(promote_heur, 4)
                     extra["promote_random"] = round(promote_random, 4)
                     extra["promote_gregory"] = round(promote_greg, 4)
+                    if greg_hard_on:
+                        extra["promote_gregory_hard"] = round(promote_greg_hard, 4)
                     promote, failed = _promotion_decision(
                         score, promote_heur, promote_random,
                         best_heur, best_random, args.promote_thresh,
@@ -862,7 +918,9 @@ def main():
                         gregory_score=promote_greg,
                         best_gregory=best_gregory,
                         gregory_tolerance=args.gregory_tolerance,
-                        gregory_arm=args.gregory_arm)
+                        gregory_arm=args.gregory_arm,
+                        gregory_hard_score=promote_greg_hard,
+                        best_gregory_hard=best_gregory_hard)
                     if promote:
                         teacher_gen += 1
                         teacher_tanh = _promote_teacher(teacher, student)
@@ -876,6 +934,9 @@ def main():
                         best_heur = promote_heur
                         best_random = max(best_random, promote_random)
                         best_gregory = max(best_gregory, promote_greg)
+                        if greg_hard_on:
+                            best_gregory_hard = max(best_gregory_hard,
+                                                    promote_greg_hard)
                         games_since_promotion = 0
                         # New generation = new distillation problem; restart
                         # the LR decay clock with the buffer.
@@ -886,18 +947,25 @@ def main():
                         # than the reported replay loss.
                         buffer.clear()
                         extra["teacher_gen"] = teacher_gen
+                        greg_hard_p = (f" | gregory(d{args.gregory_hard_depth}) "
+                                       f"{promote_greg_hard*100:.0f}%"
+                                       if greg_hard_on else "")
                         print(f"[**] INFERENCE PROMOTION: raw student beat raw "
                               f"teacher {score*100:.0f}% | winblock "
                               f"{promote_heur*100:.0f}% | random "
                               f"{promote_random*100:.0f}% | gregory "
-                              f"{promote_greg*100:.0f}% -> gen {teacher_gen}")
+                              f"{promote_greg*100:.0f}%{greg_hard_p} "
+                              f"-> gen {teacher_gen}")
                     else:
+                        greg_hard_n = (f" | gregory(d{args.gregory_hard_depth})="
+                                       f"{promote_greg_hard*100:.0f}%"
+                                       if greg_hard_on else "")
                         print(f"     no promotion ({','.join(failed)}): "
                               f"head={score*100:.0f}% | "
                               f"winblock={promote_heur*100:.0f}% "
                               f"(best {best_heur*100:.0f}%) | "
                               f"random={promote_random*100:.0f}% | "
-                              f"gregory={promote_greg*100:.0f}% | "
+                              f"gregory={promote_greg*100:.0f}%{greg_hard_n} | "
                               f"{time.perf_counter()-tp0:.0f}s")
 
             # ---- metrics + state --------------------------------------------

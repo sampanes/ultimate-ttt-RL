@@ -196,6 +196,36 @@ class ExpertIterationTests(unittest.TestCase):
         promote, failed = _promotion_decision(**base)
         self.assertTrue(promote)
 
+    def test_gregory_hard_gate_self_arms_independently(self):
+        # d3 gate is armed and clearly passing throughout, so any failure here
+        # is attributable to the deeper d4 anchor alone.
+        base = dict(head_to_head=0.60, heur_score=0.32, random_score=0.70,
+                    best_heur=0.28, best_random=0.71, threshold=0.55,
+                    absolute_margin=0.02, random_tolerance=0.03,
+                    gregory_score=0.30, best_gregory=0.20,
+                    gregory_tolerance=0.03, gregory_arm=0.10)
+        # Hard anchor unarmed (best below arm): a to-zero drop is noise-floor
+        # and stays report-only -- promotion still passes.
+        promote, failed = _promotion_decision(
+            **base, gregory_hard_score=0.0, best_gregory_hard=0.05)
+        self.assertTrue(promote)
+        self.assertEqual(failed, [])
+        # Hard anchor armed: a regression beyond tolerance blocks, on its own
+        # named gate (independent of the shallow gregory gate).
+        promote, failed = _promotion_decision(
+            **base, gregory_hard_score=0.10, best_gregory_hard=0.20)
+        self.assertFalse(promote)
+        self.assertIn("gregory_hard_regression", failed)
+        self.assertNotIn("gregory_regression", failed)
+        # Hard anchor armed but within tolerance: passes.
+        promote, failed = _promotion_decision(
+            **base, gregory_hard_score=0.18, best_gregory_hard=0.20)
+        self.assertTrue(promote)
+        # Omitting the hard-anchor arguments leaves the decision unchanged
+        # (disabled second anchor is the default path).
+        promote, failed = _promotion_decision(**base)
+        self.assertTrue(promote)
+
     def test_opponent_slice_layout_is_stable(self):
         # Legacy two-slice layout: greg_mix omitted must reproduce the pre-S1
         # branch arithmetic exactly (x + 0.0 == x, so identical thresholds).
