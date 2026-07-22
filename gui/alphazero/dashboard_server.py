@@ -54,7 +54,16 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MODEL_DIR = os.path.join(REPO_ROOT, "models", "expert_iter_v2")
+METRICS_PATH = os.path.join(REPO_ROOT, "loss_logs", "metrics_log.jsonl")
 OPPONENTS = ("teacher", "winblock", "random", "gregory")
+
+# Default cap for /api/metrics. The raw log grows one row every few seconds
+# forever; the charts downsample to a few hundred points anyway, so serving
+# every row just re-parses tens of MB on the client every poll (fatal on a
+# phone). ~6000 rows keeps the full span AND every teacher generation while
+# the payload stays a couple of MB.
+METRICS_CAP = 6000
+METRICS_TAIL_FULL = 500   # most-recent rows kept at full resolution
 GREGORY_DEPTH = 3  # mirrors scripts.expert_iter --gregory_depth default
 
 # Run control shells out ONLY to these two existing graceful scripts -- never a
@@ -126,6 +135,29 @@ def _read_state():
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def _bounded_metrics_lines(lines, cap, tail_full=METRICS_TAIL_FULL):
+    """Downsample metric rows to at most `cap`, order preserved.
+
+    Keeps the most recent `tail_full` rows at full resolution (so live cards,
+    throughput and the recent chart tail are exact) and uniformly samples the
+    older history to fill the rest. With ~2000 rows per generation, uniform
+    sampling to 6000 still leaves every teacher generation represented, so the
+    generations chart and the long trend lines are intact -- only the historic
+    resolution drops. This is a pure viewer bound; the on-disk log is untouched.
+    """
+    n = len(lines)
+    if n <= cap:
+        return lines
+    if tail_full >= cap:
+        return lines[n - cap:]
+    tail = lines[n - tail_full:]
+    head = lines[:n - tail_full]
+    budget = cap - tail_full
+    step = len(head) / float(budget)
+    idxs = sorted({int(i * step) for i in range(budget)})
+    return [head[i] for i in idxs] + tail
 
 
 def _load_net(b, kind, network):
@@ -385,6 +417,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._api_play(parsed)
         if parsed.path == "/api/control":
             return self._json(200, _control_status())
+        if parsed.path == "/api/metrics":
+            return self._api_metrics(parsed)
         return super().do_GET()
 
     def do_POST(self):
@@ -401,6 +435,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             code, payload = _start_control(action)
             return self._json(code, payload)
         return self._json(404, {"error": "not found"})
+
+    def _api_metrics(self, parsed):
+        """Bounded newline-JSON metrics for the viewer.
+
+        Same row format the page already parses -- just downsampled so the
+        payload stays small as the log grows without bound. The true (undown-
+        sampled) row count rides in the X-Total-Rows header so the page can
+        still show the real iteration count.
+        """
+        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            cap = int((query.get("cap") or [str(METRICS_CAP)])[0])
+        except ValueError:
+            cap = METRICS_CAP
+        cap = max(200, min(cap, 50000))
+        try:
+            with open(METRICS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        except OSError:
+            lines = []
+        total = len(lines)
+        body = "\n".join(_bounded_metrics_lines(lines, cap)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Total-Rows", str(total))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _api_play(self, parsed):
         query = urllib.parse.parse_qs(parsed.query)

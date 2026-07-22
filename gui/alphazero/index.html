@@ -1359,6 +1359,7 @@ function _renderGens(data) {
 
 // ==== State ================================================================
 let _lastLen   = -1;
+let _trueTotal = null;      // real row count from X-Total-Rows (server downsamples)
 let _inFlight  = false;
 let _smooth    = true;
 let _logScale  = false;
@@ -1683,8 +1684,9 @@ function _updateCards(data) {
   const first = data[0];
   const tp    = _throughput(data);
 
-  // iter
-  _setStat('s-iter', n, v => Math.round(v).toLocaleString());
+  // iter -- true count from the server header (the body is downsampled)
+  const iterCount = (typeof _trueTotal === 'number' && _trueTotal > 0) ? _trueTotal : n;
+  _setStat('s-iter', iterCount, v => Math.round(v).toLocaleString());
   const gamesTotal = last.games_total ?? null;
   const genTag = isFinite(last.teacher_gen) ? ' -- teacher gen ' + last.teacher_gen : '';
   document.getElementById('s-iter-sub').textContent =
@@ -2252,8 +2254,13 @@ async function _fetch() {
   _fetchState();
   _pollControl();
   try {
-    const res = await fetch('../../loss_logs/metrics_log.jsonl', { cache: 'no-store' });
+    // Bounded, downsampled metrics from the server (the raw log grows without
+    // bound; see /api/metrics). The real row count rides in a header so the
+    // iteration card stays honest even though the body is downsampled.
+    const res = await fetch('/api/metrics', { cache: 'no-store' });
     if (!res.ok) { _showNoData(); return; }
+    const _tt = parseInt(res.headers.get('X-Total-Rows'), 10);
+    _trueTotal = isFinite(_tt) ? _tt : null;
     const text = await res.text();
     if (text.length === _lastLen) { _updateLiveBadge(_allData); return; }
     _lastLen = text.length;
