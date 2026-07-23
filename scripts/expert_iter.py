@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import random
+import re
 import time
 
 import numpy as np
@@ -125,6 +126,9 @@ def _opponent_slice(r, opp_mix, rnd_mix, greg_mix=0.0):
 # Shard store: every generation block is persisted so --resume never loses data
 # --------------------------------------------------------------------------- #
 
+_SHARD_RE = re.compile(r"shard_(\d+)\.pt$")
+
+
 class ShardStore:
     def __init__(self, data_dir):
         self.data_dir = data_dir
@@ -162,6 +166,69 @@ class ShardStore:
             idx -= 1
         examples.reverse()   # oldest first, so the deque evicts oldest
         return examples
+
+    def _shard_files(self):
+        """(idx, path, size) for every shard on disk, sorted by idx ascending.
+        Stat only -- never torch.load, so it is cheap enough to call per block."""
+        out = []
+        for name in os.listdir(self.data_dir):
+            m = _SHARD_RE.match(name)
+            if m is None:
+                continue
+            p = os.path.join(self.data_dir, name)
+            try:
+                out.append((int(m.group(1)), p, os.path.getsize(p)))
+            except OSError:
+                continue
+        out.sort()
+        return out
+
+    def prune_tail(self, keep_bytes, min_keep_shards=64):
+        """Keep the newest shards whose cumulative on-disk size first reaches
+        keep_bytes (never fewer than min_keep_shards); delete every older shard.
+
+        load_window only ever reloads `window` positions of the CURRENT
+        generation, newest-first, and the in-RAM buffer is cleared on every
+        promotion -- so nothing older than a small multiple of the window
+        footprint can ever be read again. Append-only shard growth reached 89 GB
+        on the v2 run before this existed. Returns (deleted, freed_bytes).
+        """
+        files = self._shard_files()
+        n = len(files)
+        if n <= min_keep_shards:
+            return 0, 0
+        acc = 0
+        keep = 0
+        for _idx, _path, size in reversed(files):
+            acc += size
+            keep += 1
+            if acc >= keep_bytes and keep >= min_keep_shards:
+                break
+        keep = min(max(keep, min_keep_shards), n)
+        deleted = 0
+        freed = 0
+        for _idx, path, size in files[:n - keep]:
+            try:
+                os.remove(path)
+                deleted += 1
+                freed += size
+            except OSError:
+                continue
+        return deleted, freed
+
+    def prune_tail_to_window(self, last_idx, last_n_examples, window, mult,
+                             min_keep_shards=64):
+        """prune_tail with the byte budget self-calibrated from the shard just
+        written (its real bytes-per-example), so it tracks the actual encoding
+        without a torch.load. mult<=0 or an empty final shard disables it."""
+        if mult <= 0 or last_n_examples <= 0:
+            return 0, 0
+        try:
+            size = os.path.getsize(self._path(last_idx))
+        except OSError:
+            return 0, 0
+        keep_bytes = int((size / last_n_examples) * window * mult)
+        return self.prune_tail(keep_bytes, min_keep_shards=min_keep_shards)
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +456,14 @@ def main():
     ap.add_argument("--value_coef", type=float, default=1.0)
     ap.add_argument("--window", type=int, default=200_000,
                     help="Max positions in the training window.")
+    ap.add_argument("--shard_retain_mult", type=float, default=5.0,
+                    help="Disk retention. Each block, keep only the newest disk "
+                         "shards summing to ~shard_retain_mult * window "
+                         "positions and prune older ones; 0 disables. --resume "
+                         "reloads at most `window` current-gen positions and the "
+                         "buffer is cleared on promotion, so older shards are "
+                         "dead disk (append-only growth reached 89 GB before "
+                         "this). Default 5 keeps a generous ~5x-window margin.")
     ap.add_argument("--min_window", type=int, default=5_000,
                     help="Do not train until this many positions exist.")
     ap.add_argument("--dir_eps", type=float, default=0.10,
@@ -573,6 +648,7 @@ def main():
     steps_total = 0
     games_since_promotion = 0
     steps_since_promotion = 0
+    shards_pruned = 0
     buffer = ReplayBuffer(args.window)
 
     if resuming:
@@ -802,6 +878,15 @@ def main():
             shard_idx += 1
             store.write(shard_idx, new_examples, teacher_gen)
             buffer.extend(new_examples)
+            if args.shard_retain_mult > 0:
+                pruned_n, pruned_bytes = store.prune_tail_to_window(
+                    shard_idx, len(new_examples), args.window,
+                    args.shard_retain_mult)
+                if pruned_n and not shards_pruned:
+                    print(f"[disk] shard retention active: first sweep pruned "
+                          f"{pruned_n} old shards ({pruned_bytes / 1e9:.1f} GB); "
+                          f"holding ~{args.shard_retain_mult:.0f}x window")
+                shards_pruned += pruned_n
 
             pis = np.stack([e[1] for e in new_examples])
             pi_ent = float(-(pis * np.log(pis + 1e-12)).sum(axis=1).mean())

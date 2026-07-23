@@ -275,6 +275,83 @@ class ExpertIterationTests(unittest.TestCase):
         self.assertTrue(torch.equal(teacher.model.lin.weight,
                                     student.model.lin.weight))
 
+    # ---- shard retention (append-only disk-leak fix) --------------------- #
+    def _mk_examples(self, n, ztag=0.0):
+        return [(torch.zeros(7, 9, 9),
+                 np.zeros(81, dtype=np.float32),
+                 float(ztag)) for _ in range(n)]
+
+    def test_shard_prune_tail_keeps_newest_contiguous_suffix(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(20):
+                store.write(i, self._mk_examples(10), teacher_gen=1)
+            per = store._shard_files()[0][2]   # shards are byte-identical here
+            # Budget for ~3 shards; floor of 1 so the byte budget governs.
+            deleted, freed = store.prune_tail(3 * per - 1, min_keep_shards=1)
+            kept = [idx for idx, _p, _s in store._shard_files()]
+            self.assertEqual(kept, [17, 18, 19])
+            self.assertEqual(deleted, 17)
+            self.assertEqual(freed, 17 * per)
+
+    def test_shard_prune_tail_respects_min_keep(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(20):
+                store.write(i, self._mk_examples(10), teacher_gen=1)
+            # A zero budget would keep 1; the floor forces the newest 5.
+            deleted, _freed = store.prune_tail(0, min_keep_shards=5)
+            kept = [idx for idx, _p, _s in store._shard_files()]
+            self.assertEqual(kept, [15, 16, 17, 18, 19])
+            self.assertEqual(deleted, 15)
+
+    def test_shard_prune_tail_noop_when_at_or_under_min_keep(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(4):
+                store.write(i, self._mk_examples(5), teacher_gen=1)
+            self.assertEqual(store.prune_tail(0, min_keep_shards=64), (0, 0))
+            self.assertEqual(len(store._shard_files()), 4)
+
+    def test_shard_prune_preserves_the_recent_load_window(self):
+        # The safety invariant: pruning must never drop a shard load_window
+        # would read. load_window reloads `window` CURRENT-gen positions
+        # newest-first, so keeping a few-x-window tail leaves it intact.
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(30):   # 30 shards x 10 positions, tagged by shard
+                store.write(i, self._mk_examples(10, ztag=i), teacher_gen=2)
+            per = store._shard_files()[0][2]
+            store.prune_tail(20 * per, min_keep_shards=1)   # keep ~20 shards
+            window = 50
+            reloaded = store.load_window(29, window, teacher_gen=2)
+            self.assertEqual(len(reloaded), window)
+            tags = {int(z) for _x, _pi, z in reloaded}
+            self.assertGreaterEqual(min(tags), 25)   # newest 5 shards = 50 pos
+            self.assertLessEqual(max(tags), 29)
+
+    def test_prune_tail_to_window_uses_the_window_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(30):
+                store.write(i, self._mk_examples(10), teacher_gen=3)
+            # keep_bytes = (size/10) * window(50) * mult(2) = size * 10
+            #   -> keep the newest 10 shards.
+            deleted, _freed = store.prune_tail_to_window(
+                29, 10, window=50, mult=2.0, min_keep_shards=1)
+            kept = [idx for idx, _p, _s in store._shard_files()]
+            self.assertEqual(kept, list(range(20, 30)))
+            self.assertEqual(deleted, 20)
+
+    def test_prune_tail_to_window_disabled_paths_are_noops(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ShardStore(d)
+            for i in range(5):
+                store.write(i, self._mk_examples(4), teacher_gen=1)
+            self.assertEqual(store.prune_tail_to_window(4, 4, 50, 0.0), (0, 0))
+            self.assertEqual(store.prune_tail_to_window(4, 0, 50, 5.0), (0, 0))
+            self.assertEqual(len(store._shard_files()), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
