@@ -678,8 +678,8 @@
     <div class="header-title"><span class="title-accent">AlphaZero</span> Training</div>
     <div class="live-badge" id="live-badge"><span class="pulse-ring"></span><span id="live-text">Live &middot; 5s</span></div>
     <div class="level-chip" id="level-chip" style="display:none;">
-      <span>LVL <span class="lv-num" id="lv-num">1</span></span>
-      <span id="lv-title">TRAINING WHEELS</span>
+      <span>XP LVL <span class="lv-num" id="lv-num">1</span></span>
+      <span id="lv-title">ROOKIE</span>
     </div>
   </div>
   <div class="header-right">
@@ -788,7 +788,7 @@
     <div class="stat-sub" id="s-wr-sub">&nbsp;</div>
   </div>
   <div class="stat-card yellow" id="card-best-wr">
-    <div class="stat-label">Best WR ever</div>
+    <div class="stat-label">Perfect sweeps</div>
     <div class="stat-value" id="s-best-wr">--</div>
     <div class="stat-sub" id="s-best-wr-sub">&nbsp;</div>
   </div>
@@ -804,7 +804,7 @@
     <div class="stat-sub" id="s-buffer-sub">&nbsp;</div>
   </div>
   <div class="stat-card pink" id="card-tac">
-    <div class="stat-label">Kill shots / game</div>
+    <div class="stat-label">Kill shots / block</div>
     <div class="stat-value" id="s-tac">--</div>
     <div class="stat-sub" id="s-tac-sub">&nbsp;</div>
   </div>
@@ -818,7 +818,7 @@
     <div class="stat-label">Next milestone</div>
     <div class="stat-value" id="s-next">--</div>
     <div class="stat-sub" id="s-next-sub">&nbsp;</div>
-    <div class="mini-bar gold" title="progress to next WR milestone"><div id="next-bar"></div></div>
+    <div class="mini-bar gold" title="progress to next gregory milestone"><div id="next-bar"></div></div>
   </div>
   <div class="stat-card purple" id="card-day1">
     <div class="stat-label">vs current teacher</div>
@@ -851,11 +851,11 @@
     <div class="card-title">Win rate vs random</div>
     <div class="chart-wrap"><canvas id="chart-wr"></canvas></div>
     <div class="milestone-row" id="milestones">
-      <div class="milestone" data-threshold="0.50" id="m50">WR 50%</div>
-      <div class="milestone" data-threshold="0.60" id="m60">WR 60%</div>
-      <div class="milestone" data-threshold="0.70" id="m70">WR 70%</div>
-      <div class="milestone" data-threshold="0.80" id="m80">WR 80%</div>
-      <div class="milestone" data-threshold="0.90" id="m90">WR 90%</div>
+      <div class="milestone" data-threshold="0.40" id="mg40">Greg 40%</div>
+      <div class="milestone" data-threshold="0.55" id="mg55">Greg 55%</div>
+      <div class="milestone" data-threshold="0.70" id="mg70">Greg 70%</div>
+      <div class="milestone" data-threshold="0.80" id="mg80">Greg 80%</div>
+      <div class="milestone" data-threshold="0.90" id="mg90">Greg 90%</div>
     </div>
     <div class="next-milestone" id="next-milestone" style="display:none;">
       <div class="nm-label"><span id="nm-left">--</span><span id="nm-right">--</span></div>
@@ -1373,18 +1373,63 @@ let _hypeIdx   = 0;
 let _prevLevel = null;
 let _runState  = null;      // models/expert_iter_v2/state.json (bests, gen, counters)
 
-const WR_MILESTONES   = [0.50, 0.60, 0.70, 0.80, 0.90];
 const GAME_MILESTONES = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000,
                          100000, 250000, 500000, 1000000];
+// Frontier ladders. Win-rate-vs-random is saturated (~99%), so the live signal
+// is the gregory alpha-beta ruler(s). d3 is climbing now; d4 arms only after
+// training is restarted on the d4 build (best_gregory_hard appears in state.json).
+const GREG_MILESTONES      = [0.40, 0.55, 0.70, 0.80, 0.90];
+const GREG_HARD_MILESTONES = [0.10, 0.25, 0.40, 0.55, 0.70];
 const TITLES = [
-  [0.95, 'GOAT CANDIDATE'],
-  [0.90, 'GRANDMASTER'],
-  [0.80, 'DOMINATOR'],
-  [0.70, 'CHALLENGER'],
-  [0.60, 'CONTENDER'],
-  [0.50, 'COIN BEATER'],
-  [0.00, 'TRAINING WHEELS'],
+  [0.90, 'GOAT'],
+  [0.80, 'GRANDMASTER'],
+  [0.70, 'DOMINATOR'],
+  [0.55, 'CHALLENGER'],
+  [0.40, 'CONTENDER'],
+  [0.20, 'UPSTART'],
+  [0.00, 'ROOKIE'],
 ];
+
+// ==== Frontier (gregory) accessors ========================================
+// The dopamine layer reads these instead of the saturated random win rate.
+function _maxField(field) {
+  let m = -Infinity;
+  for (const d of _allData) if (isFinite(d[field]) && d[field] > m) m = d[field];
+  return m > -Infinity ? m : NaN;
+}
+function _latestField(field) {
+  for (let i = _allData.length - 1; i >= 0; i--)
+    if (isFinite(_allData[i][field])) return _allData[i][field];
+  return NaN;
+}
+// gregory(d3) best -- prefer state.json's authoritative best_gregory, else the
+// max seen in the (downsampled) rows. Same shape for the deeper d4 ruler, which
+// stays NaN until training is restarted on the d4 build.
+function _gregBest() {
+  const s = (_runState && isFinite(_runState.best_gregory)) ? _runState.best_gregory : NaN;
+  const d = _maxField('promote_gregory');
+  if (isFinite(s) && isFinite(d)) return Math.max(s, d);
+  return isFinite(s) ? s : d;
+}
+function _gregNow() { return _latestField('promote_gregory'); }
+function _gregHardBest() {
+  const s = (_runState && isFinite(_runState.best_gregory_hard)) ? _runState.best_gregory_hard : NaN;
+  const d = _maxField('promote_gregory_hard');
+  if (isFinite(s) && isFinite(d)) return Math.max(s, d);
+  return isFinite(s) ? s : d;
+}
+// Recent perfect (100%) random-panel sweeps -- the live "how often are we
+// flawless" stat that replaces the frozen best-WR high-water mark.
+function _perfectSweeps(win) {
+  win = win || 40;
+  const wrs = [];
+  for (const d of _allData) if (isFinite(d.winrate) && d.winrate > 0) wrs.push(d.winrate);
+  const recent = wrs.slice(-win);
+  if (recent.length < 3) return null;
+  const hit = recent.filter(w => w >= 0.999).length;
+  const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+  return { pct: hit / recent.length, hit: hit, n: recent.length, mean: mean };
+}
 
 // ==== Helpers ==============================================================
 function _ma(arr, w) {
@@ -1471,11 +1516,9 @@ function _levelInfo(games) {
   return { lvl, next, frac };
 }
 
-function _titleFor(bestWR) {
-  for (const [thr, name] of TITLES) if (bestWR >= thr && (thr > 0 || true)) {
-    if (bestWR >= thr) return name;
-  }
-  return 'TRAINING WHEELS';
+function _titleFor(greg) {
+  for (const [thr, name] of TITLES) if (isFinite(greg) && greg >= thr) return name;
+  return 'ROOKIE';
 }
 
 // ==== Confetti (pure canvas, no deps) ======================================
@@ -1585,7 +1628,10 @@ function _redraw() {
   const smVloss  = _ds(_smooth ? _ma(vlosses, W)  : vlosses, MAX_PTS);
   const smWr     = _ds(wrs, MAX_PTS);   // don't smooth WR -- milestone detection uses raw
   const labels   = _dsLabels(n, MAX_PTS).map(v => v + start);
-  const bestLine = smWr.map(() => _bestWR > 0 ? _bestWR : NaN);
+  // reference line on the WR-vs-random chart = best win-rate-vs-random (NOT the
+  // repurposed _bestWR, which now tracks the gregory frontier)
+  const wrMax    = Math.max(...wrs.filter(v => isFinite(v)), 0);
+  const bestLine = smWr.map(() => wrMax > 0 ? wrMax : NaN);
 
   chartLoss.data.labels                = labels;
   chartLoss.data.datasets[0].data      = smLoss;
@@ -1703,7 +1749,7 @@ function _updateCards(data) {
     const chip = document.getElementById('level-chip');
     chip.style.display = '';
     document.getElementById('lv-num').textContent = li.lvl;
-    document.getElementById('lv-title').textContent = _titleFor(_bestWR);
+    document.getElementById('lv-title').textContent = _titleFor(_gregBest());
     if (_prevLevel !== null && li.lvl > _prevLevel && !_firstLoad) _celebrate(true);
     _prevLevel = li.lvl;
   } else {
@@ -1755,10 +1801,17 @@ function _updateCards(data) {
   document.getElementById('s-wr-sub').textContent =
     trend !== null ? (trend >= 0 ? '+' : '') + (trend * 100).toFixed(1) + '% last 20 evals' : 'vs random';
 
-  // best WR
-  _setStat('s-best-wr', _bestWR > 0 ? _bestWR : NaN, v => _fmtWR(v));
-  document.getElementById('s-best-wr-sub').textContent =
-    _bestWRIter > 0 ? 'at iter ' + _bestWRIter.toLocaleString() : '';
+  // perfect sweeps -- how often the raw net 100%s the random panel lately
+  // (replaces the frozen best-WR high-water mark now that random is saturated)
+  const sweeps = _perfectSweeps();
+  if (sweeps) {
+    _setStat('s-best-wr', sweeps.pct, v => (v * 100).toFixed(0) + '%');
+    document.getElementById('s-best-wr-sub').textContent =
+      sweeps.hit + '/' + sweeps.n + ' recent panels won 100% (avg ' + _fmtWR(sweeps.mean) + ')';
+  } else {
+    document.getElementById('s-best-wr').textContent = '--';
+    document.getElementById('s-best-wr-sub').textContent = 'gathering random panels...';
+  }
 
   // learning rate -- the per-gen explore->exploit dial (no epsilon in AZ)
   if (isFinite(last.lr)) {
@@ -1782,14 +1835,19 @@ function _updateCards(data) {
     document.getElementById('s-buffer-sub').textContent = 'no buffer field';
   }
 
-  // tactics: win-in-1 shortcuts taken + losing moves filtered, per game
-  if (isFinite(last.tac_w)) {
-    _setStat('s-tac', last.tac_w, v => _fmt(v, 2));
+  // tactics: win-in-1 shortcuts taken + blocks. The log writes per-block counts
+  // (mini_tac_wins / mini_tac_blocks) on gate blocks; smooth the recent ones.
+  const tacW = data.slice(-30).map(d => d.mini_tac_wins).filter(v => isFinite(v));
+  const tacB = data.slice(-30).map(d => d.mini_tac_blocks).filter(v => isFinite(v));
+  if (tacW.length) {
+    const avgW = tacW.reduce((a, b) => a + b, 0) / tacW.length;
+    _setStat('s-tac', avgW, v => v.toFixed(1));
+    const avgB = tacB.length ? tacB.reduce((a, b) => a + b, 0) / tacB.length : NaN;
     document.getElementById('s-tac-sub').textContent =
-      isFinite(last.tac_d) ? _fmt(last.tac_d, 2) + ' blunders dodged /game' : 'win-in-1 taken';
+      isFinite(avgB) ? avgB.toFixed(1) + ' blunders dodged / block' : 'win-in-1s taken / block';
   } else {
     document.getElementById('s-tac').textContent = '--';
-    document.getElementById('s-tac-sub').textContent = 'needs tac_w field';
+    document.getElementById('s-tac-sub').textContent = 'no tactics logged yet';
   }
 
   // target sharpness (1 - entropy/ln81)
@@ -1827,50 +1885,53 @@ function _updateCards(data) {
 
 // ==== Next milestone / ETA =================================================
 function _updateNextMilestone(data, tp, trend, trendN) {
-  const nextThr = WR_MILESTONES.find(t => _bestWR < t);
+  // Frontier = gregory. Climb d3 to 0.90, then the d4 ladder once it is armed
+  // (best_gregory_hard only exists after training is restarted on the d4 build).
   const nmWrap = document.getElementById('next-milestone');
+  const d3 = _gregBest();
+  let ladder = GREG_MILESTONES, cur = d3, ruler = 'Gregory d3', hardLocked = false;
+  const d3Maxed = isFinite(d3) && !GREG_MILESTONES.some(t => d3 < t);
+  if (d3Maxed) {
+    const d4 = _gregHardBest();
+    if (isFinite(d4)) { ladder = GREG_HARD_MILESTONES; cur = d4; ruler = 'Gregory d4'; }
+    else { hardLocked = true; }
+  }
+
+  const setBar = w => { document.getElementById('next-bar').style.width = w; };
+  if (hardLocked) {
+    document.getElementById('s-next').textContent = 'd3 MAXED';
+    document.getElementById('s-next-sub').textContent = 'restart training to arm the d4 ruler';
+    setBar('100%'); nmWrap.style.display = 'none'; return;
+  }
+  if (!isFinite(cur)) {
+    document.getElementById('s-next').textContent = '--';
+    document.getElementById('s-next-sub').textContent = 'waiting for a gregory panel...';
+    setBar('0%'); nmWrap.style.display = 'none'; return;
+  }
+  const nextThr = ladder.find(t => cur < t);
   if (!nextThr) {
     document.getElementById('s-next').textContent = 'ALL CLEAR';
-    document.getElementById('s-next-sub').textContent = '90%+ reached -- GOAT territory';
-    document.getElementById('next-bar').style.width = '100%';
-    nmWrap.style.display = 'none';
-    return;
+    document.getElementById('s-next-sub').textContent = ruler + ' ladder swept -- true GOAT territory';
+    setBar('100%'); nmWrap.style.display = 'none'; return;
   }
-  const cur  = _bestWR;
   const frac = Math.max(0, Math.min(1, cur / nextThr));
-  document.getElementById('s-next').textContent = 'WR ' + (nextThr * 100).toFixed(0) + '%';
-  document.getElementById('next-bar').style.width = (frac * 100).toFixed(1) + '%';
-
-  // ETA from recent trend (per-eval slope) + iters/hr
-  let eta = null;
-  if (trend !== null && trend > 0 && trendN >= 2 && tp.iph) {
-    const slopePerIter = trend / (trendN - 1);
-    const itersNeeded  = (nextThr - cur) / slopePerIter;
-    if (itersNeeded > 0 && isFinite(itersNeeded)) {
-      const hrs = itersNeeded / tp.iph;
-      eta = hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + 'm'
-          : hrs < 48 ? hrs.toFixed(1) + 'h'
-          : (hrs / 24).toFixed(1) + 'd';
-    }
-  }
+  document.getElementById('s-next').textContent = ruler + ' ' + (nextThr * 100).toFixed(0) + '%';
+  setBar((frac * 100).toFixed(1) + '%');
   document.getElementById('s-next-sub').textContent =
-    eta ? 'ETA ~' + eta + ' at current trend'
-        : (trend !== null && trend <= 0 ? 'trend flat -- grind on' : 'gathering trend...');
-
+    'now ' + (cur * 100).toFixed(1) + '% -- ' + ((nextThr - cur) * 100).toFixed(1) + ' pts to go';
   nmWrap.style.display = '';
   document.getElementById('nm-left').textContent =
-    'next: WR ' + (nextThr * 100).toFixed(0) + '% (best ' + _fmtWR(cur) + ')';
-  document.getElementById('nm-right').textContent =
-    (frac * 100).toFixed(0) + '%' + (eta ? ' -- ETA ~' + eta : '');
+    'next: ' + ruler + ' ' + (nextThr * 100).toFixed(0) + '% (now ' + (cur * 100).toFixed(1) + '%)';
+  document.getElementById('nm-right').textContent = (frac * 100).toFixed(0) + '%';
 }
 
 // ==== Milestones ===========================================================
 function _updateMilestones(data) {
-  const maxWR = Math.max(...data.map(d => d.winrate).filter(v => isFinite(v) && v > 0), 0);
+  const g = _gregBest();
   document.querySelectorAll('.milestone').forEach(el => {
     const t = parseFloat(el.dataset.threshold);
     const was = el.classList.contains('reached');
-    const now = maxWR >= t;
+    const now = isFinite(g) && g >= t;
     el.classList.toggle('reached', now);
     if (now && !was && !_firstLoad) _celebrate(true);
   });
@@ -1890,16 +1951,16 @@ function _deriveEvents(data) {
     const iter = i + 1;
     if (lossStart === null && isFinite(d.loss)) lossStart = d.loss;
 
-    // best-WR records
-    if (isFinite(d.winrate) && d.winrate > 0 && d.winrate > best) {
-      best = d.winrate;
-      events.push({ iter, kind: 'record', text: 'NEW BEST WR ' + _fmtWR(best) });
+    // best-vs-gregory records (the live frontier; random WR is saturated)
+    if (isFinite(d.promote_gregory) && d.promote_gregory > best) {
+      best = d.promote_gregory;
+      events.push({ iter, kind: 'record', text: 'NEW BEST vs Gregory ' + (best * 100).toFixed(1) + '%' });
     }
-    // WR milestones
-    for (const t of WR_MILESTONES) {
-      if (!wrHit.has(t) && isFinite(d.winrate) && d.winrate >= t) {
+    // gregory(d3) milestones
+    for (const t of GREG_MILESTONES) {
+      if (!wrHit.has(t) && isFinite(d.promote_gregory) && d.promote_gregory >= t) {
         wrHit.add(t);
-        events.push({ iter, kind: 'mile', text: 'crossed WR ' + (t * 100).toFixed(0) + '% vs random' });
+        events.push({ iter, kind: 'mile', text: 'crossed Gregory d3 ' + (t * 100).toFixed(0) + '%' });
       }
     }
     // games milestones + level-ups
@@ -1995,26 +2056,30 @@ function _buildHype(data) {
   const games = last.games_total;
   if (isFinite(games)) msgs.push(_fmtBig(games) + ' games in the books and counting');
   if (tp.gph !== null) msgs.push('churning ' + _fmtBig(tp.gph) + ' games/hour -- the 3080 is earning its keep');
-  if (_bestWR > 0) msgs.push('best win rate so far: ' + _fmtWR(_bestWR) + ' at iter ' + _bestWRIter.toLocaleString());
+  const gb = _gregBest();
+  if (isFinite(gb)) msgs.push('best vs the gregory ruler so far: ' + (gb * 100).toFixed(1) + '%');
+  const sw = _perfectSweeps();
+  if (sw && sw.hit > 0) msgs.push(sw.hit + ' of the last ' + sw.n + ' random panels were a flawless 100%');
   if (isFinite(first.loss) && isFinite(last.loss) && first.loss > 0) {
     const drop = (first.loss - last.loss) / first.loss;
     if (drop > 0.01) msgs.push('loss carved down ' + (drop * 100).toFixed(0) + '% since iter 1');
   }
   if (isFinite(games)) {
     const li = _levelInfo(games);
-    msgs.push('LVL ' + li.lvl + ' ' + _titleFor(_bestWR) + ' -- ' + (li.frac * 100).toFixed(0) + '% to LVL ' + (li.lvl + 1));
+    msgs.push(_titleFor(_gregBest()) + ' -- XP lvl ' + li.lvl + ' (' + (li.frac * 100).toFixed(0) + '% to ' + (li.lvl + 1) + ')');
   }
-  if (isFinite(last.tac_w) && last.tac_w > 0) {
-    msgs.push(last.tac_w.toFixed(2) + ' kill shots per game -- never missing a win-in-1');
+  if (isFinite(last.mini_tac_wins) && last.mini_tac_wins > 0) {
+    msgs.push(last.mini_tac_wins + ' win-in-1 kill shots taken last block -- never missing a forced win');
   }
   if (isFinite(last.pi_ent)) {
     const sh = Math.max(0, 1 - last.pi_ent / ENT_MAX);
     msgs.push('search targets ' + (sh * 100).toFixed(0) + '% sharp' +
               (sh >= 0.5 ? ' -- decisive play' : ' and sharpening'));
   }
-  const nextThr = WR_MILESTONES.find(t => _bestWR < t);
-  if (nextThr) msgs.push('hunting the WR ' + (nextThr * 100).toFixed(0) + '% milestone');
-  else if (_bestWR > 0) msgs.push('all WR milestones cleared -- GOAT territory');
+  const gForNext = _gregBest();
+  const nextThr = isFinite(gForNext) ? GREG_MILESTONES.find(t => gForNext < t) : null;
+  if (nextThr) msgs.push('hunting Gregory d3 ' + (nextThr * 100).toFixed(0) + '%');
+  else if (isFinite(gForNext)) msgs.push('gregory d3 ladder swept -- onto the d4 ruler');
   msgs.push(n.toLocaleString() + ' iterations of pure self-play grind');
 
   // latest gauntlet line
@@ -2137,17 +2202,17 @@ function _updateElapsed(data) {
 
 // ==== Best WR tracker ======================================================
 function _trackBestWR(data) {
-  let improved = false;
-  data.forEach((d, i) => {
-    if (isFinite(d.winrate) && d.winrate > _bestWR) {
-      _bestWR = d.winrate;
-      _bestWRIter = i + 1;
-      improved = true;
+  // Frontier record = best vs the gregory(d3) ruler. Random WR is saturated, so
+  // new records now come from gregory, which is what actually still climbs.
+  const g = _gregBest();
+  if (isFinite(g) && g > _bestWR) {
+    const improved = _bestWR > 0;
+    _bestWR = g;
+    _bestWRIter = data.length;
+    if (improved && !_firstLoad) {
+      _celebrate(false);
+      _flashRecord('NEW GREGORY BEST: ' + (g * 100).toFixed(1) + '% vs the depth-3 ruler');
     }
-  });
-  if (improved && !_firstLoad) {
-    _celebrate(false);
-    _flashRecord('NEW BEST WIN RATE: ' + _fmtWR(_bestWR) + ' at iter ' + _bestWRIter.toLocaleString());
   }
 }
 
@@ -2538,17 +2603,17 @@ document.getElementById('btn-game').addEventListener('click', _gvPlay);
 // Dismissed by tapping anywhere, tapping the card again, or after 10 seconds.
 const CARD_INFO = {
   'card-iter':      ['Iteration', 'One generate/train block: the teacher (MCTS-200 over the current teacher net) plays 16 self-play games, then the student takes 100 SGD steps on the visit-count targets. The sub-line shows the current teacher generation.'],
-  'card-games':     ['Games played', 'Total teacher self-play games this run. These games are the training data; the bar underneath is a just-for-fun XP meter to the next games milestone.'],
+  'card-games':     ['Games played', 'Total teacher self-play games this run -- the training data. The bar underneath and the "XP LVL" chip up top are a just-for-fun games-played meter (level = sqrt(games/100)); it climbs forever and is NOT skill. Real strength is "Teacher gen" and the gregory milestones; the badge next to the level is your gregory rank.'],
   'card-gph':       ['Games / hour', 'Teacher self-play throughput. Search-quality games are slow by design (200 sims per move); if this drops sharply, something is contending for the GPU.'],
   'card-loss':      ['Loss (now)', 'Student training loss, ONE number: policy cross-entropy vs the MCTS visit distribution plus value MSE vs the game result (the sub-line shows the split; the Loss curve chart has all three lines -- click the legend to toggle). It can drift UP right after a promotion because the data starts coming from a stronger teacher.'],
   'card-gen':       ['Teacher gen', 'How many times the student has beaten its teacher and taken its place. Each promotion swaps the teacher, clears the replay buffer, and restarts the LR clock. The promotion-gates panel at the top shows how close the next one is.'],
   'card-wr':        ['Win rate (now)', 'Raw student net -- single forward pass, NO search -- vs a uniformly random player. 40 games every ~5 min, draws count 0.5, first 6 plies sampled for variety. This isolates the policy head; the shipped agent also gets search on top.'],
-  'card-best-wr':   ['Best WR ever', 'Highest win-rate-vs-random probe seen this run. A high-water mark, so it only moves when a new probe beats every previous one.'],
+  'card-best-wr':   ['Perfect sweeps', 'How often the raw net 100%s the 40-game random panel lately: count of the last ~40 probes that were flawless, as a percent, with the average WR underneath. Replaces the old best-WR high-water mark, which froze once random got saturated.'],
   'card-lr':        ['Learning rate', 'There is no epsilon here (that is DQN); in AlphaZero-style training the explore/exploit dial is Dirichlet root noise (10%) + sampled first 10 plies (both constant) and THIS: the LR, which restarts at 1e-3 every promotion and halves every 25k steps down to a 1e-4 floor. High = plastic and exploring; low = committing to what it knows.'],
   'card-buffer':    ['Replay buffer', 'Positions in the training window (cap 200k). Every block adds ~880 positions as a shard on disk; once full, the oldest fall out so the student always trains on recent teacher strength.'],
-  'card-tac':       ['Kill shots / game', 'Immediate tactical moves per self-play game: taking a mini-board win or blocking one. Ground-truth tactics injected during generation so the targets always contain the forced move when one exists.'],
+  'card-tac':       ['Kill shots / block', 'Immediate tactical moves per generation block: win-in-1 mini-board wins taken (the number) and forced losses blocked (the sub-line), averaged over recent blocks. Ground-truth tactics injected during generation so the visit-count targets always contain the forced move when one exists.'],
   'card-sharp':     ['Target sharpness', '1 - entropy/ln(81) of the MCTS visit targets. 0% = search returned a uniform shrug (the old plateau smoking gun), 100% = all visits on one move. Healthy search on a real position sits well above 50%.'],
-  'card-next':      ['Next milestone', 'The next win-rate-vs-random threshold not yet crossed, and progress toward it. Pure dopamine plumbing.'],
+  'card-next':      ['Next milestone', 'The next gregory-ruler threshold not yet crossed, and progress toward it. Gregory (a depth-limited alpha-beta player) is the honest frontier now that random is saturated; the d3 ladder runs to 90%, then the deeper d4 ruler takes over once training is restarted on the d4 build.'],
   'card-day1':      ['vs current teacher', 'Raw student vs the raw CURRENT teacher net on a fixed, color-swapped opening panel. Gen 0 is the independently selected Arena-22 HOF checkpoint. Promotions also require absolute WinBlock improvement and no material random-opponent regression.'],
 };
 (function () {
