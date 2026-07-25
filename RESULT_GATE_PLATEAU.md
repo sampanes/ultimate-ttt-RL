@@ -19,7 +19,7 @@ reproduce what its own search finds, distillation would have nothing to give.
 Search still beats the raw net 81% of the time, down only 0.066 across 22
 generations. There is plenty left to distill.
 
-## Finding 2: the gate had become unreachable
+## Finding 2: the gate was not merely improbable, it was impossible
 
 127 promotion attempts were logged at gen 22. Replaying `_promotion_decision`
 against the live bars in `state.json`: **zero should have passed.**
@@ -31,63 +31,67 @@ against the live bars in `state.json`: **zero should have passed.**
 | gregory d3 | 0.7833 | 26.8% | 0 |
 | random | 0.9650 | 0% | 0 |
 
-The winblock bar was `best_heur + promote_margin` = 0.9267 + 0.02. Measured
-across those same 127 fresh 300-game panels, the lineage's actual winblock
-strength was **0.9002**, with an observed spread of 0.0154 against a binomial
-prediction of 0.0173 -- the two agree, so the sequence is pure measurement noise
-around a flat mean with no trend at all.
+**These panels are deterministic.** `_play_fixed_match` reseeds python and numpy
+per game and promotion runs raw argmax (`sample_moves=0`), so a panel score is a
+reproducible function of the weights. Measured three times against gen 22 it
+returned 0.926667 every time, matching the stored `best_heur` to the bit. There
+is no sampling noise here and nothing to get lucky on.
 
-That puts the bar **2.69 sigma above the lineage's true strength**: p = 0.36%
-per attempt, about 192 attempts for even odds, and that is winblock alone before
-being ANDed with a head-to-head gate that fails 54% of the time.
+That makes the arithmetic stark. The winblock bar was `best_heur +
+promote_margin`, and `best_heur` is **the teacher's own score**, 0.9267. So the
+gate asked the student to beat the teacher by 0.02 on a fixed heuristic. Across
+those 127 attempts the students averaged **0.9002** -- 0.0265 *worse* than the
+teacher -- so they needed +0.047. The best student the run ever produced reached
+0.9317, still short of 0.9467. Not unlikely: impossible, for every student
+measured.
 
-Meanwhile head_to_head averaged **0.545** -- 1.6 sigma above parity. The student
-was genuinely, consistently beating the teacher the whole time. It was being
-asked to also win a lottery.
+Meanwhile head_to_head averaged **0.545** and was above 0.500 on every single
+attempt. The students really were beating the teacher.
 
-## Root cause: two compounding design errors
+## Root cause: a non-transitivity the gate could not express
 
-**1. A saturated metric was carrying the improvement requirement.** winblock was
-doing two jobs -- prove the student improved, and guard against regression. It
-cannot do the first. It is bounded, it had saturated near 0.90, and much of the
-residual against a fixed 1-ply heuristic is opening-determined rather than skill.
-Demanding +0.02 there is demanding progress on a ruler that has stopped
-measuring; the requirement was 1.15x the measurement noise.
+The students are **better than the teacher head to head and slightly worse than
+it against a fixed heuristic**. Both facts are deterministic and reproducible;
+neither is noise. A gate that requires improvement on *both* is requiring
+something the lineage does not produce.
 
-**2. Winner's curse in the bar.** `best_heur = promote_heur` assigned the bar
-from *the single draw that promoted*. Under the old rule winblock was itself the
-promotion criterion, so that draw was selected for being high -- 0.9267 against a
-true 0.9002, a full 1.5 sigma of pure selection bias -- and then +0.02 more was
-demanded on top of it.
-
-The same creep had reached the other guards. `best_gregory` was a running `max`
-over selected panels, at 0.8133 against a true 0.798, which is why a "tolerance"
-gate was firing on 27% of honest measurements.
+Compounding it, winblock was carrying two incompatible jobs -- prove the student
+improved, and guard against regression -- on a metric that is bounded, saturated
+near 0.93, and where much of the residual against a 1-ply heuristic is
+opening-determined rather than skill.
 
 ## The fix
 
 **One criterion decides improvement, and it is head_to_head.** It is the only
 panel that cannot saturate -- centred on 0.500 by construction at every
-generation, however strong the lineage gets. Everything else becomes a
-no-regression guard whose job is to catch a student that beat the teacher by
-exploiting it specifically while getting worse in general.
+generation, however strong the lineage gets -- and it is the panel where the
+students demonstrably *are* better. Everything else becomes a no-regression
+guard whose job is to catch a student that beat the teacher by exploiting it
+while getting worse in general.
 
 - `--promote_margin` (absolute winblock improvement) is gone, replaced by
   `--winblock_tolerance` (default 0.03), a regression floor like the others.
-- **Noise-aware tolerances.** Every guard floor widens to
-  `max(tolerance, --noise_sigmas * binomial sigma)`, default 2.5 sigma. A flat
-  0.03 against a bar near 0.90 fires on ~40% of honest panels; that is a coin
-  toss wearing a lab coat, not a safety check.
-- **Bars track the teacher in hand**, not the luckiest draw ever seen. All four
-  are assigned from the promoting measurement; none is a running `max`. The
-  ratchet is what let them climb above true strength and never come back.
-- **Legacy bars are force-rebased.** `state.json` below `schema_version` 5 is
-  winner's-cursed, so those bars are discarded on load and re-measured against
-  the current teacher. `--rebase_baselines` forces it manually. This is
-  load-bearing, not cosmetic (see the replay below). Going forward the curse is
-  structurally gone: promotion is decided on the head_to_head panel, a different
-  opponent with a different seed, so the winblock draw riding along with it is
-  unbiased.
+- **Guard floors widen with expected wander**, to
+  `max(tolerance, --noise_sigmas * _panel_sigma)`, default 2.5. This is *not* a
+  sampling-noise correction -- there is no sampling noise. What moves between
+  checks is the student's own weights as training continues; across the 127
+  attempts its winblock score varied with sd 0.0154. The binomial expression is
+  used as a scale-free proxy for that wander: it predicts 0.0150 at the same
+  point, close enough to size a floor with, and it shrinks correctly as the
+  panel grows.
+- **Bars stay high-water marks.** All four use `max`. `best_heur` used to be
+  assigned directly, which was safe *only* because the old rule required
+  winblock to improve, so the new value was always the larger. With winblock
+  demoted to a guard, a direct assignment would re-anchor the floor to each new
+  teacher and slide it down by up to a tolerance per generation -- and since the
+  students sit 0.0265 *below* the teacher on this panel, that slide is the
+  expected case, not the unlucky one. head_to_head cannot prevent it: the whole
+  reason it is the improvement criterion is that it is non-transitive with these
+  heuristic panels.
+- **No automatic rebase on resume.** The panels are deterministic, so
+  re-measuring the same teacher reproduces the same numbers, and a rebase
+  against a merely-current teacher can only lower a high-water mark.
+  `--rebase_baselines` remains for the case where an anchor itself changed.
 - **Failures are recorded.** `promote_failed` now goes into the metrics row.
   Attributing this deadlock required replaying the decision logic over 90k rows
   because only the scores were ever written down. The no-promotion log line also
@@ -95,45 +99,53 @@ exploiting it specifically while getting worse in general.
 
 ## Verification: replay the 127 real attempts through the new gate
 
-| scenario | promote rate | blocked by h2h | by winblock | by gregory |
+Floors implied by the real stored bars: winblock 0.8890, random 0.9650,
+gregory-d3 0.7571.
+
+| scenario | promote rate | h2h blocks | winblock blocks | gregory blocks |
 |---|---|---|---|---|
 | old gate | **0 / 127 (0%)** | 54% | 100% | 27% |
-| new gate, legacy bars | 50 / 127 (39%) | 54% | 20% | 3% |
-| new gate, rebased bars | **58 / 127 (46%)** | 54% | 2% | 2% |
-| new gate, NULL student | 9 / 127 (7%) | 93% | 2% | 2% |
+| new gate | **50 / 127 (39%)** | 54% | 20% | 3% |
+| new gate, NULL student | 6 / 127 (5%) | 93% | 20% | 3% |
 
 The NULL row replaces each real head-to-head score with a draw from a student
 that is exactly the teacher's equal, holding the other panels fixed. It is the
 check that the gate was loosened and not simply removed: real students promote
-at 46%, a student with no edge at 7%, a **6.4x** separation. head_to_head does
-essentially all the gatekeeping (54% block rate) and the guards are quiet at 2%,
-which is what a catastrophe guard should look like.
+at 39%, a student with no edge at 5%, an **8.3x** separation.
 
-Rebasing is worth 7 points and removes winblock's 20% false-fire rate.
+Note winblock still blocks 20% of attempts. That is not a malfunction -- the
+students genuinely dip below the floor sometimes, because they genuinely are
+below the teacher on that panel. The guard is doing real work; it just is not
+being asked to do the impossible.
 
 ## Also fixed: the deeper ruler had never run
 
 `--gregory_hard_depth 4` landed in adfcc45 on 2026-07-21 and defaults to on, but
-**0 of 89,984 metric rows contain it** -- the run has been stopped since before
-that commit. It arms on the restart. This matters because winblock (0.90) and
-gregory-d3 (0.798) are both saturating while d4 has real headroom: the offline
-A/B students scored 0.598-0.685 against d4 versus 0.715-0.793 against d3.
+**0 of 89,984 metric rows contain it** -- the run had been stopped since before
+that commit. Its first ever measurement, taken at this restart: the gen-22
+teacher scores **0.638** against gregory d4. It is now armed as a guard. This
+matters because winblock (0.927) and gregory-d3 (0.813) are both saturating
+while d4 has real headroom.
 
 ## Limitations and residual risk
 
-- A 7% null-promotion rate is not zero. `--promote_thresh` 0.55 on a 300-game
-  panel is 1.73 sigma, so roughly a 4% one-tailed alpha by construction, and a
-  fully stalled lineage would still promote on noise every few hours. Promotions
-  driven by noise are self-limiting (the bars re-track the new teacher each
-  time) but a slow random walk is not impossible. **The judge remains the fixed
-  external panel, which the gate cannot see** -- if gregory d3/d4 stop climbing
-  across several generations, the promotions are noise regardless of what the
-  gate reports.
-- The rebased bars are estimated from a single panel per anchor. They inherit
-  that panel's noise; the 2.5-sigma widening is what absorbs it.
-- The "true strength 0.9002" figure is the mean over 127 panels of a *student*
-  that averages 0.545 against the teacher, so it slightly overstates the
-  teacher. The direction is conservative for the winblock floor.
+- **The students being weaker than the teacher on winblock is unexplained.**
+  Distilling MCTS-200 targets from the teacher ought to produce a student that
+  approaches teacher-plus-search, which should be stronger everywhere. It is
+  stronger head to head and weaker on the heuristic panel. That is worth
+  understanding on its own terms; this fix routes around it rather than
+  explaining it.
+- A 5% null-promotion rate is not zero. `--promote_thresh` 0.55 is a real
+  requirement but a stalled lineage can still promote occasionally. Promotions
+  driven by nothing are partly self-limiting (the high-water marks do not move,
+  so the guards stay where they are) but a slow drift is not impossible.
+  **The judge remains the fixed external panel, which the gate cannot see** --
+  if gregory d3/d4 stop climbing across several generations, the promotions are
+  not real regardless of what the gate reports.
+- One state-file correction was applied by hand: the startup rebase (since
+  removed) had lowered `best_random` from its 0.995 high-water mark to the
+  current teacher's 0.9917. Restored to 0.995. One game in 300, on a guard that
+  has never fired in 90k rows.
 
 ## Reproduce
 

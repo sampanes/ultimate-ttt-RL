@@ -358,24 +358,31 @@ def _decayed_lr(base_lr, steps_total, half_life_steps, lr_min):
 
 
 def _panel_sigma(score, games):
-    """Binomial standard error of a fixed-panel score.
+    """Scale for how far a panel score drifts between checks.
 
-    Every panel number in this file is a mean over `games` results, so it
-    carries roughly this much noise no matter what the net did. At the 300-game
-    default a score near 0.90 has sigma ~0.017 and one near 0.50 has ~0.029 --
-    which is why a fixed 0.02-0.03 threshold on a panel score is not a
-    measurement of anything.
+    NOT a sampling-noise correction. _play_fixed_match reseeds python and numpy
+    per game and promotion runs raw argmax, so a panel score is a fully
+    DETERMINISTIC function of the weights -- measured three times on gen 22 it
+    returned 0.926667 every time. There is no draw to be unlucky on.
+
+    What does move between checks is the student itself: its weights wander as
+    training continues, and its panel score wanders with them. Across the 127
+    gen-22 promotion attempts the winblock score varied with sd 0.0154. This
+    binomial expression is used as a convenient scale-free proxy for that
+    wander -- it predicts 0.0150 at the same point, which matches closely
+    enough to size a floor with, and it shrinks correctly as the panel grows.
     """
     p = min(max(score, 0.0), 1.0)
     return math.sqrt(max(p * (1.0 - p), 1e-12) / max(games, 1))
 
 
 def _regressed(score, best, tolerance, games, sigmas):
-    """True only when `score` sits below `best` by more than noise explains.
+    """True only when `score` sits below `best` by more than wander explains.
 
-    The floor is max(tolerance, sigmas * sigma): the caller's absolute
-    tolerance still applies, but it is widened whenever panel noise is the
-    larger of the two so a guard cannot fire on an unlucky draw.
+    The floor is max(tolerance, sigmas * _panel_sigma): the caller's absolute
+    tolerance still applies, but it is widened whenever the expected wander is
+    the larger of the two, so a guard fires on a real regression rather than on
+    a student that happens to be mid-wobble.
     """
     if score is None or best is None:
         return False
@@ -402,18 +409,18 @@ def _promotion_decision(head_to_head, heur_score, random_score,
     while getting worse in general; they are not asked to improve.
 
     That split is the fix for the gen-22 plateau (RESULT_GATE_PLATEAU.md).
-    winblock used to carry an absolute "+margin over best_heur" requirement.
-    By gen 22 winblock had saturated near 0.90 where a 300-game panel has
-    sigma ~0.017, and best_heur was assigned from the single draw that
-    promoted -- a value selected for being high. Demanding another +0.02 on
-    top put the bar 2.69 sigma above the lineage's actual strength: 127
-    consecutive promotion attempts failed it, 52 of them on winblock alone,
-    and 564k games produced no promotion while the student was genuinely
-    beating the teacher (mean head_to_head 0.545).
+    winblock used to carry an absolute "+margin over best_heur" requirement,
+    where best_heur is the TEACHER's own deterministic score. So the student
+    had to beat the teacher by 0.02 on a fixed heuristic -- and it does not:
+    across 127 gen-22 attempts the students averaged 0.9002 against a teacher
+    at 0.9267, i.e. 0.027 WORSE, needing +0.047 to clear the bar. The best
+    student ever measured reached 0.9317, still short. Not improbable --
+    impossible, for every student the run ever produced.
 
-    Guards are noise-aware for the same reason -- see _regressed. A flat 0.03
-    tolerance against a bar drawn near 0.90 fires on ~40% of honest panels,
-    which is a coin toss wearing a lab coat, not a safety check.
+    Yet those same students beat the teacher head to head at 0.545, every
+    single time. That non-transitivity (better against the teacher, slightly
+    worse against a fixed heuristic) is exactly why the improvement criterion
+    must be head_to_head and the heuristic panels must be guards.
 
     The gregory gates are no-regression checks against depth-limited
     alpha-beta anchors -- the panel opponents fully independent of the
@@ -620,11 +627,11 @@ def main():
     ap.add_argument("--rebase_baselines", action="store_true",
                     help="Re-measure the no-regression baselines against the "
                          "CURRENT teacher at startup instead of restoring "
-                         "them from state.json. The saved bars are whatever "
-                         "the promoting student happened to score, which is a "
-                         "draw selected for being high; rebasing replaces "
-                         "that with an unbiased measurement of the teacher "
-                         "actually in hand. Costs one panel per anchor.")
+                         "them from state.json. Rarely wanted: the panels are "
+                         "deterministic, so this reproduces the saved numbers "
+                         "exactly unless an anchor changed, and the bars are "
+                         "high-water marks that it can only LOWER. Costs one "
+                         "panel per anchor.")
     ap.add_argument("--gregory_depth", type=int, default=3,
                     help="Depth of the alpha-beta anchor measured at every "
                          "promotion check. Gregory is the one panel opponent "
@@ -836,24 +843,18 @@ def main():
         best_random = None
         best_gregory = None
         best_gregory_hard = None
-    # Bars written before schema 5 are winner's-cursed and MUST be rebased.
-    # Under the old rule winblock was itself the promotion criterion, so
-    # best_heur was assigned from a panel selected for being high -- gen 22's
-    # 0.9267 against a lineage truly at 0.9002, a full 1.5 sigma of pure
-    # selection bias, which no tolerance can safely absorb. From schema 5 on,
-    # promotion is decided by head_to_head, a DIFFERENT panel against a
-    # different opponent, so the winblock draw that comes along with it is
-    # unbiased and the bar can simply track it.
-    stale_bars = bool(saved_state) and saved_state.get("schema_version", 0) < 5
-    if saved_state and (args.rebase_baselines or stale_bars):
-        why = ("--rebase_baselines" if args.rebase_baselines
-               else f"state schema v{saved_state.get('schema_version', 0)} "
-                    f"predates the gate fix, so its bars are winner's-cursed")
-        print(f"[!] rebasing promotion baselines ({why}): discarding "
-              f"winblock={saved_state.get('best_heur')}, "
+    # Manual only. There is deliberately no automatic rebase on resume: the
+    # panels are deterministic, so re-measuring the same teacher returns the
+    # same numbers (verified -- gen 22 reproduced best_heur to the bit), and
+    # the bars are high-water marks that a rebase against a merely-current
+    # teacher would LOWER. The flag exists for the case where the anchors
+    # themselves changed underneath the saved scores.
+    if saved_state and args.rebase_baselines:
+        print(f"[!] --rebase_baselines: discarding saved bars "
+              f"(winblock={saved_state.get('best_heur')}, "
               f"random={saved_state.get('best_random')}, "
-              f"gregory={saved_state.get('best_gregory')} -- re-measuring vs "
-              f"the current teacher")
+              f"gregory={saved_state.get('best_gregory')}) and re-measuring "
+              f"vs the current teacher")
         best_heur = None
         best_random = None
         best_gregory = None
@@ -1172,20 +1173,25 @@ def main():
                             # would generate from the OLD teacher forever. Must
                             # follow _save_teacher -- they reload from that file.
                             actor_pool.reload_weights(teacher_path)
-                        # Track the teacher we now hold, not the luckiest draw
-                        # ever seen. A running max only ever ratchets upward,
-                        # and since it ratchets on the SELECTED (high) panels
-                        # it climbs above the lineage's true strength and never
-                        # comes back down -- best_gregory had crept to 0.813
-                        # against a real 0.798, which is what left its guard
-                        # firing on 27% of honest panels. These bars are
-                        # regression floors; head_to_head is what stops the
-                        # lineage walking downhill.
-                        best_heur = promote_heur
-                        best_random = promote_random
-                        best_gregory = promote_greg
+                        # HIGH-WATER MARKS, never lowered. best_heur used to be
+                        # assigned directly, which was safe only because the
+                        # old rule required winblock to IMPROVE to promote, so
+                        # the new value was always the larger one. Now that
+                        # winblock is a guard rather than a bar, a direct
+                        # assignment would let every promotion re-anchor it to
+                        # the new teacher and slide the floor down by up to a
+                        # tolerance per generation -- an unbounded ratchet
+                        # downward, since the students measure ~0.027 BELOW the
+                        # teacher on this panel. head_to_head cannot prevent
+                        # that: the whole reason it is the improvement
+                        # criterion is that it is non-transitive with these
+                        # heuristic panels.
+                        best_heur = max(best_heur, promote_heur)
+                        best_random = max(best_random, promote_random)
+                        best_gregory = max(best_gregory, promote_greg)
                         if greg_hard_on:
-                            best_gregory_hard = promote_greg_hard
+                            best_gregory_hard = max(best_gregory_hard,
+                                                    promote_greg_hard)
                         games_since_promotion = 0
                         # New generation = new distillation problem; restart
                         # the LR decay clock with the buffer.

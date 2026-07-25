@@ -166,27 +166,25 @@ class ExpertIterationTests(unittest.TestCase):
         base = dict(head_to_head=0.60, random_score=0.70, best_random=0.71,
                     threshold=0.55, heur_tolerance=0.03,
                     random_tolerance=0.03, panel_games=300, noise_sigmas=2.5)
-        # A REBASED bar: the teacher measured at its true 0.900. sigma there
-        # is 0.01732, so the floor is 0.900 - 2.5*0.01732 = 0.8567 and honest
-        # draws around the mean all pass -- including one a full sigma low.
+        # The real gen-22 bar is the teacher's own deterministic 0.9267.
+        # _panel_sigma there is 0.0150, so the floor is 0.9267 - 2.5*0.0150 =
+        # 0.8892. The students sit at 0.9002, i.e. genuinely BELOW the teacher
+        # on this panel, and must still be allowed through -- that is the
+        # whole point of demoting winblock to a guard.
         promote, failed = _promotion_decision(
-            heur_score=0.9002, best_heur=0.900, **base)
-        self.assertTrue(promote)
-        promote, failed = _promotion_decision(
-            heur_score=0.8829, best_heur=0.900, **base)
+            heur_score=0.9002, best_heur=0.9267, **base)
         self.assertTrue(promote)
         # A genuine collapse still blocks, on its own named gate.
         promote, failed = _promotion_decision(
-            heur_score=0.80, best_heur=0.900, **base)
+            heur_score=0.80, best_heur=0.9267, **base)
         self.assertFalse(promote)
         self.assertIn("winblock_regression", failed)
-        # Guard rail on the migration: noise widening alone does NOT make the
-        # legacy cursed bar safe. 0.9267 against a lineage at 0.9002 still
-        # blocks a mildly unlucky panel, which is why states below schema 5
-        # are force-rebased on load rather than merely tolerated.
-        promote, failed = _promotion_decision(
-            heur_score=0.8829, best_heur=0.9267, **base)
-        self.assertFalse(promote)
+        # The guard is a floor, not a bar: matching the teacher exactly, or
+        # beating it, obviously passes.
+        for s in (0.9267, 0.9317):
+            promote, _ = _promotion_decision(
+                heur_score=s, best_heur=0.9267, **base)
+            self.assertTrue(promote)
 
     def test_tolerances_widen_with_panel_noise(self):
         # sigma is largest near 0.5 and shrinks as the panel grows, so the
