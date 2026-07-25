@@ -2,9 +2,14 @@
 
 Runs scripts.expert_iter as a child process and restarts it ONLY when it dies
 with a nonzero exit code (CUDA hiccup, transient OOM, unhandled exception).
-A clean exit -- including Ctrl+C, which expert_iter catches, saves state for,
-and exits 0 from -- ends the supervisor too, so stop_goat.bat keeps working
-exactly as before: one Ctrl+C to the console stops everything gracefully.
+
+Graceful stop is a STOP sentinel file (models/expert_iter_v2/STOP), NOT a
+console Ctrl+C: with --eval_server the child's multiprocessing actors swallow
+the console CTRL_C_EVENT on Windows, so the interrupt never reaches the loop.
+stop_goat.bat writes the sentinel; the child polls it each block, saves state,
+and exits 0; this supervisor sees the sentinel and stops without relaunching
+(authoritative even if the child happened to exit nonzero). A plain clean exit
+(exit 0, e.g. --blocks reached) also ends the supervisor.
 
 Restart policy: 60s backoff between restarts, and at most MAX_RESTARTS_PER_DAY
 nonzero exits in any rolling 24h window. A hard bug would otherwise crash-loop
@@ -17,6 +22,7 @@ Usage (start_goat.bat wraps this):
 All arguments are passed through to scripts.expert_iter unchanged.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -24,9 +30,28 @@ import time
 BACKOFF_SECS = 60
 MAX_RESTARTS_PER_DAY = 20
 
+# Must match scripts.expert_iter so the supervisor watches the exact sentinel
+# the trainer writes/reads (drift-guarded by a test in test_expert_iter.py).
+# Duplicated rather than imported to keep the supervisor torch-free / instant to
+# start.
+DEFAULT_MODEL_DIR = os.path.join("models", "expert_iter_v2")
+STOP_FILENAME = "STOP"
+
+
+def _model_dir_from_argv(argv):
+    """Resolve --model_dir out of the pass-through argv (default matches
+    expert_iter's argparse default) so the supervisor and child agree on where
+    the STOP sentinel lives."""
+    if "--model_dir" in argv:
+        i = argv.index("--model_dir")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return DEFAULT_MODEL_DIR
+
 
 def main():
     child_cmd = [sys.executable, "-u", "-m", "scripts.expert_iter"] + sys.argv[1:]
+    stop_path = os.path.join(_model_dir_from_argv(sys.argv[1:]), STOP_FILENAME)
     crash_times = []
     attempt = 0
     while True:
@@ -50,6 +75,18 @@ def main():
                 # waiting on it rather than killing it.
                 print("[supervisor] Ctrl+C -- waiting for child to save state "
                       "and exit...", flush=True)
+        # A requested stop is authoritative regardless of the child's exit code:
+        # if the STOP sentinel is present, the operator asked us to stop, so do
+        # not relaunch even if the child happened to die nonzero. Consume it so
+        # the next start begins clean.
+        if os.path.exists(stop_path):
+            print(f"[supervisor] STOP file present ({stop_path}) -- stopping, "
+                  f"no restart.", flush=True)
+            try:
+                os.remove(stop_path)
+            except OSError:
+                pass
+            return 0
         if rc == 0:
             print("[supervisor] expert_iter exited cleanly -- done.", flush=True)
             return 0

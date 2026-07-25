@@ -396,6 +396,29 @@ def _promotion_decision(head_to_head, heur_score, random_score,
 
 
 # --------------------------------------------------------------------------- #
+# Graceful-stop sentinel
+# --------------------------------------------------------------------------- #
+# A console Ctrl+C is unreliable for this run: with --eval_server the trainer
+# spawns an eval server + N multiprocessing actors, and on Windows those child
+# processes swallow the console CTRL_C_EVENT so the main loop never sees a
+# KeyboardInterrupt (observed: a direct CTRL_C_EVENT to the console group was a
+# complete no-op while blocks kept flowing). So the reliable stop is a sentinel
+# FILE the loop polls each block -- the same pattern the arena GUI already uses
+# (models/arena/arena.pause). stop_goat.bat writes it; expert_iter breaks out of
+# the block loop and saves via its finally; goat_supervisor honors it and does
+# NOT relaunch. Kept as a module constant so goat_supervisor's default stays in
+# lockstep (guarded by a test in test_expert_iter.py).
+
+DEFAULT_MODEL_DIR = os.path.join("models", "expert_iter_v2")
+STOP_FILENAME = "STOP"
+
+
+def stop_file_path(model_dir):
+    """Path to the graceful-stop sentinel for a run rooted at model_dir."""
+    return os.path.join(model_dir, STOP_FILENAME)
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -559,8 +582,7 @@ def main():
                          "like the d3 ruler -- never a training opponent. Set "
                          "equal to --gregory_depth to disable the second "
                          "anchor. One extra ~promote_games panel per gate.")
-    ap.add_argument("--model_dir", type=str,
-                    default=os.path.join("models", "expert_iter_v2"))
+    ap.add_argument("--model_dir", type=str, default=DEFAULT_MODEL_DIR)
     ap.add_argument("--blocks", type=int, default=0, help="0 = run forever.")
     ap.add_argument("--resume", action="store_true",
                     help="Continue from model_dir state if present, else fresh.")
@@ -600,6 +622,7 @@ def main():
     teacher_path = os.path.join(args.model_dir, "teacher.pt")
     student_path = os.path.join(args.model_dir, "student.pt")
     resume_path = os.path.join(args.model_dir, "resume.pt")
+    stop_path = stop_file_path(args.model_dir)
     store = ShardStore(os.path.join(args.model_dir, "data"))
 
     resuming = args.resume and os.path.isfile(state_path)
@@ -789,6 +812,15 @@ def main():
 
     try:
         while args.blocks == 0 or block < args.blocks:
+            # Graceful stop: a sentinel file beats a Windows console Ctrl+C,
+            # which the eval-server actors swallow (see stop_file_path above).
+            # Break here so the finally-block save runs and we exit 0; a block
+            # mid-promotion finishes first, so worst-case stop latency is one
+            # block (~70s during a promotion gauntlet, ~6s otherwise).
+            if os.path.exists(stop_path):
+                print(f"[!] STOP requested ({stop_path}) -- saving and exiting.",
+                      flush=True)
+                break
             t0 = time.perf_counter()
 
             # ---- 1. GENERATE ------------------------------------------------

@@ -7,6 +7,11 @@ cd /d "%~dp0"
 
 call "%~dp0stop_goat.bat"
 
+REM Fresh slate: a leftover STOP sentinel from a prior graceful stop must not
+REM immediately halt the new run before it makes any progress. (stop_goat and
+REM the supervisor both remove it, but delete here too as belt-and-suspenders.)
+if exist "models\expert_iter_v2\STOP" del /f /q "models\expert_iter_v2\STOP"
+
 echo Starting goat-train (expert iteration, dashboard: gui/alphazero/index.html)
 REM Window closes on exit so stop_goat.bat's wait loop can see it is gone;
 REM progress/state live in loss_logs + models/expert_iter_v2, not the console.

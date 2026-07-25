@@ -1,5 +1,6 @@
 """Regression tests for the expert-iteration v2 safety gates."""
 
+import os
 import tempfile
 import unittest
 
@@ -7,8 +8,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scripts.expert_iter import (ShardStore, _decayed_lr, _opponent_slice,
-                                 _promote_teacher, _promotion_decision)
+import scripts.goat_supervisor as goat_supervisor
+from scripts.expert_iter import (DEFAULT_MODEL_DIR, STOP_FILENAME, ShardStore,
+                                 _decayed_lr, _opponent_slice, _promote_teacher,
+                                 _promotion_decision, stop_file_path)
 from scripts.train_alphazero import (
     apply_dihedral_symmetry,
     _blend_value,
@@ -351,6 +354,48 @@ class ExpertIterationTests(unittest.TestCase):
             self.assertEqual(store.prune_tail_to_window(4, 4, 50, 0.0), (0, 0))
             self.assertEqual(store.prune_tail_to_window(4, 0, 50, 5.0), (0, 0))
             self.assertEqual(len(store._shard_files()), 5)
+
+
+class GracefulStopSentinelTests(unittest.TestCase):
+    """The STOP-file graceful stop -- reliable where a Windows console Ctrl+C
+    is swallowed by the eval-server's multiprocessing actors."""
+
+    def test_stop_file_lives_in_model_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = stop_file_path(d)
+            self.assertEqual(os.path.dirname(p), d)
+            self.assertEqual(os.path.basename(p), STOP_FILENAME)
+            # Detection is exactly the loop's `os.path.exists` check.
+            self.assertFalse(os.path.exists(p))
+            open(p, "w").close()
+            self.assertTrue(os.path.exists(p))
+
+    def test_supervisor_watches_same_sentinel_as_trainer(self):
+        # Drift guard: if these defaults diverge, the supervisor polls a
+        # different file than the trainer writes, and the graceful stop breaks
+        # silently (the child never stops, or the supervisor relaunches it).
+        self.assertEqual(DEFAULT_MODEL_DIR, goat_supervisor.DEFAULT_MODEL_DIR)
+        self.assertEqual(STOP_FILENAME, goat_supervisor.STOP_FILENAME)
+        self.assertEqual(
+            stop_file_path(DEFAULT_MODEL_DIR),
+            os.path.join(goat_supervisor.DEFAULT_MODEL_DIR,
+                         goat_supervisor.STOP_FILENAME))
+
+    def test_model_dir_from_argv_matches_child(self):
+        # Default (start_goat.bat passes no --model_dir).
+        self.assertEqual(
+            goat_supervisor._model_dir_from_argv(
+                ["--resume", "--actors", "16", "--eval_server"]),
+            DEFAULT_MODEL_DIR)
+        # Explicit override is honored, so the sentinel path still tracks it.
+        self.assertEqual(
+            goat_supervisor._model_dir_from_argv(
+                ["--resume", "--model_dir", os.path.join("models", "foo")]),
+            os.path.join("models", "foo"))
+        # A trailing --model_dir with no value must not IndexError.
+        self.assertEqual(
+            goat_supervisor._model_dir_from_argv(["--resume", "--model_dir"]),
+            DEFAULT_MODEL_DIR)
 
 
 if __name__ == "__main__":
