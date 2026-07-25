@@ -584,6 +584,14 @@ def main():
                          "anchor. One extra ~promote_games panel per gate.")
     ap.add_argument("--model_dir", type=str, default=DEFAULT_MODEL_DIR)
     ap.add_argument("--blocks", type=int, default=0, help="0 = run forever.")
+    ap.add_argument("--generate_only", action="store_true",
+                    help="Corpus mode: generate expert shards against a FROZEN "
+                         "teacher and do nothing else -- no training, no gates, "
+                         "no promotion, no startup baseline panels. Produces a "
+                         "student-independent dataset that any number of "
+                         "architectures can then be trained on offline. Pair "
+                         "with --shard_retain_mult 0 (the tail prune would eat "
+                         "the corpus) and a --model_dir of its own.")
     ap.add_argument("--resume", action="store_true",
                     help="Continue from model_dir state if present, else fresh.")
     ap.add_argument("--no_metrics", action="store_true")
@@ -767,23 +775,36 @@ def main():
               f"({saved_state.get('gregory_hard_depth')} -> "
               f"{args.gregory_hard_depth}) -- recomputing that baseline only")
         best_gregory_hard = None
-    if best_heur is None:
-        best_heur = _play_fixed_match(
-            raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
-    if best_random is None:
-        best_random = _play_fixed_match(
-            raw_teacher, _agent_fn(rnd), args.promote_games, seed=4401)
-    if best_gregory is None:
-        best_gregory = _play_fixed_match(
-            raw_teacher, _agent_fn(greg), args.promote_games, seed=8801)
-    if greg_hard_on and best_gregory_hard is None:
-        best_gregory_hard = _play_fixed_match(
-            raw_teacher, _agent_fn(greg_hard), args.promote_games, seed=8802)
-    hard_str = (f" | gregory(d{args.gregory_hard_depth})={best_gregory_hard:.3f}"
-                if greg_hard_on else "")
-    print(f"Inference promotion baseline | winblock={best_heur:.3f} | "
-          f"random={best_random:.3f} | gregory(d{args.gregory_depth})="
-          f"{best_gregory:.3f}{hard_str}")
+    if args.generate_only:
+        # Nothing is ever promoted in corpus mode, so the baselines the gate
+        # compares against are dead weight -- and they cost four sequential
+        # promote_games panels before the first shard is written.
+        best_heur = best_random = best_gregory = 0.0
+        best_gregory_hard = 0.0 if greg_hard_on else None
+        print(f"[corpus] generate-only: teacher FROZEN at gen {teacher_gen}; "
+              f"no training, gates, promotion or baseline panels")
+        if args.shard_retain_mult > 0:
+            print(f"[corpus] [!] --shard_retain_mult is "
+                  f"{args.shard_retain_mult}, so the tail prune will delete "
+                  f"the corpus as it is written. Pass --shard_retain_mult 0.")
+    else:
+        if best_heur is None:
+            best_heur = _play_fixed_match(
+                raw_teacher, _agent_fn(heur), args.promote_games, seed=3301)
+        if best_random is None:
+            best_random = _play_fixed_match(
+                raw_teacher, _agent_fn(rnd), args.promote_games, seed=4401)
+        if best_gregory is None:
+            best_gregory = _play_fixed_match(
+                raw_teacher, _agent_fn(greg), args.promote_games, seed=8801)
+        if greg_hard_on and best_gregory_hard is None:
+            best_gregory_hard = _play_fixed_match(
+                raw_teacher, _agent_fn(greg_hard), args.promote_games, seed=8802)
+        hard_str = (f" | gregory(d{args.gregory_hard_depth})="
+                    f"{best_gregory_hard:.3f}" if greg_hard_on else "")
+        print(f"Inference promotion baseline | winblock={best_heur:.3f} | "
+              f"random={best_random:.3f} | gregory(d{args.gregory_depth})="
+              f"{best_gregory:.3f}{hard_str}")
     last_gate_t = 0.0      # fire the first gate after the first block
     last_promote_t = time.time()
     t_start = time.time()
@@ -931,7 +952,7 @@ def main():
                         else steps_total)
             cur_lr = _decayed_lr(args.lr, lr_clock,
                                  args.lr_half_life_steps, args.lr_min)
-            if len(buffer) >= args.min_window:
+            if not args.generate_only and len(buffer) >= args.min_window:
                 for pg in optimizer.param_groups:
                     pg["lr"] = cur_lr
                 tl = pl = vl = 0.0
@@ -971,7 +992,8 @@ def main():
             wr_random = float("nan")
             gate_line = ""
             with torch.no_grad():
-                if time.time() - last_gate_t >= args.gate_min * 60:
+                if (not args.generate_only
+                        and time.time() - last_gate_t >= args.gate_min * 60):
                     tg0 = time.perf_counter()
                     stu_fn = _raw_fn(student.model, device, sample_moves=0)
                     wr_random = _play_fixed_match(
@@ -997,7 +1019,8 @@ def main():
                                      "to raw student; investigate if persistent"
 
                 # ---- 4. PROMOTE? --------------------------------------------
-                if (time.time() - last_promote_t >= args.promote_min * 60
+                if (not args.generate_only
+                        and time.time() - last_promote_t >= args.promote_min * 60
                         and len(buffer) >= args.min_window
                         and games_since_promotion >= args.min_promote_games
                         and not np.isnan(avg_loss)):

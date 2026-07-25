@@ -53,6 +53,27 @@ class ModelConfigCNN:
     label: str = "uninitiated_label"
     value_tanh: bool = False
 
+    # --- modern-tower options (all OFF by default) ----------------------- #
+    # When all three are falsy, ConvNet builds the EXACT legacy module graph,
+    # so every existing checkpoint still loads key-for-key. Turning any of
+    # them on produces a different (incompatible) state dict on purpose.
+    #
+    # residual:     interpret conv_channels as [stem_width] + [block_width]*N,
+    #               where each entry after the first is one residual block
+    #               holding TWO 3x3 convs of that width. Requires every block
+    #               width to equal the stem width.
+    # norm:         None | "group" | "batch". Normalization after every conv.
+    #               "group" has no running stats, so it is batch-size and
+    #               train/eval invariant -- safer under the eval server, where
+    #               wave sizes vary, and it exports to ONNX cleanly.
+    # head_squeeze: 0 keeps the legacy flatten->Linear heads (which spend ~78%
+    #               of a 7-layer net's parameters). >0 inserts an AlphaZero
+    #               style 1x1 conv down to this many channels BEFORE the
+    #               flatten (2 is the usual policy value).
+    residual: bool = False
+    norm: str = None
+    head_squeeze: int = 0
+
     def __post_init__(self):
         if self.fc_hidden_sizes is None:
             self.fc_hidden_sizes = [128]

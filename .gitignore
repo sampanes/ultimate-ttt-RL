@@ -45,6 +45,13 @@ models/alphazero*/
 # Expert-iteration runtime state (shards, state.json; checkpoints hit *.pt)
 models/expert_iter*/
 
+# Frozen distillation corpora (expert_iter --generate_only). Regenerable, and
+# large: the gen-22 corpus is 1.6 GB of shards. Never commit.
+models/corpus_*/
+
+# Offline architecture-A/B students + their panel json (RESULT_ARCH_AB.md)
+models/ab_arch/
+
 # home_batch.py outputs -- generated at home; report carries the local repo path,
 # scratch dir holds throwaway smoke/sweep/seed checkpoints. Paste-back only, never commit.
 home_batch_report.md

@@ -11,10 +11,64 @@ from engine.game import GameState
 
 import glob, re, os
 
+def _make_norm(channels, kind):
+    """Normalization layer for `channels` feature maps, or Identity if off."""
+    if not kind:
+        return nn.Identity()
+    if kind == "batch":
+        return nn.BatchNorm2d(channels)
+    if kind == "group":
+        # Largest group count <= 32 that divides the channel count. GroupNorm
+        # keeps no running stats, so batch size never changes the output.
+        groups = next((g for g in range(min(32, channels), 0, -1)
+                       if channels % g == 0), 1)
+        return nn.GroupNorm(groups, channels)
+    raise ValueError(f"Unsupported norm: {kind!r} (want None, 'group', 'batch')")
+
+
+class _ResBlock(nn.Module):
+    """Pre-AlphaZero-standard residual block: conv-norm-act-conv-norm + skip.
+
+    Two 3x3 convs at constant width. The skip is what lets gradient reach the
+    early layers -- the exact failure the 135-layer plain stack demonstrated,
+    where 82 of 135 conv layers never moved off their initialization.
+    """
+
+    def __init__(self, channels, norm, act_fn):
+        super().__init__()
+        bias = not norm  # a norm layer supplies its own shift
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=bias)
+        self.norm1 = _make_norm(channels, norm)
+        self.act1 = act_fn()
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=bias)
+        self.norm2 = _make_norm(channels, norm)
+        self.act2 = act_fn()
+
+    def forward(self, x):
+        y = self.act1(self.norm1(self.conv1(x)))
+        y = self.norm2(self.conv2(y))
+        return self.act2(x + y)
+
+
 class ConvNet(nn.Module):
     def __init__(self, cfg: ModelConfigCNN):
         super().__init__()
 
+        residual = getattr(cfg, "residual", False)
+        norm = getattr(cfg, "norm", None)
+        squeeze = getattr(cfg, "head_squeeze", 0)
+        self.value_tanh = getattr(cfg, 'value_tanh', False)
+
+        if not residual and not norm and not squeeze:
+            self._build_legacy(cfg)
+            return
+        self._build_tower(cfg, residual, norm, squeeze)
+
+    # ------------------------------------------------------------------ #
+    # Legacy graph -- must stay byte-identical, every shipped checkpoint
+    # (arena:21, arena:22, gen-19, gen-22, the lottery) has these keys.
+    # ------------------------------------------------------------------ #
+    def _build_legacy(self, cfg):
         layers = []
         in_channels = cfg.input_channels
         for out_channels in cfg.conv_channels:
@@ -43,7 +97,65 @@ class ConvNet(nn.Module):
             nn.ReLU(),
             nn.Linear(256, 1),
         )
-        self.value_tanh = getattr(cfg, 'value_tanh', False)
+
+    # ------------------------------------------------------------------ #
+    # Modern graph: stem -> residual tower -> 1x1-squeezed heads.
+    # ------------------------------------------------------------------ #
+    def _build_tower(self, cfg, residual, norm, squeeze):
+        def act_fn():
+            return self._to_module_activation(cfg.activation)
+
+        widths = list(cfg.conv_channels)
+        if not widths:
+            raise ValueError("conv_channels must be non-empty")
+        bias = not norm
+
+        stem_width = widths[0]
+        layers = [nn.Conv2d(cfg.input_channels, stem_width, 3, padding=1, bias=bias),
+                  _make_norm(stem_width, norm), act_fn()]
+        in_channels = stem_width
+
+        for out_channels in widths[1:]:
+            if residual:
+                if out_channels != in_channels:
+                    raise ValueError(
+                        "residual=True needs a constant-width tower: "
+                        f"block width {out_channels} != stem width {in_channels}. "
+                        "Use conv_channels=[W] + [W] * n_blocks.")
+                layers.append(_ResBlock(in_channels, norm, act_fn))
+            else:
+                layers.extend([
+                    nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=bias),
+                    _make_norm(out_channels, norm), act_fn()])
+                in_channels = out_channels
+
+        self.conv_layers = nn.Sequential(*layers)
+
+        # The whole point of the squeeze: collapse the channel axis with a 1x1
+        # conv BEFORE flattening, so the first Linear sees squeeze*81 inputs
+        # instead of channels*81. On the arena22 shape that is 10,368 -> 162.
+        pol_ch = max(1, squeeze) if squeeze else in_channels
+        val_ch = 1 if squeeze else in_channels
+
+        pol = []
+        if squeeze:
+            pol += [nn.Conv2d(in_channels, pol_ch, 1, bias=bias),
+                    _make_norm(pol_ch, norm), act_fn()]
+        pol.append(nn.Flatten())
+        in_dim = pol_ch * 81
+        for h in cfg.fc_hidden_sizes:
+            pol += [nn.Linear(in_dim, h), act_fn()]
+            in_dim = h
+        pol.append(nn.Linear(in_dim, cfg.output_size))
+        self.policy_head = nn.Sequential(*pol)
+
+        val = []
+        if squeeze:
+            val += [nn.Conv2d(in_channels, val_ch, 1, bias=bias),
+                    _make_norm(val_ch, norm), act_fn()]
+        val += [nn.Flatten(), nn.Linear(val_ch * 81, 256), act_fn(),
+                nn.Linear(256, 1)]
+        self.value_head = nn.Sequential(*val)
 
     def forward(self, x):
         if x.dim() == 3:
