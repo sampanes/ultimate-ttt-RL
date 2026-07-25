@@ -133,50 +133,85 @@ class ExpertIterationTests(unittest.TestCase):
         # 0 disables decay entirely
         self.assertAlmostEqual(_decayed_lr(1e-3, 500_000, 0, 1e-4), 1e-3)
 
-    def test_promotion_requires_head_to_head_and_absolute_progress(self):
+    def test_head_to_head_is_the_only_improvement_criterion(self):
+        # Beating the teacher is sufficient when nothing has regressed, even
+        # though winblock did NOT improve on its baseline. Under the old
+        # "+margin over best_heur" rule this exact case was rejected, which is
+        # what deadlocked gen 22 for 564k games.
+        base = dict(random_score=0.70, best_random=0.71, threshold=0.55,
+                    heur_tolerance=0.03, random_tolerance=0.03,
+                    panel_games=300, noise_sigmas=2.5)
         promote, failed = _promotion_decision(
-            head_to_head=0.60,
-            heur_score=0.32,
-            random_score=0.70,
-            best_heur=0.28,
-            best_random=0.71,
-            threshold=0.55,
-            absolute_margin=0.02,
-            random_tolerance=0.03,
-        )
+            head_to_head=0.60, heur_score=0.28, best_heur=0.28, **base)
         self.assertTrue(promote)
         self.assertEqual(failed, [])
 
+        # Losing to the teacher is fatal no matter how good the guards look.
         promote, failed = _promotion_decision(
-            head_to_head=0.60,
-            heur_score=0.29,
-            random_score=0.70,
-            best_heur=0.28,
-            best_random=0.71,
-            threshold=0.55,
-            absolute_margin=0.02,
-            random_tolerance=0.03,
-        )
+            head_to_head=0.54, heur_score=0.90, best_heur=0.28, **base)
         self.assertFalse(promote)
-        self.assertIn("winblock", failed)
+        self.assertEqual(failed, ["head_to_head"])
 
+        # A saturated winblock baseline can no longer block anything: at 1.0
+        # the old rule demanded min(1.0, 1.02) == 1.0, i.e. a perfect panel.
         promote, failed = _promotion_decision(
-            head_to_head=0.60,
-            heur_score=1.0,
-            random_score=0.99,
-            best_heur=1.0,
-            best_random=1.0,
-            threshold=0.55,
-            absolute_margin=0.02,
-            random_tolerance=0.03,
-        )
+            head_to_head=0.60, heur_score=0.99, best_heur=1.0,
+            random_score=0.99, best_random=1.0, threshold=0.55,
+            heur_tolerance=0.03, random_tolerance=0.03,
+            panel_games=300, noise_sigmas=2.5)
         self.assertTrue(promote)
         self.assertEqual(failed, [])
+
+    def test_winblock_guard_catches_real_regression_only(self):
+        base = dict(head_to_head=0.60, random_score=0.70, best_random=0.71,
+                    threshold=0.55, heur_tolerance=0.03,
+                    random_tolerance=0.03, panel_games=300, noise_sigmas=2.5)
+        # A REBASED bar: the teacher measured at its true 0.900. sigma there
+        # is 0.01732, so the floor is 0.900 - 2.5*0.01732 = 0.8567 and honest
+        # draws around the mean all pass -- including one a full sigma low.
+        promote, failed = _promotion_decision(
+            heur_score=0.9002, best_heur=0.900, **base)
+        self.assertTrue(promote)
+        promote, failed = _promotion_decision(
+            heur_score=0.8829, best_heur=0.900, **base)
+        self.assertTrue(promote)
+        # A genuine collapse still blocks, on its own named gate.
+        promote, failed = _promotion_decision(
+            heur_score=0.80, best_heur=0.900, **base)
+        self.assertFalse(promote)
+        self.assertIn("winblock_regression", failed)
+        # Guard rail on the migration: noise widening alone does NOT make the
+        # legacy cursed bar safe. 0.9267 against a lineage at 0.9002 still
+        # blocks a mildly unlucky panel, which is why states below schema 5
+        # are force-rebased on load rather than merely tolerated.
+        promote, failed = _promotion_decision(
+            heur_score=0.8829, best_heur=0.9267, **base)
+        self.assertFalse(promote)
+
+    def test_tolerances_widen_with_panel_noise(self):
+        # sigma is largest near 0.5 and shrinks as the panel grows, so the
+        # same absolute drop must be tolerated on a small panel and caught on
+        # a large one. This is the property that keeps a guard from firing on
+        # an unlucky draw.
+        base = dict(head_to_head=0.60, heur_score=0.50, best_heur=0.56,
+                    random_score=0.70, best_random=0.71, threshold=0.55,
+                    heur_tolerance=0.03, random_tolerance=0.03,
+                    noise_sigmas=2.5)
+        small, _ = _promotion_decision(panel_games=100, **base)
+        large, _ = _promotion_decision(panel_games=5000, **base)
+        self.assertTrue(small)    # 2.5 sigma ~ 0.124 -> inside noise
+        self.assertFalse(large)   # 2.5 sigma ~ 0.018 -> a real regression
+        # noise_sigmas=0 restores the pre-existing flat-tolerance behaviour.
+        flat, failed = _promotion_decision(
+            panel_games=100, **{**base, "noise_sigmas": 0.0})
+        self.assertFalse(flat)
+        self.assertIn("winblock_regression", failed)
 
     def test_gregory_gate_self_arms(self):
         base = dict(head_to_head=0.60, heur_score=0.32, random_score=0.70,
                     best_heur=0.28, best_random=0.71, threshold=0.55,
-                    absolute_margin=0.02, random_tolerance=0.03)
+                    heur_tolerance=0.03, random_tolerance=0.03,
+                    panel_games=300, noise_sigmas=0.0)
         # Unarmed (best below gregory_arm): even a to-zero drop is
         # noise-floor and must stay report-only.
         promote, failed = _promotion_decision(
@@ -204,7 +239,8 @@ class ExpertIterationTests(unittest.TestCase):
         # is attributable to the deeper d4 anchor alone.
         base = dict(head_to_head=0.60, heur_score=0.32, random_score=0.70,
                     best_heur=0.28, best_random=0.71, threshold=0.55,
-                    absolute_margin=0.02, random_tolerance=0.03,
+                    heur_tolerance=0.03, random_tolerance=0.03,
+                    panel_games=300, noise_sigmas=0.0,
                     gregory_score=0.30, best_gregory=0.20,
                     gregory_tolerance=0.03, gregory_arm=0.10)
         # Hard anchor unarmed (best below arm): a to-zero drop is noise-floor

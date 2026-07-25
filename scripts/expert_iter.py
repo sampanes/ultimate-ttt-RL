@@ -53,6 +53,7 @@ Run (cmd, from repo root; start_goat.bat / stop_goat.bat wrap this):
 
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -356,41 +357,89 @@ def _decayed_lr(base_lr, steps_total, half_life_steps, lr_min):
     return max(lr_min, base_lr * 0.5 ** (steps_total / half_life_steps))
 
 
+def _panel_sigma(score, games):
+    """Binomial standard error of a fixed-panel score.
+
+    Every panel number in this file is a mean over `games` results, so it
+    carries roughly this much noise no matter what the net did. At the 300-game
+    default a score near 0.90 has sigma ~0.017 and one near 0.50 has ~0.029 --
+    which is why a fixed 0.02-0.03 threshold on a panel score is not a
+    measurement of anything.
+    """
+    p = min(max(score, 0.0), 1.0)
+    return math.sqrt(max(p * (1.0 - p), 1e-12) / max(games, 1))
+
+
+def _regressed(score, best, tolerance, games, sigmas):
+    """True only when `score` sits below `best` by more than noise explains.
+
+    The floor is max(tolerance, sigmas * sigma): the caller's absolute
+    tolerance still applies, but it is widened whenever panel noise is the
+    larger of the two so a guard cannot fire on an unlucky draw.
+    """
+    if score is None or best is None:
+        return False
+    return score < best - max(tolerance, sigmas * _panel_sigma(best, games))
+
+
 def _promotion_decision(head_to_head, heur_score, random_score,
                         best_heur, best_random, threshold,
-                        absolute_margin, random_tolerance,
+                        heur_tolerance, random_tolerance,
                         gregory_score=None, best_gregory=None,
                         gregory_tolerance=0.03, gregory_arm=0.10,
-                        gregory_hard_score=None, best_gregory_hard=None):
+                        gregory_hard_score=None, best_gregory_hard=None,
+                        panel_games=300, noise_sigmas=2.5):
     """Return (promote, failed gates) for an inference-objective promotion.
 
-    The gregory gate is a no-regression check against a depth-limited
-    alpha-beta anchor -- the one panel opponent that is fully independent of
-    the training gene pool (GRADING_AND_ORACLE.md). It self-arms: below
-    gregory_arm the score is noise-floor territory (raw nets currently score
-    ~0.03 vs depth 3) and regressions there are meaningless, so it is
-    report-only until the lineage first reaches gregory_arm.
+    ONE criterion decides whether the student is better, and it is
+    head_to_head: the student's score against the current teacher on fixed
+    openings. It is the only panel here that cannot saturate -- it is centred
+    on 0.500 by construction at every generation, however strong the lineage
+    gets -- so it is the only one that can carry an improvement requirement.
 
-    The optional gregory_hard gate is a second, deeper alpha-beta anchor with
-    identical self-arming semantics (same gregory_arm and gregory_tolerance).
-    It is the next honest ruler for when the shallower one saturates; while
-    the lineage is still below the arm against it (the common early case) it
-    is report-only and never blocks a promotion.
+    Every other panel is a NO-REGRESSION guard, not a progress bar. They exist
+    to catch a student that beat the teacher by exploiting it specifically
+    while getting worse in general; they are not asked to improve.
+
+    That split is the fix for the gen-22 plateau (RESULT_GATE_PLATEAU.md).
+    winblock used to carry an absolute "+margin over best_heur" requirement.
+    By gen 22 winblock had saturated near 0.90 where a 300-game panel has
+    sigma ~0.017, and best_heur was assigned from the single draw that
+    promoted -- a value selected for being high. Demanding another +0.02 on
+    top put the bar 2.69 sigma above the lineage's actual strength: 127
+    consecutive promotion attempts failed it, 52 of them on winblock alone,
+    and 564k games produced no promotion while the student was genuinely
+    beating the teacher (mean head_to_head 0.545).
+
+    Guards are noise-aware for the same reason -- see _regressed. A flat 0.03
+    tolerance against a bar drawn near 0.90 fires on ~40% of honest panels,
+    which is a coin toss wearing a lab coat, not a safety check.
+
+    The gregory gates are no-regression checks against depth-limited
+    alpha-beta anchors -- the panel opponents fully independent of the
+    training gene pool (GRADING_AND_ORACLE.md). They self-arm: below
+    gregory_arm the score is noise-floor territory and regressions there are
+    meaningless, so they stay report-only until the lineage first reaches it.
+    The gregory_hard anchor is the deeper of the two, with identical
+    self-arming semantics, and is the honest ruler for when the shallower one
+    saturates.
     """
     failed = []
     if head_to_head < threshold:
         failed.append("head_to_head")
-    if heur_score < min(1.0, best_heur + absolute_margin):
-        failed.append("winblock")
-    if random_score < best_random - random_tolerance:
+    if _regressed(heur_score, best_heur, heur_tolerance,
+                  panel_games, noise_sigmas):
+        failed.append("winblock_regression")
+    if _regressed(random_score, best_random, random_tolerance,
+                  panel_games, noise_sigmas):
         failed.append("random_regression")
-    if (gregory_score is not None and best_gregory is not None
-            and best_gregory >= gregory_arm
-            and gregory_score < best_gregory - gregory_tolerance):
+    if (best_gregory is not None and best_gregory >= gregory_arm
+            and _regressed(gregory_score, best_gregory, gregory_tolerance,
+                           panel_games, noise_sigmas)):
         failed.append("gregory_regression")
-    if (gregory_hard_score is not None and best_gregory_hard is not None
-            and best_gregory_hard >= gregory_arm
-            and gregory_hard_score < best_gregory_hard - gregory_tolerance):
+    if (best_gregory_hard is not None and best_gregory_hard >= gregory_arm
+            and _regressed(gregory_hard_score, best_gregory_hard,
+                           gregory_tolerance, panel_games, noise_sigmas)):
         failed.append("gregory_hard_regression")
     return not failed, failed
 
@@ -552,10 +601,30 @@ def main():
                     help="Raw student score vs raw teacher on fixed openings.")
     ap.add_argument("--min_promote_games", type=int, default=1000,
                     help="Minimum new expert games between teacher changes.")
-    ap.add_argument("--promote_margin", type=float, default=0.02,
-                    help="Required absolute WinBlock score improvement.")
+    ap.add_argument("--winblock_tolerance", type=float, default=0.03,
+                    help="Maximum allowed regression against WinBlock. This "
+                         "is a no-regression guard, NOT a progress bar -- the "
+                         "improvement requirement lives entirely on "
+                         "--promote_thresh, the one panel that cannot "
+                         "saturate. Was --promote_margin, an absolute "
+                         "improvement requirement that deadlocked the lineage "
+                         "for 564k games (see _promotion_decision).")
     ap.add_argument("--random_tolerance", type=float, default=0.03,
                     help="Maximum allowed regression against random.")
+    ap.add_argument("--noise_sigmas", type=float, default=2.5,
+                    help="Every no-regression tolerance is widened to at "
+                         "least this many binomial standard errors of the "
+                         "panel, so a guard fires on real regressions rather "
+                         "than on an unlucky draw. 0 restores flat "
+                         "tolerances.")
+    ap.add_argument("--rebase_baselines", action="store_true",
+                    help="Re-measure the no-regression baselines against the "
+                         "CURRENT teacher at startup instead of restoring "
+                         "them from state.json. The saved bars are whatever "
+                         "the promoting student happened to score, which is a "
+                         "draw selected for being high; rebasing replaces "
+                         "that with an unbiased measurement of the teacher "
+                         "actually in hand. Costs one panel per anchor.")
     ap.add_argument("--gregory_depth", type=int, default=3,
                     help="Depth of the alpha-beta anchor measured at every "
                          "promotion check. Gregory is the one panel opponent "
@@ -767,6 +836,28 @@ def main():
         best_random = None
         best_gregory = None
         best_gregory_hard = None
+    # Bars written before schema 5 are winner's-cursed and MUST be rebased.
+    # Under the old rule winblock was itself the promotion criterion, so
+    # best_heur was assigned from a panel selected for being high -- gen 22's
+    # 0.9267 against a lineage truly at 0.9002, a full 1.5 sigma of pure
+    # selection bias, which no tolerance can safely absorb. From schema 5 on,
+    # promotion is decided by head_to_head, a DIFFERENT panel against a
+    # different opponent, so the winblock draw that comes along with it is
+    # unbiased and the bar can simply track it.
+    stale_bars = bool(saved_state) and saved_state.get("schema_version", 0) < 5
+    if saved_state and (args.rebase_baselines or stale_bars):
+        why = ("--rebase_baselines" if args.rebase_baselines
+               else f"state schema v{saved_state.get('schema_version', 0)} "
+                    f"predates the gate fix, so its bars are winner's-cursed")
+        print(f"[!] rebasing promotion baselines ({why}): discarding "
+              f"winblock={saved_state.get('best_heur')}, "
+              f"random={saved_state.get('best_random')}, "
+              f"gregory={saved_state.get('best_gregory')} -- re-measuring vs "
+              f"the current teacher")
+        best_heur = None
+        best_random = None
+        best_gregory = None
+        best_gregory_hard = None
     if (saved_state and greg_hard_on and best_gregory_hard is not None
             and saved_state.get("gregory_hard_depth") != args.gregory_hard_depth):
         # A different deeper depth is a different opponent; its baseline does
@@ -826,7 +917,11 @@ def main():
                                               if greg_hard_on else None),
                        "promote_panel": args.promote_games,
                        "network": args.network,
-                       "schema_version": 4}, f)
+                       # 5: head_to_head is the sole improvement criterion and
+                       # the other bars are noise-aware regression floors.
+                       # Older states carry winner's-cursed bars and are
+                       # rebased on load.
+                       "schema_version": 5}, f)
 
     print(f"Expert iteration on {device} | network={args.network} | "
           f"teacher_sims={args.teacher_sims} | window={args.window}")
@@ -1054,13 +1149,19 @@ def main():
                     promote, failed = _promotion_decision(
                         score, promote_heur, promote_random,
                         best_heur, best_random, args.promote_thresh,
-                        args.promote_margin, args.random_tolerance,
+                        args.winblock_tolerance, args.random_tolerance,
                         gregory_score=promote_greg,
                         best_gregory=best_gregory,
                         gregory_tolerance=args.gregory_tolerance,
                         gregory_arm=args.gregory_arm,
                         gregory_hard_score=promote_greg_hard,
-                        best_gregory_hard=best_gregory_hard)
+                        best_gregory_hard=best_gregory_hard,
+                        panel_games=args.promote_games,
+                        noise_sigmas=args.noise_sigmas)
+                    # Persist WHICH gate blocked. Attributing the last deadlock
+                    # meant replaying the decision logic over 90k metric rows
+                    # because only the scores were ever written down.
+                    extra["promote_failed"] = ",".join(failed)
                     if promote:
                         teacher_gen += 1
                         teacher_tanh = _promote_teacher(teacher, student)
@@ -1071,12 +1172,20 @@ def main():
                             # would generate from the OLD teacher forever. Must
                             # follow _save_teacher -- they reload from that file.
                             actor_pool.reload_weights(teacher_path)
+                        # Track the teacher we now hold, not the luckiest draw
+                        # ever seen. A running max only ever ratchets upward,
+                        # and since it ratchets on the SELECTED (high) panels
+                        # it climbs above the lineage's true strength and never
+                        # comes back down -- best_gregory had crept to 0.813
+                        # against a real 0.798, which is what left its guard
+                        # firing on 27% of honest panels. These bars are
+                        # regression floors; head_to_head is what stops the
+                        # lineage walking downhill.
                         best_heur = promote_heur
-                        best_random = max(best_random, promote_random)
-                        best_gregory = max(best_gregory, promote_greg)
+                        best_random = promote_random
+                        best_gregory = promote_greg
                         if greg_hard_on:
-                            best_gregory_hard = max(best_gregory_hard,
-                                                    promote_greg_hard)
+                            best_gregory_hard = promote_greg_hard
                         games_since_promotion = 0
                         # New generation = new distillation problem; restart
                         # the LR decay clock with the buffer.
@@ -1100,10 +1209,18 @@ def main():
                         greg_hard_n = (f" | gregory(d{args.gregory_hard_depth})="
                                        f"{promote_greg_hard*100:.0f}%"
                                        if greg_hard_on else "")
+                        # Print the floor actually applied, not the raw bar --
+                        # reading "best 93%" while the guard was really at 88%
+                        # is how the last deadlock stayed invisible in the log.
+                        win_floor = best_heur - max(
+                            args.winblock_tolerance,
+                            args.noise_sigmas * _panel_sigma(
+                                best_heur, args.promote_games))
                         print(f"     no promotion ({','.join(failed)}): "
-                              f"head={score*100:.0f}% | "
+                              f"head={score*100:.0f}% "
+                              f"(need {args.promote_thresh*100:.0f}%) | "
                               f"winblock={promote_heur*100:.0f}% "
-                              f"(best {best_heur*100:.0f}%) | "
+                              f"(floor {win_floor*100:.0f}%) | "
                               f"random={promote_random*100:.0f}% | "
                               f"gregory={promote_greg*100:.0f}%{greg_hard_n} | "
                               f"{time.perf_counter()-tp0:.0f}s")
