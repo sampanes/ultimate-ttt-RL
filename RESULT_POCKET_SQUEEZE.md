@@ -89,23 +89,48 @@ None of these were the task; all of them blocked or silently corrupted it.
    was set to the manifest's file path. Both are now real fields
    (`--label`, `--description`, `--config-version`).
 
+## Browser verification (done 2026-07-26, Chrome via the extension)
+
+Served `docs/` locally and clicked through the real play page.
+
+- The page loads `pocket:squeeze-gen22`, `696,567` bytes -- byte-exact match to
+  the exported artifact.
+- **Easy, Medium and Hard all play legal moves.** Playing X at cell 40 (centre
+  of the centre mini-board) drew O at cell 37 on Easy/Medium and cell 44 on
+  Hard, both inside mini-board 4 as the send-rule requires. Hard runs the
+  champion and is unaffected by this swap, as expected.
+- **The `policy_logits` shape warning is confirmed COSMETIC.** Running the
+  deployed ONNX in-browser on identical input at batch 1 and batch 32:
+
+  | | batch 1 | batch 32 |
+  |---|---|---|
+  | runtime dims | `[81]` | `[32, 81]` |
+  | max abs diff vs batch 1 | -- | **0** (policy and value) |
+
+  onnxruntime-web resolves the true shape at runtime despite the graph metadata
+  declaring `{-1}`, and all 32 rows are bit-identical to the single-input
+  result. Nothing is mis-sliced.
+
+  It is *not* harmless noise, though: the warning fires at `{32,81}` on **every
+  move**, roughly nine times per move, and Chrome surfaces it at ERROR level.
+  So the pocket net IS driven by the batched wave-32 MCTS -- batching is not
+  champion-only, which is worth knowing -- and the console is unusable for real
+  debugging while it spams.
+
 ## Known issues, deliberately not fixed here
 
 - **The exported graph mis-declares `policy_logits`.** `forward_both` squeezes
-  the batch dimension at trace time, so the output is 1-D at batch 1 and the
-  axis labelled `batch` is actually the 81 moves; onnxruntime warns at batch > 1
-  (`Expected shape {-1} ... actual {64,81}`). The values are correct -- parity
-  passes -- and **all three deployed models share this signature**, including
-  the live champion, so this ship introduces no regression. Fixing it changes
-  the graph contract for a page that cannot be click-tested from here, which
-  does not belong in the same change as a model swap.
+  the batch dimension at trace time, so the traced output is 1-D and the axis
+  labelled `batch` is really the 81 moves. Verified above to be cosmetic, and
+  **all three deployed models share this signature**, including the live
+  champion -- so this ship introduces no regression. Worth fixing on its own,
+  for the console noise, with its own browser test.
 - `docs/models/model_int8.onnx` is now stale: it is the quantized *previous*
   model. It is gitignored, is not served (ConvInteger is unsupported by
   onnxruntime-web WASM), and the new fp32 is smaller than that int8 was, so
   quantization is moot at this budget. Left in place per the .gitignore note
   that keeps it for re-quantization experiments.
-- **Not browser-tested.** The artifacts are correct and parity-verified, but no
-  click-through has been done, and nothing has been pushed to Pages.
+- **Not pushed.** Verified locally end to end; nothing has gone to Pages.
 
 ## Reproduce
 
