@@ -33,19 +33,33 @@ candidate's own oracle stronger, so a better net can score lower on it).
 
 | Field | Value |
 |---|---|
-| Selector | `arena:21@hof` (`06-26-26`) |
-| Architecture | conv=`[32,128,32,32]` fc=`[128,256,512]` |
-| Parameters | 1,287,314 |
-| fp32 bytes | 5,156,981 (5.16 MB) |
-| int8 estimate | ~1.29 MB (clears the M3 <= 5 MB gate) |
-| SHA-256 (fp32 source) | `7498a31f3368f9c018713e346ee9dbfebf96de704860154ead4813c0bff1ca9d` |
-| Move latency (raw) | ~0.77 ms CPU / ~1.08 ms CUDA (single position) |
-| M2 aggregate (tactical) | 0.733 vs anchors; 0.333 vs its own 400-sim oracle |
-| GOLD blunder (tactical vs center) | 7.75% |
-| Ships as | quantized ONNX in `docs/` (M3) |
+| Selector | `pocket:squeeze-gen22` (`models/pocket_candidate/manifest.json`) |
+| Architecture | conv=`[56,56,56,56]` fc=`[256]` **`head_squeeze=2`**, tanh value head |
+| Parameters | **172,389** (7.5x fewer than the superseded champion) |
+| fp32 bytes | 697,117 (0.70 MB) -- no quantization needed to clear the 5 MB gate |
+| SHA-256 (fp32 source) | `b028d3499eca8b1049c5cdbe0a6deed2f056851afad68fe0858ca778af09123b` |
+| ONNX SHA-256 (`docs/models/model.onnx`) | `ce7e89943d82513f66922777797f327028ae6604d886aafa7624841890880483` |
+| ONNX bytes | 696,567 (680 KB, was 5,035 KB -- a 7.4x smaller download) |
+| Direct h2h vs prior champion | **0.9833** (300 games, raw, fixed openings, colour-swapped, seed 9901) |
+| 300-game panel (raw) | random 0.983, winblock 0.905, gregory-d3 0.728, gregory-d4 0.653 |
+| M2 panel | wins **15/15** cells vs the incumbent (raw/tactical/mcts_25 x 5 anchors) |
+| Ships as | fp32 ONNX `docs/models/model.onnx` |
 
-Rejection note for the strength net at this budget: `arena:22` is ~6.8 MB int8,
-missing the 5 MB gate, so it cannot be the pocket champion despite being stronger.
+Promoted 2026-07-26, full certification in `RESULT_POCKET_SQUEEZE.md`. A
+distilled expert-iteration student, not an arena self-play net: trained offline
+on MCTS-200 targets from the frozen gen-22 teacher, using the `head_squeeze`
+1x1-conv head from `RESULT_ARCH_AB.md`. That head change is the entire size win
+-- the legacy heads flattened the whole conv stack into a Linear and held 83.6%
+of the parameters.
+
+Superseded: `arena:21@hof` (`06-26-26`, SHA `7498a31f...`, 1,287,314 params,
+5.16 MB). It lost every cell of both panels, including **0.067 vs gregory-d3 and
+0.158 vs winblock at 300 games** -- the historic winblock blind spot that the
+oracle track closed at gen-19 was still shipping in the pocket slot.
+
+Rejection note retained for the record: `arena:22` is ~6.8 MB int8 and misses
+the 5 MB gate. That constraint no longer binds -- the current champion is 0.70
+MB fp32, so strength, not size, is the live limit at this budget.
 
 ## Oracle champion (current)
 

@@ -80,6 +80,56 @@ def _export_fp32(agent, out_path: Path) -> Path:
     return fp32
 
 
+def _verify_parity(agent, onnx_path: Path, n: int = 64, tol: float = 2e-4) -> None:
+    """Check the exported graph reproduces the torch model, or fail the export.
+
+    Nothing else in this pipeline compares the ONNX against the net it came
+    from, so a tracing error would ship silently to every browser. That risk is
+    not hypothetical for new architectures: head_squeeze inserts a 1x1 conv
+    before the flatten, which is exactly the kind of reshape boundary an
+    exporter can get wrong while still producing a well-formed graph.
+
+    Compares raw policy logits and value on random INPUT-SHAPED tensors, and
+    -- what actually matters for play -- that the argmax move agrees.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("[!] onnxruntime not installed -- SKIPPING parity check. The "
+              "exported graph is unverified.", file=sys.stderr)
+        return
+
+    sess = ort.InferenceSession(str(onnx_path),
+                                providers=["CPUExecutionProvider"])
+    gen = torch.Generator().manual_seed(20260726)
+    x = torch.rand(n, 7, 9, 9, generator=gen)
+    # Channels are indicator planes in real use; round most of them so the
+    # probe looks like reachable input rather than pure noise.
+    x[:, :6] = (x[:, :6] > 0.85).float()
+    x[:, 6] = 1.0
+
+    with torch.no_grad():
+        t_pol, t_val = agent.model.forward_both(x)
+    t_pol = t_pol.reshape(n, -1).cpu().numpy()
+    t_val = t_val.reshape(n).cpu().numpy()
+
+    o_pol, o_val = sess.run(["policy_logits", "value"],
+                            {"input": x.numpy()})
+    o_pol = o_pol.reshape(n, -1)
+    o_val = o_val.reshape(n)
+
+    dp = float(abs(t_pol - o_pol).max())
+    dv = float(abs(t_val - o_val).max())
+    agree = int((t_pol.argmax(1) == o_pol.argmax(1)).sum())
+    print(f"[..] parity vs torch on {n} probes: max|dpolicy|={dp:.2e} "
+          f"max|dvalue|={dv:.2e} argmax agreement {agree}/{n}")
+    if dp > tol or dv > tol or agree != n:
+        raise SystemExit(
+            f"[X] ONNX PARITY FAILED (tol {tol:.0e}) -- refusing to ship. "
+            f"max|dpolicy|={dp:.2e} max|dvalue|={dv:.2e} argmax {agree}/{n}")
+    print("[OK] parity verified")
+
+
 def _quantize(fp32_path: Path) -> Path:
     try:
         from onnxruntime.quantization import quantize_dynamic, QuantType
@@ -95,13 +145,21 @@ def _quantize(fp32_path: Path) -> Path:
     return int8
 
 
+DEFAULT_DESCRIPTION = "Policy-gradient self-play, 1-ply tactical overlay at eval."
+
+
 def _write_config(out_dir: Path, label: str, model_file: str, fp32_kb: int, int8_kb: int | None,
-                  value_tanh: bool = False):
+                  value_tanh: bool = False, description: str = DEFAULT_DESCRIPTION,
+                  version: str = "m3-r1"):
     """Write/update docs/models/model_config.json.
 
     This JSON is the ONLY coupling between the export pipeline and the browser.
-    To swap the agent: re-run this script; only 'name', 'version', and 'file'
-    change. The input/output tensor spec is fixed by the game encoding.
+    The input/output tensor spec is fixed by the game encoding.
+
+    'description' used to be hardcoded to the policy-gradient blurb, so every
+    exported model claimed to be PG self-play no matter how it was trained --
+    the pocket champion swap to a distilled expert-iteration student would have
+    shipped a description of the model it replaced.
     """
     cfg = {
         "_swap_guide": (
@@ -109,8 +167,8 @@ def _write_config(out_dir: Path, label: str, model_file: str, fp32_kb: int, int8
             "This file is rewritten automatically. Only name/version/file ever change."
         ),
         "name":        label,
-        "version":     "m3-r1",
-        "description": "Policy-gradient self-play, 1-ply tactical overlay at eval.",
+        "version":     version,
+        "description": description,
         "file":        f"./{model_file}",
         "fp32_kb":     fp32_kb,
         "int8_kb":     int8_kb,
@@ -156,6 +214,19 @@ def main():
                          "mode; --candidate manifests declare value_tanh themselves.")
     ap.add_argument("--device", type=str, default="cpu",
                     help="Torch device for export (cpu recommended).")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="Skip the ONNX-vs-torch parity check. Do not use for "
+                         "anything that ships.")
+    ap.add_argument("--label", type=str, default="",
+                    help="Name written to model_config.json. Defaults to the "
+                         "manifest's own label, or the --candidate string.")
+    ap.add_argument("--description", type=str, default=DEFAULT_DESCRIPTION,
+                    help="How this net was trained. The default describes "
+                         "policy-gradient self-play -- override it for "
+                         "anything else or the config will misdescribe what "
+                         "ships.")
+    ap.add_argument("--config-version", type=str, default="m3-r1",
+                    help="'version' field in model_config.json.")
     args = ap.parse_args()
 
     if not args.candidate and not args.checkpoint:
@@ -173,7 +244,9 @@ def main():
     if args.candidate:
         spec  = resolve_candidate(args.candidate)
         agent = _build_base_candidate(spec, device)
-        label = args.candidate
+        # A manifest path is not a model name; prefer the label the manifest
+        # declares so the browser config says what it is running.
+        label = getattr(spec, "label", "") or args.candidate
         value_tanh = spec.value_tanh
     else:
         if not os.path.isfile(args.checkpoint):
@@ -191,6 +264,8 @@ def main():
 
     print(f"Exporting: {label}")
     fp32     = _export_fp32(agent, out_dir / "model.onnx")
+    if not args.no_verify:
+        _verify_parity(agent, fp32)
     fp32_kb  = fp32.stat().st_size // 1024
     int8_kb  = None
     deployed = "model.onnx"
@@ -200,7 +275,9 @@ def main():
         int8_kb = int8.stat().st_size // 1024
         deployed = "model_int8.onnx"
 
-    _write_config(out_dir, label, deployed, fp32_kb, int8_kb, value_tanh=value_tanh)
+    _write_config(out_dir, args.label or label, deployed, fp32_kb, int8_kb,
+                  value_tanh=value_tanh, description=args.description,
+                  version=args.config_version)
     print(f"\nDone. Browser will load: docs/models/{deployed}")
 
 

@@ -1,11 +1,12 @@
 {
   "_swap_guide": "To deploy a new model: run scripts/export_onnx.py --candidate <new> [--quantize]. This file is rewritten automatically. Only name/version/file ever change.",
-  "name": "arena:21@hof",
-  "version": "m3-r1",
-  "description": "Policy-gradient self-play, 1-ply tactical overlay at eval.",
+  "name": "pocket:squeeze-gen22",
+  "version": "m3-r2",
+  "description": "Distilled expert-iteration student: 172k-param head_squeeze ConvNet trained on MCTS-200 targets from the gen-22 teacher. 1-ply tactical overlay at eval.",
   "file": "./model.onnx",
-  "fp32_kb": 5035,
+  "fp32_kb": 680,
   "int8_kb": null,
+  "value_tanh": true,
   "input": {
     "name": "input",
     "shape": [

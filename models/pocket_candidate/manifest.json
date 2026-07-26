@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "label": "pocket-squeeze-gen22",
+  "checkpoint": "squeeze_pocket.pt",
+  "sha256": "b028d3499eca8b1049c5cdbe0a6deed2f056851afad68fe0858ca778af09123b",
+  "value_tanh": true,
+  "architecture": {
+    "type": "conv_policy_value_v1",
+    "input_channels": 7,
+    "conv_channels": [
+      56,
+      56,
+      56,
+      56
+    ],
+    "fc_hidden_sizes": [
+      256
+    ],
+    "head_squeeze": 2,
+    "output_size": 81
+  }
+}

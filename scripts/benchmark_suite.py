@@ -87,6 +87,13 @@ ANCHOR_ALIASES = {
     "first": "first",
     "random": "random",
     "last": "last",
+    # The depth-limited alpha-beta rulers. These are the only anchors here
+    # that are NOT in the expert-iteration training mix (winblock is 30% of
+    # it), so they are the gene-pool-independent measurement -- see
+    # GRADING_AND_ORACLE.md and the --greg_mix_depth guard in expert_iter.
+    "gregory": "gregory",
+    "gregory_d3": "gregory",
+    "gregory_deep": "gregory_deep",
 }
 
 ANCHOR_CHECKPOINTS = {
@@ -117,6 +124,12 @@ class Architecture:
     input_channels: int = 7
     output_size: int = 81
     type: str = MANIFEST_ARCH_TYPE
+    # Opt-in ConvNet variants (RESULT_ARCH_AB.md). All falsy reproduces the
+    # legacy module graph exactly, so every manifest written before these
+    # existed resolves to the same network it always did.
+    head_squeeze: int = 0
+    residual: bool = False
+    norm: str | None = None
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any], source: str) -> "Architecture":
@@ -142,12 +155,26 @@ class Architecture:
                 f"{source}: unsupported input/output shape "
                 f"({input_channels}, {output_size}); expected (7, 81)"
             )
+        head_squeeze = raw.get("head_squeeze", 0)
+        residual = raw.get("residual", False)
+        norm = raw.get("norm")
+        if not isinstance(head_squeeze, int) or head_squeeze < 0:
+            raise BenchmarkError(
+                f"{source}: head_squeeze must be a non-negative integer")
+        if not isinstance(residual, bool):
+            raise BenchmarkError(f"{source}: residual must be a boolean")
+        if norm is not None and norm not in ("group", "batch"):
+            raise BenchmarkError(
+                f"{source}: norm must be null, 'group' or 'batch'")
         return cls(
             conv_channels=list(conv),
             fc_hidden_sizes=list(fc),
             input_channels=input_channels,
             output_size=output_size,
             type=arch_type,
+            head_squeeze=head_squeeze,
+            residual=residual,
+            norm=norm,
         )
 
 
@@ -372,6 +399,9 @@ def validate_checkpoint(spec: CandidateSpec) -> dict[str, Any]:
         label="benchmark-preflight",
         model_dir=str(path.parent),
         device=torch.device("cpu"),
+        head_squeeze=spec.architecture.head_squeeze,
+        residual=spec.architecture.residual,
+        norm=spec.architecture.norm,
     )
     expected_model = ConvNet(cfg)
     expected = expected_model.state_dict()
@@ -433,6 +463,9 @@ def _build_base_candidate(
         model_dir=str(spec.checkpoint.parent),
         device=device,
         value_tanh=spec.value_tanh,
+        head_squeeze=spec.architecture.head_squeeze,
+        residual=spec.architecture.residual,
+        norm=spec.architecture.norm,
     )
     with contextlib.redirect_stdout(io.StringIO()):
         agent = NeuralNetAgentPG(
@@ -609,6 +642,31 @@ class _FrozenMLPPolicyAgent(Agent):
         return int(torch.argmax(masked).item())
 
 
+_CODE_ANCHOR_SOURCES = {
+    "random": "random_agent.py",
+    "gregory": "gregory.py",
+    "gregory_deep": "gregory.py",
+}
+
+
+def _code_anchor_source(name: str, agent: Any = None) -> Path:
+    """Source file whose bytes are attested for a code anchor.
+
+    This used to hardcode deterministics.py for everything except random,
+    which silently attributed gregory's provenance to a file that does not
+    contain it -- the certification record would not have changed if the
+    alpha-beta ruler itself changed. Prefer the module the agent class is
+    actually defined in, and fall back to the table.
+    """
+    if agent is not None:
+        module = sys.modules.get(type(agent).__module__)
+        source = getattr(module, "__file__", None)
+        if source:
+            return Path(source).resolve()
+    return REPO_ROOT / "agents" / _CODE_ANCHOR_SOURCES.get(
+        name, "deterministics.py")
+
+
 def build_anchors(
     names: list[str], device: torch.device
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -659,9 +717,7 @@ def build_anchors(
                 {
                     "label": name,
                     "class": type(agent).__name__,
-                    **_code_provenance(REPO_ROOT / "agents" / (
-                        "random_agent.py" if name == "random" else "deterministics.py"
-                    )),
+                    **_code_provenance(_code_anchor_source(name, agent)),
                 }
             )
     return agents, provenance
@@ -673,10 +729,8 @@ def preflight_anchors(names: list[str]) -> list[dict[str, Any]]:
     for name in names:
         checkpoint = ANCHOR_CHECKPOINTS.get(name)
         if checkpoint is None:
-            source = REPO_ROOT / "agents" / (
-                "random_agent.py" if name == "random" else "deterministics.py"
-            )
-            checked.append({"label": name, **_code_provenance(source)})
+            checked.append({"label": name,
+                            **_code_provenance(_code_anchor_source(name))})
             continue
         if not checkpoint.is_file():
             raise BenchmarkError(f"anchor {name}: checkpoint not found: {checkpoint}")
