@@ -42,7 +42,11 @@ def load_student(path, device):
     model = ConvNet(cfg).to(device)
     model.load_state_dict(ck["state_dict"])
     model.eval()
-    name = ck.get("arch_name") or os.path.splitext(os.path.basename(path))[0]
+    # Name from the FILE, not from arch_name. Comparing variants of one
+    # architecture (snapshots, SWA, EMA) gives every arm the same arch_name,
+    # which silently collapsed all of them onto one key in the results dict --
+    # the printed table was fine but the json kept only the last arm.
+    name = os.path.splitext(os.path.basename(path))[0]
     return name, model, ck
 
 
@@ -69,6 +73,10 @@ def main():
     ap.add_argument("--device", type=str,
                     default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", type=str, default="")
+    ap.add_argument("--opponents", type=str, default="",
+                    help="Comma-separated subset of the panel to run (e.g. "
+                         "'winblock,gregory_d3'). Default runs all of them; "
+                         "gregory_d4 is by far the slowest cell.")
     args = ap.parse_args()
 
     device = args.device
@@ -83,6 +91,13 @@ def main():
     }
     if teacher is not None:
         opponents["teacher"] = _raw_fn(teacher, device, sample_moves=0)
+    if args.opponents:
+        keep = [o.strip() for o in args.opponents.split(",") if o.strip()]
+        unknown = [o for o in keep if o not in opponents]
+        if unknown:
+            ap.error(f"unknown opponent(s) {unknown}; "
+                     f"available: {list(opponents)}")
+        opponents = {k: opponents[k] for k in keep}
 
     results = {}
     print(f"\npanel: {args.games} games/cell, fixed openings, colors swapped\n")

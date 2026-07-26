@@ -125,6 +125,30 @@ def main():
     ap.add_argument("--data_device", type=str, default="cuda",
                     help="Hold the corpus here; falls back to cpu on OOM.")
     ap.add_argument("--log_every", type=int, default=1000)
+    # ---- weight averaging ------------------------------------------------
+    # The live run's panel scores wobble across a 0.080-wide band with a lag-1
+    # autocorrelation of only +0.120 -- consecutive checkpoints are nearly
+    # independent draws, and which one you happen to save is worth more than
+    # any architecture in RESULT_ARCH_AB.md. Averaging weights reduces that
+    # wobble instead of selecting a lucky point inside it, and costs nothing at
+    # inference: same architecture, same parameter count, same latency.
+    ap.add_argument("--swa_from", type=int, default=0,
+                    help="Step at which the averaging phase starts. 0 = off. "
+                         "Snapshots are taken from here on and their mean is "
+                         "written as the SWA checkpoint.")
+    ap.add_argument("--swa_lr", type=float, default=0.0,
+                    help="Constant LR to hold during the averaging phase. 0 "
+                         "keeps the decay schedule -- but by then the LR has "
+                         "decayed to the floor, the weights barely move, and "
+                         "there is no wobble left to average. A constant LR "
+                         "here is the standard SWA recipe and the only way "
+                         "this measures anything.")
+    ap.add_argument("--snapshot_every", type=int, default=2500,
+                    help="Snapshot cadence during the averaging phase.")
+    ap.add_argument("--ema_decay", type=float, default=0.0,
+                    help="Track an exponential moving average of the weights "
+                         "with this decay (0.999 ~ a 1000-step window). "
+                         "0 = off. Written as the EMA checkpoint.")
     args = ap.parse_args()
 
     device = args.device
@@ -156,6 +180,15 @@ def main():
     t0 = time.time()
     hist = []
 
+    # Averaging accumulators. Buffers (and any non-float state) are copied
+    # rather than averaged -- only floating-point weights are meaningful to
+    # average, and this arch has no running stats anyway.
+    ema = None
+    if args.ema_decay > 0:
+        ema = {k: v.detach().clone().float()
+               for k, v in model.state_dict().items()}
+    swa_sum, swa_count, snapshots = None, 0, []
+
     for step in range(1, args.steps + 1):
         if cursor + args.batch_size > n:          # next epoch
             order = idx_rng.permutation(n)
@@ -169,6 +202,8 @@ def main():
         xs, pis = apply_dihedral_symmetry(xs, pis, sym_rng.randrange(8))
 
         lr = _decayed_lr(args.lr, step, args.lr_half_life_steps, args.lr_min)
+        if args.swa_from and step >= args.swa_from and args.swa_lr > 0:
+            lr = args.swa_lr
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
@@ -178,6 +213,31 @@ def main():
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+
+        if ema is not None:
+            d = args.ema_decay
+            with torch.no_grad():
+                for k, v in model.state_dict().items():
+                    if v.dtype.is_floating_point:
+                        ema[k].mul_(d).add_(v.detach().float(), alpha=1.0 - d)
+                    else:
+                        ema[k] = v.detach().clone()
+
+        if (args.swa_from and step >= args.swa_from
+                and (step - args.swa_from) % args.snapshot_every == 0):
+            with torch.no_grad():
+                sd = {k: v.detach().clone()
+                      for k, v in model.state_dict().items()}
+            snapshots.append((step, sd))
+            if swa_sum is None:
+                swa_sum = {k: v.clone().float() for k, v in sd.items()}
+            else:
+                for k, v in sd.items():
+                    if v.dtype.is_floating_point:
+                        swa_sum[k].add_(v.float())
+                    else:
+                        swa_sum[k] = v.clone().float()
+            swa_count += 1
 
         if step % args.log_every == 0 or step == 1:
             rec = dict(step=step, loss=round(loss.item(), 5),
@@ -189,12 +249,28 @@ def main():
                   f"| lr {lr:.2e} | {rec['secs']:.0f}s", flush=True)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    torch.save({"state_dict": model.state_dict(), "value_tanh": True,
-                "arch_name": args.arch, "arch": AB_ARCHS[args.arch],
-                "params": nparams, "steps": args.steps, "seed": args.seed,
-                "corpus": args.corpus, "corpus_examples": n,
-                "history": hist}, args.out)
-    print(f"saved {args.out} ({nparams:,} params, {time.time() - t0:.0f}s)")
+    base = dict(value_tanh=True, arch_name=args.arch, arch=AB_ARCHS[args.arch],
+                params=nparams, steps=args.steps, seed=args.seed,
+                corpus=args.corpus, corpus_examples=n, history=hist)
+
+    def _write(path, sd, kind):
+        torch.save(dict(base, state_dict=sd, weights=kind), path)
+        print(f"saved {path}  [{kind}]")
+
+    _write(args.out, model.state_dict(), "final")
+    stem = args.out[:-3] if args.out.endswith(".pt") else args.out
+
+    ref = model.state_dict()
+    for step, sd in snapshots:
+        _write(f"{stem}.snap{step}.pt", sd, f"snapshot@{step}")
+    if swa_count:
+        swa = {k: (v / swa_count).to(ref[k].dtype) if ref[k].dtype.is_floating_point
+               else ref[k] for k, v in swa_sum.items()}
+        _write(f"{stem}.swa.pt", swa, f"swa(mean of {swa_count} snapshots)")
+    if ema is not None:
+        emad = {k: v.to(ref[k].dtype) for k, v in ema.items()}
+        _write(f"{stem}.ema.pt", emad, f"ema(decay {args.ema_decay})")
+    print(f"done ({nparams:,} params, {time.time() - t0:.0f}s)")
 
 
 if __name__ == "__main__":
