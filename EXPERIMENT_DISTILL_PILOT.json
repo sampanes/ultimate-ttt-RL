@@ -1,0 +1,104 @@
+{
+  "frozen_at": "2026-07-27T07:27:14",
+  "git": {
+    "commit": "7c2d4d17e457a746d810cc168144bf286035509b",
+    "branch": "actor-critical-league",
+    "dirty": false
+  },
+  "spec": {
+    "name": "distill_pilot_50_vs_800",
+    "question": "Do stronger MCTS targets transfer through distillation into a fixed 172k student? Arms are 50-sim and 800-sim teachers over IDENTICAL positions.",
+    "why_these_arms": "RESULT_TEACHER_SIM_LADDER.md measured +0.019 strength per doubling, so the 800-vs-200 teacher gap (~4 pts) sits under the ~0.05 panel floor. 50-vs-800 (~17 pts) is the only contrast with adequate signal. A 200 arm is deliberately NOT generated yet; it is a curve-shape arm for later.",
+    "hash_files": [
+      "models/expert_iter_v2/teacher.pt",
+      "agents/gregory.py",
+      "agents/deterministics.py",
+      "agents/mcts.py",
+      "agents/neural_net_agent_3.py",
+      "agents/agent_base.py",
+      "engine/rules.py",
+      "scripts/train_student_offline.py",
+      "scripts/pocket_challenge.py",
+      "scripts/benchmark_suite.py",
+      "tools/make_distill_corpus.py",
+      "tools/teacher_sim_ladder.py"
+    ],
+    "corpus": {
+      "source": "models/corpus_gen22",
+      "sample_seed": 20260727,
+      "max_shards": 500,
+      "positions": 50000,
+      "sampling": "uniform random, natural phase distribution (NOT stratified)",
+      "sims_arms": [
+        50,
+        800
+      ],
+      "dirichlet": false,
+      "c_puct": 1.5,
+      "policy_target": "full MCTS visit distribution (not top move)",
+      "value_target": "original corpus outcome z, IDENTICAL across arms"
+    },
+    "student": {
+      "arch": "squeeze",
+      "arch_detail": "conv=[56]*4, fc=[256], head_squeeze=2, ~172,389 params",
+      "init_seeds": [
+        11,
+        22,
+        33
+      ],
+      "data_seeds": [
+        11,
+        22,
+        33
+      ],
+      "pairing": "For each seed the two arms share init weights AND batch order; only the policy targets differ. Three seeds per arm so training variance is measured, not assumed.",
+      "steps": 40000,
+      "batch_size": 512,
+      "lr": 0.002,
+      "lr_min": 0.0001,
+      "lr_half_life_steps": 15000,
+      "value_coef": 1.0
+    },
+    "evaluation": {
+      "primary": "student_800 vs student_50 head to head",
+      "primary_games": 800,
+      "primary_note": "Paired openings, colors swapped. Extend beyond 800 only if the CI still materially overlaps 0.5. 800 games is the known resolution scale from the teacher ladder, where neither 400-game block separated alone.",
+      "external_ladder": {
+        "random": 4401,
+        "winblock": 3301,
+        "gregory_d3": 8801,
+        "gregory_d4": 8802
+      },
+      "external_games": 300,
+      "elo": "NOT a primary result; internal Elo is self-play inflated",
+      "success_criterion": "student_800 > student_50, replicated and separated",
+      "explicitly_not_required": "The student gap need NOT approach the teacher's ~17-point gap. The question is whether stronger targets transfer AT ALL and how much survives compression."
+    },
+    "secondary": [
+      "accuracy on the 50-vs-800 disagreement subset",
+      "agreement with the 800-sim policy",
+      "breakout by phase, branching factor, tactical status, teacher value gap",
+      "whether gains concentrate where adjudication says the 800-sim move is better -- CAVEAT: RESULT_SEARCH_DISAGREEMENT.md found the adjudicator cannot resolve this (independent referee at chance, same-net signals contradictory), so treat this item as exploratory, not confirmatory"
+    ],
+    "decision_rules": {
+      "clear_win": "run the full equal-example experiment; add 200 as a curve arm",
+      "directional_unresolved": "add evaluation games first, do NOT regenerate corpora",
+      "flat_across_seeds": "investigate student capacity, target weighting, optimization",
+      "reversal": "check whether higher-sim policies are softer/noisier/harder to fit for a fixed student"
+    }
+  },
+  "file_hashes": {
+    "models/expert_iter_v2/teacher.pt": "cfef6febd4a430368d6b9864fd4ae9e9c52d5be7cc4f560ca3723498d668d5ba",
+    "agents/gregory.py": "8d531bd07fa5b1b5301dd034a7518913b109bb9ecea42c90038e6181da899fcb",
+    "agents/deterministics.py": "76dd7513f30ac908ae77c1cf1ca0045ad98597911095deb0450cb0f75cdc2b10",
+    "agents/mcts.py": "88aca395d844c65938ff953728c4ee0dabfff553163bc5ec4a7b7f60ee0c7aac",
+    "agents/neural_net_agent_3.py": "64e7af58ae3e5cda071391f020ef080a9655bd7b1325bac95bb999ae2e348aed",
+    "agents/agent_base.py": "9ed9a701a5aeab9aab77e039bbd5cd2fc0a8ccf2901489d15dda0ebb878d73bc",
+    "engine/rules.py": "88c326e96a102752dfd14a341d4041049fe2399581769fdefcccf04c55d988e2",
+    "scripts/train_student_offline.py": "f1a05707c8dbd338f21c2ba12b0ad7a00d61606ec732441d3000b308d8869c20",
+    "scripts/pocket_challenge.py": "5fdc9b8587e533183ee389a5e81ada1ec2f080cb4faf6776c9c288bf4c5618ad",
+    "scripts/benchmark_suite.py": "d7acc9c5f905a62867e0b1b73ea11da2e64abfa18397ce4197cf956b21ee6f48",
+    "tools/make_distill_corpus.py": "43361a39fa84299628c308787a8ecad6af2fdefa76ba8375a188fc74b6df0d22",
+    "tools/teacher_sim_ladder.py": "203e847bf4ecf680a71268a9c592eb2113c3ad10381edc34fbda6af119034dfd"
+  }
+}
