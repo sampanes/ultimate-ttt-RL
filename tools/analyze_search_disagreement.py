@@ -245,6 +245,10 @@ def main():
     ap.add_argument("--max-shards", type=int, default=200,
                     help="Shards to draw the sample pool from.")
     ap.add_argument("--js-threshold", type=float, default=0.05)
+    ap.add_argument("--resume", action="store_true",
+                    help="Reuse sim levels already in <output>/policies.npz "
+                         "for the same sample, and compute only the missing "
+                         "ones. Lets the ladder be extended cheaply.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -269,8 +273,27 @@ def main():
     n = len(sample)
     pis = {s: np.zeros((n, 81), dtype=np.float32) for s in sims}
     qs = {s: np.zeros(n, dtype=np.float32) for s in sims}
+
+    # Reuse sim levels already computed for THIS sample, so extending the
+    # ladder (e.g. adding 400 to a finished 50/100/200/800 run) costs only the
+    # new levels. Safe because the sample is a deterministic function of
+    # (corpus, seed, max_shards, sample_size) and the row count is checked.
+    done = set()
+    prior = os.path.join(args.output, "policies.npz")
+    if args.resume and os.path.isfile(prior):
+        z = np.load(prior)
+        for s in sims:
+            if f"pi_{s}" in z.files and z[f"pi_{s}"].shape[0] == n:
+                pis[s] = z[f"pi_{s}"]
+                qs[s] = z[f"rootq_{s}"]
+                done.add(s)
+        if done:
+            print(f"resume: reusing sims {sorted(done)} from {prior}")
+
     t_start = time.time()
     for s in sims:
+        if s in done:
+            continue
         eff = max(1, s // MCTS._MIN_WAVES)      # the clamp, made explicit
         mcts = MCTS(model, args.device, n_sims=s, c_puct=1.5,
                     add_dirichlet_at_root=False, wave_size=eff)
