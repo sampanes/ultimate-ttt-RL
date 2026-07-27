@@ -28,25 +28,44 @@ clamps `eff_wave = min(wave_size, n_sims // 16)`, giving wave 3 at 50 sims and
 50 at 800. The 16-wave floor is load-bearing (mcts.py records 1 wave -> 0.00
 strength), so a larger batch would have degraded the targets being measured.
 
-## Headline: churn per doubling is FLAT
+## Headline: churn per doubling is FLAT, but the distribution CONVERGES
 
-The raw table invites a wrong conclusion, because the pairs do not span equal
-ratios -- 50->100 and 100->200 are single doublings, 200->800 is two.
+The 400-sim arm was added later so that every pair is a single doubling and no
+normalisation is needed. Measured directly:
 
-| pair | ratio | raw move-change (95% CI) | JS median (95% CI) | **per doubling** |
+| pair | move-change (95% CI) | JS median (95% CI) | JS mean | mean abs dV |
 |---|---|---|---|---|
-| 50->100 | 2x | 0.142 [0.135, 0.149] | 0.0143 [0.0137, 0.0147] | **0.142** |
-| 100->200 | 2x | 0.138 [0.131, 0.145] | 0.0083 [0.0081, 0.0086] | **0.138** |
-| 200->800 | 4x | 0.249 [0.240, 0.257] | 0.0238 [0.0233, 0.0243] | **0.133** |
+| 50->100 | 0.142 [0.135, 0.149] | 0.0143 [0.0137, 0.0147] | 0.0302 | 0.0341 |
+| 100->200 | 0.138 [0.131, 0.145] | 0.0083 [0.0081, 0.0086] | 0.0191 | 0.0304 |
+| 200->400 | 0.141 [0.134, 0.148] | 0.0073 [0.0071, 0.0075] | 0.0150 | 0.0225 |
+| 400->800 | 0.158 [0.152, 0.166] | 0.0071 [0.0069, 0.0073] | 0.0130 | 0.0200 |
 
-Normalising by `p = 1 - (1 - r)^(1/k)` for k doublings: **0.142, 0.138, 0.133.**
+**Two quantities move in opposite directions.** Argmax churn is flat -- and the
+LAST doubling is the churniest of the four. But the visit distribution converges
+monotonically (JS mean falls 2.3x) and so does the root value (1.7x).
 
-**Every doubling of simulations changes the chosen move about 13-14% of the
-time, essentially constantly from 50 sims to 800.** There is no collapse and no
-diminishing return in target churn across this whole range. 200->800 looked like
-the outlier only because it spans twice the ratio.
+That dissociation is the reshuffling signature. As search deepens it settles on
+how much it likes each move and on how good the position is, while continuing to
+swap which move is nominally on top at an undiminished rate -- what you see when
+the top two moves are near-equivalent and the ordering between them keeps
+re-flipping.
 
-Mean absolute root-value change is likewise flat: 0.034 / 0.030 / 0.034.
+**Consistency check.** If the two doublings inside 200->800 flip independently,
+predicted composite churn is `0.141 + 0.158 - 2(0.141)(0.158) = 0.254`. Measured
+was 0.249. The flips are statistically independent; deeper search does not
+revisit and confirm.
+
+CAVEAT on the first row: at 50 sims across ~9 legal moves a large share of
+visits are still the PUCT breadth requirement giving each child a look, so
+low-sim distributions are systematically flatter and 50->100 JS is partly that
+schedule burning off rather than genuine mind-changing. Visit-count quantisation
+was checked and is ~an order of magnitude too small to matter (~0.0015 bits at
+50 sims against a measured 0.0302).
+
+SUPERSEDED: an earlier version of this table had only 50/100/200/800 and
+normalised the two-doubling pair to 0.133 via `p = 1 - (1-r)^(1/k)`. That formula
+ignores flip-backs and slightly UNDERSTATES the rate; the measured adjacent
+doublings above are the ground truth.
 
 ## Where the disagreement lives
 
@@ -96,7 +115,50 @@ The disagreement subset (argmax differs OR JS >= 0.05) is **5,208 / 9,999 =
 **Proceed with the distillation study, and do not drop the 800 arm.** The
 independent variable is real and roughly constant per doubling.
 
-## The tension that governs interpretation
+## RESOLVED: the adjudication dead end, and the answer that replaced it
+
+Two follow-ups ran the same day. Recorded here so the dead end is not rebuilt.
+
+**1. Refereeing individual moves does not work.**
+`tools/adjudicate_move_disagreement.py` took the 800 positions where 200 and 800
+sims disagree and judged the two candidate moves three ways. It failed:
+
+| signal | result |
+|---|---|
+| value delta (fresh equal-effort 1600-sim search per candidate) | deeper move better 0.366 [0.331, 0.400]; mean delta -0.0132 |
+| 1600-sim root's own pick | 800-move 0.885, 200-move 0.034, neither 0.081 |
+| gregory-d4 (independent) | abstains 0.662; restricted h2h 0.548, n=270, CI ~[0.489, 0.607] |
+
+The independent referee is at chance. The two same-net signals CONTRADICT each
+other -- the root search overwhelmingly picks the 800-move while independent
+searches of the resulting positions call it slightly worse. The design is clean
+on effort (each candidate gets its own fresh 1600-sim search, verified in code),
+so the likely culprit is that `root.Q()` is a visit-weighted AVERAGE rather than
+a minimax value and is depressed where search spends early visits on lines it
+later refutes. Support is only partial: the anti-deep skew is worst early
+(0.285) and gone late (0.415), which fits, but the legal-move buckets come out
+non-monotonic (0.331 / 0.414 / 0.302), which does not.
+
+**Do not try to fix this instrument.** Refereeing a single move requires an
+oracle stronger than the thing under test, and none exists here. The magnitudes
+also make it hopeless: the two candidate moves differ by ~0.013 on a [-1, 1]
+value scale.
+
+**2. Playing the match does work, and answers the question.**
+`RESULT_TEACHER_SIM_LADDER.md`: the teacher plays itself, 800 sims vs 200 sims,
+800 games over two independent opening sets. **0.5381, 95% CI [0.5092, 0.5671],
+p = 0.0098** -- separates from chance under both observed-variance and
+conservative-binomial assumptions. That is **+0.019 per doubling**, against the
+gen-13 curve's independently measured +0.021.
+
+So: **deeper search is genuinely stronger, and churn overstates the improvement
+by roughly sevenfold** -- ~15% of moves change to buy ~2 points of win rate.
+Both the reshuffling reading and the improvement reading were partly right.
+
+Neither 400-game block separated alone; pooling 800 was required. That is the
+resolution scale for sim-count work.
+
+## The tension that governed interpretation (now resolved -- see above)
 
 Targets differing is not targets improving, and the repo already contains a
 reason to worry. The gen-13 search curve against gregory-d3 reads
