@@ -119,6 +119,12 @@ def main():
     ap.add_argument("--seed", type=int, default=1234,
                     help="Seeds data order + symmetry. MUST match across the "
                          "A/B arms; weight init is deliberately NOT tied to it.")
+    ap.add_argument("--init_seed", type=int, default=0,
+                    help="Seed torch before building the model, making weight "
+                         "init reproducible and SHAREABLE across arms. 0 keeps "
+                         "the historical behaviour (uninitialised global RNG, "
+                         "so init differs run to run). Required for a paired "
+                         "A/B where the arms must start from identical weights.")
     ap.add_argument("--max_examples", type=int, default=0, help="0 = all")
     ap.add_argument("--device", type=str,
                     default="cuda" if torch.cuda.is_available() else "cpu")
@@ -163,11 +169,20 @@ def main():
             torch.cuda.empty_cache()
             print("[!] corpus does not fit on GPU -- streaming from CPU")
 
+    if args.init_seed:
+        torch.manual_seed(args.init_seed)
+        torch.cuda.manual_seed_all(args.init_seed)
     model = build_model(AB_ARCHS[args.arch], device)
     nparams = sum(p.numel() for p in model.parameters())
     ntower = sum(p.numel() for p in model.conv_layers.parameters())
     print(f"arch={args.arch} params={nparams:,} "
           f"(conv tower {ntower:,} = {ntower / nparams * 100:.1f}%)")
+    if args.init_seed:
+        # Cheap fingerprint so a paired run can be shown to have started from
+        # the same weights, without shipping the whole state dict around.
+        with torch.no_grad():
+            fp = sum(float(p.double().sum()) for p in model.parameters())
+        print(f"init_seed={args.init_seed} init_fingerprint={fp:.12f}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
