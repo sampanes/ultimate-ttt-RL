@@ -187,6 +187,37 @@ def load_pool(corpus, max_shards, rng):
     return pool
 
 
+def build_sample(corpus, max_shards, sample_size, seed):
+    """The stratified sample, as a deterministic function of (corpus, seed).
+
+    Factored out so the analysis pass can recover the EXACT positions -- and
+    therefore the boards, which are not written to the per-position table --
+    without re-running any search. Both callers must consume the RNG in the
+    same order, so they share this one implementation rather than duplicating
+    it. Returns (sample, rejects) with sample[i] keyed by pos_id == i.
+    """
+    rng = random.Random(seed)
+    pool = load_pool(corpus, max_shards, rng)
+    order = list(range(pool.shape[0]))
+    rng.shuffle(order)
+    per_phase = sample_size // len(PHASE_BANDS)
+    buckets = {name: [] for name, _, _ in PHASE_BANDS}
+    rejected = 0
+    for i in order:
+        if all(len(v) >= per_phase for v in buckets.values()):
+            break
+        rec = state_from_planes(pool[i])
+        if rec is None:
+            rejected += 1
+            continue
+        st, legal, filled = rec
+        ph = phase_of(filled)
+        if len(buckets[ph]) < per_phase:
+            buckets[ph].append((st, legal, filled))
+    sample = [t for v in buckets.values() for t in v]
+    return sample, rejected, buckets
+
+
 def build_model(ckpt_path, device):
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     tanh = payload.get("value_tanh", True)
@@ -222,28 +253,12 @@ def main():
     torch.manual_seed(args.seed)
     os.makedirs(args.output, exist_ok=True)
 
-    pool = load_pool(args.corpus, args.max_shards, rng)
     model = build_model(args.checkpoint, args.device)
     sims = sorted(args.sims)
 
-    # ---- stratified sample ------------------------------------------------
-    order = list(range(pool.shape[0]))
-    rng.shuffle(order)
-    per_phase = args.sample_size // len(PHASE_BANDS)
-    buckets = {name: [] for name, _, _ in PHASE_BANDS}
-    rejected = 0
-    for i in order:
-        if all(len(v) >= per_phase for v in buckets.values()):
-            break
-        rec = state_from_planes(pool[i])
-        if rec is None:
-            rejected += 1
-            continue
-        st, legal, filled = rec
-        ph = phase_of(filled)
-        if len(buckets[ph]) < per_phase:
-            buckets[ph].append((st, legal, filled))
-    sample = [t for v in buckets.values() for t in v]
+    # ---- stratified sample (shared with the analysis pass) ----------------
+    sample, rejected, buckets = build_sample(
+        args.corpus, args.max_shards, args.sample_size, args.seed)
     print(f"sampled {len(sample):,} positions "
           + ", ".join(f"{k}={len(v)}" for k, v in buckets.items())
           + f"  (reconstruction rejects: {rejected})")
