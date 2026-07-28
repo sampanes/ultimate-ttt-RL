@@ -1,0 +1,64 @@
+{
+  "locked_at": "2026-07-27T22:09:20",
+  "commit": "0e643ca9fda51d8be27faa2446f927d9ef1512b7",
+  "student_seeds": [
+    11,
+    22,
+    33
+  ],
+  "seeds_shared_by_both_arms": true,
+  "seed_provenance": "reused verbatim from EXPERIMENT_DISTILL_PILOT.json init_seeds/data_seeds so the solved pilot stays comparable to the 0.4108 baseline",
+  "training_config": {
+    "arch": "squeeze",
+    "steps": 40000,
+    "batch_size": 512,
+    "lr": 0.002,
+    "lr_min": 0.0001,
+    "lr_half_life_steps": 15000,
+    "value_coef": 1.0,
+    "n_examples": 50000,
+    "arms": [
+      "sims50_solve",
+      "sims800_solve"
+    ],
+    "primary_games": 800
+  },
+  "training_config_hash": "10482c820660d39d4f18be43b1d7aab9b221f6b5a6a6472337438050ea279fe4",
+  "initial_weight_hashes": {
+    "11": {
+      "sha256": "e8ae96e009b8a098205667980c9ae29da6e010b6cbba1c04413fee4baa963bbb",
+      "fingerprint": -14.112606452777982,
+      "params": 172389
+    },
+    "22": {
+      "sha256": "77886d6571d60969e63c502562ea0906f6c6f6a1b873a5ecf95c3124c8e529f1",
+      "fingerprint": 7.553479878231883,
+      "params": 172389
+    },
+    "33": {
+      "sha256": "f2b531c09e3d68f5e381941af552ffdc818179c62d4fcc52063a6e37efad7bf5",
+      "fingerprint": -13.29104683920741,
+      "params": 172389
+    }
+  },
+  "batch_order_hashes": {
+    "11": {
+      "index_sha256": "b365b14eb29f399c13d52672b28356eb4467502fc32f6853a02121e8f239b466",
+      "symmetry_sha256": "89573b4187e947a191ca6ee52566ce9a18655b5ff44db69019afb013dad4f811"
+    },
+    "22": {
+      "index_sha256": "c4088549a0c0248015b4d4d6ebb9a192e67afe2c139cf272953582e5009b9915",
+      "symmetry_sha256": "a39ca1b9ecde7ec1caba6ccf48ac754a893809ebbb45554989215ad1859f5bd8"
+    },
+    "33": {
+      "index_sha256": "537c1dab4bc6a0c1cbb57bb71a39980ffabcda71723a76ac773d41348017e9c6",
+      "symmetry_sha256": "f70b2b13b69f19d9a8823c70dac89ee756d6199f3a71e4aecb4d5439c01a198c"
+    }
+  },
+  "seeds_produce_distinct_inits": true,
+  "arm_independence_argument": "init reads the global torch RNG (init_seed only); batch order reads np.random.RandomState(seed); symmetry reads random.Random(seed+1). None of the three is reachable from arm identity, and the arms share X and Z by construction, so for a given seed the two runs start from identical weights and consume identical rows in identical order.",
+  "byte_identical_start_verified": true,
+  "corpus_arm_equality": {
+    "status": "PENDING -- rerun with --corpora once both arms exist"
+  }
+}

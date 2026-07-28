@@ -28,6 +28,18 @@ that is at chance, every narrower rung is settled and no further games are
 needed. Only if it separates is there a curve worth mapping.
 
     python -m tools.teacher_sim_ladder --pairs 800:200 --games 400
+
+SOLVE A/B. An arm may carry a `+solve` suffix, which turns on solved-node
+propagation (agents/mcts.py). Pairing an arm against itself at the SAME sim
+count is then the cleanest possible search-quality test: identical network,
+identical budget, identical openings, one flag different.
+
+    python -m tools.teacher_sim_ladder --pairs 800+solve:800 --games 400
+
+Search-cost counters (expansions, network evaluations, wall clock per move) are
+read off the MCTS objects afterwards, so the strength number and the cost it was
+bought at come out of the same run rather than a separate benchmark that might
+not match.
 """
 from __future__ import annotations
 
@@ -45,6 +57,7 @@ from engine.constants import DRAW, O, X
 from engine.game import GameState
 from engine.rules import rule_utl_valid_moves
 from scripts.expert_iter import _eval_openings, _play_fixed_match
+from tools import provenance
 from tools.analyze_search_disagreement import MCTS, build_model
 
 # One seed per pair so a rerun of a single rung reproduces exactly, and so two
@@ -60,24 +73,93 @@ PAIR_SEEDS = {
     (200, 50): 7708,
 }
 
+# Solve-on vs solve-off at a matched simulation count. Separate namespace so a
+# solve A/B never silently reuses a sim-ladder rung's opening set.
+SOLVE_AB_SEEDS = {50: 7801, 100: 7802, 200: 7803, 400: 7804, 800: 7805}
 
-def make_move_fn(model, device, n_sims):
+
+def parse_arm(spec):
+    """'800' -> (800, False);  '800+solve' -> (800, True)."""
+    solve = False
+    if spec.endswith("+solve"):
+        solve, spec = True, spec[:-len("+solve")]
+    return int(spec), solve
+
+
+def arm_label(sims, solve):
+    return f"{sims}+solve" if solve else str(sims)
+
+
+def make_move_fn(model, device, n_sims, solve=False):
     """A raw-argmax MCTS mover at a fixed simulation count.
 
     wave_size mirrors the analysis tool: MCTS.search clamps eff_wave to
     n_sims // _MIN_WAVES, and the 16-wave floor is load-bearing (mcts.py records
     1 wave -> 0.00 strength), so this is the largest batch that does not degrade
     the search being measured.
+
+    Returns (move_fn, mcts) so the caller can read the cost counters off the
+    same object that played the games.
     """
     eff = max(1, n_sims // MCTS._MIN_WAVES)
     mcts = MCTS(model, device, n_sims=n_sims, c_puct=1.5,
-                add_dirichlet_at_root=False, wave_size=eff)
+                add_dirichlet_at_root=False, wave_size=eff, solve=solve)
 
     def move_fn(state, _move_num):
         pi, _root = mcts.search(state.clone())
         return int(pi.argmax())
 
-    return move_fn
+    return move_fn, mcts
+
+
+def cost_stats(mcts):
+    """Per-move search cost, as the report asks for it.
+
+    Wall clock comes from the MCTS's own accumulator, not the match elapsed
+    time: a match's total is shared by both arms and cannot be split afterwards.
+    """
+    n = max(1, mcts.stat_searches)
+    return {
+        "moves": mcts.stat_searches,
+        "expanded_nodes_per_move": mcts.stat_expansions / n,
+        "nn_evals_per_move": mcts.stat_nn_evals / n,
+        "nn_batches_per_move": mcts.stat_nn_batches / n,
+        "terminal_probes_per_move": mcts.stat_probes / n,
+        "solved_roots": mcts.stat_solved_roots,
+        "solved_root_rate": mcts.stat_solved_roots / n,
+        "seconds_per_move": mcts.stat_seconds / n,
+    }
+
+
+def equal_wall_clock(score, deep, shallow):
+    """Strength per unit compute, reported but NOT used to gate anything.
+
+    Equal-simulation and equal-time are different questions. Solving buys
+    correctness at every budget; whether it also buys strength per SECOND
+    depends on how the redirected budget trades off, and the two must not be
+    conflated -- a correctness fix that costs time is still a correctness fix.
+    So this block exists to be read alongside the gates, never inside them.
+
+    strength_per_second is the deep arm's edge over chance divided by its
+    per-move cost. It is a ratio of two measured things, not a model, and it is
+    only comparable BETWEEN rows of the same table.
+    """
+    edge = score - 0.5
+    sd, ss = deep["seconds_per_move"], shallow["seconds_per_move"]
+    return {
+        "strength_delta": edge,
+        "wall_clock_ratio": (sd / ss) if ss else None,
+        "neural_eval_delta": deep["nn_evals_per_move"] - shallow["nn_evals_per_move"],
+        "expansion_delta": (deep["expanded_nodes_per_move"]
+                            - shallow["expanded_nodes_per_move"]),
+        "probe_delta": (deep["terminal_probes_per_move"]
+                        - shallow["terminal_probes_per_move"]),
+        "strength_per_second": (edge / sd) if sd else None,
+        "deep_seconds_per_move": sd,
+        "shallow_seconds_per_move": ss,
+        "time_normalised_edge": (edge / (sd / ss)) if ss and sd else None,
+        "gating": "REPORT ONLY -- never an input to the four pilot gates",
+    }
 
 
 def play_match_detailed(move_fn_a, move_fn_b, n_games, seed):
@@ -187,20 +269,28 @@ def main():
 
     pairs = []
     for spec in args.pairs:
-        deep_s, shallow_s = spec.split(":")
-        deep, shallow = int(deep_s), int(shallow_s)
-        if deep <= shallow:
-            raise SystemExit(f"[X] --pairs wants deep:shallow, got {spec}")
-        pairs.append((deep, shallow))
+        a_s, b_s = spec.split(":")
+        a, b = parse_arm(a_s), parse_arm(b_s)
+        # Equal sims is legal ONLY when the two arms differ in some other way
+        # (currently: solving). Otherwise the "pair" is a net against itself.
+        if a[0] < b[0] or a == b:
+            raise SystemExit(
+                f"[X] --pairs wants deep:shallow or an equal-sims solve A/B, "
+                f"got {spec}")
+        pairs.append((a, b))
 
     model = build_model(args.checkpoint, args.device)
 
     results = {}
-    for deep, shallow in pairs:
-        seed = args.seed_override or PAIR_SEEDS.get((deep, shallow),
-                                                    7700 + deep + shallow)
-        deep_fn = make_move_fn(model, args.device, deep)
-        shallow_fn = make_move_fn(model, args.device, shallow)
+    for (deep, deep_solve), (shallow, shallow_solve) in pairs:
+        if deep == shallow:
+            default_seed = SOLVE_AB_SEEDS.get(deep, 7800 + deep)
+        else:
+            default_seed = PAIR_SEEDS.get((deep, shallow), 7700 + deep + shallow)
+        seed = args.seed_override or default_seed
+        deep_fn, deep_mcts = make_move_fn(model, args.device, deep, deep_solve)
+        shallow_fn, shallow_mcts = make_move_fn(model, args.device, shallow,
+                                                shallow_solve)
 
         t0 = time.time()
         outcomes = play_match_detailed(deep_fn, shallow_fn, args.games, seed)
@@ -219,10 +309,12 @@ def main():
         draws = sum(1 for o in outcomes if o == 0.5)
         losses = sum(1 for o in outcomes if o == 0.0)
         separated = lo > 0.5
-        key = f"{deep}v{shallow}"
-        doublings = math.log2(deep / shallow)
+        a_label, b_label = arm_label(deep, deep_solve), arm_label(shallow, shallow_solve)
+        key = f"{a_label}v{b_label}"
+        doublings = math.log2(deep / shallow) if deep != shallow else 0.0
         results[key] = {
             "deep_sims": deep, "shallow_sims": shallow,
+            "deep_solve": deep_solve, "shallow_solve": shallow_solve,
             "games": args.games, "seed": seed,
             "score_for_deep": score,
             "ci95": [lo, hi], "se": se,
@@ -231,14 +323,36 @@ def main():
             "outcomes": outcomes,
             "separated_from_chance": separated,
             "doublings": doublings,
-            "per_doubling_edge": (score - 0.5) / doublings,
+            "per_doubling_edge": ((score - 0.5) / doublings if doublings else None),
             "seconds": dt,
+            "cost_deep": cost_stats(deep_mcts),
+            "cost_shallow": cost_stats(shallow_mcts),
+            "equal_wall_clock": equal_wall_clock(
+                score, cost_stats(deep_mcts), cost_stats(shallow_mcts)),
         }
         verdict = "SEPARATES" if separated else "at chance"
-        print(f"  {key:>10}  {score:.4f} [{lo:.4f}, {hi:.4f}]  "
+        print(f"  {key:>16}  {score:.4f} [{lo:.4f}, {hi:.4f}]  "
               f"W{wins}/D{draws}/L{losses}  {dt:.0f}s  -- {verdict}")
-        print(f"             per doubling {(score - 0.5) / doublings:+.4f}"
-              f"   (binomial CI would be [{wlo:.4f}, {whi:.4f}])")
+        if doublings:
+            print(f"             per doubling {(score - 0.5) / doublings:+.4f}"
+                  f"   (binomial CI would be [{wlo:.4f}, {whi:.4f}])")
+        else:
+            print(f"             equal budget, so this is pure search quality"
+                  f"   (binomial CI would be [{wlo:.4f}, {whi:.4f}])")
+        for tag, m in ((a_label, deep_mcts), (b_label, shallow_mcts)):
+            c = cost_stats(m)
+            print(f"             {tag:>12}: {c['expanded_nodes_per_move']:7.1f} "
+                  f"expanded  {c['nn_evals_per_move']:7.1f} nn-evals  "
+                  f"{c['terminal_probes_per_move']:7.1f} probes  "
+                  f"{c['seconds_per_move'] * 1000:7.1f} ms/move  "
+                  f"solved-root {c['solved_root_rate']:.3f}")
+        e = results[key]["equal_wall_clock"]
+        print(f"             equal-wall-clock (report only): "
+              f"strength {e['strength_delta']:+.4f}  "
+              f"time x{(e['wall_clock_ratio'] or float('nan')):.3f}  "
+              f"nn {e['neural_eval_delta']:+.1f}  "
+              f"exp {e['expansion_delta']:+.1f}  "
+              f"edge/s {(e['strength_per_second'] or float('nan')):+.3f}")
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     payload = {
@@ -248,6 +362,7 @@ def main():
                  "raw argmax over the visit counts, no Dirichlet noise. "
                  "score_for_deep > 0.5 means the deeper search won."),
         "pairs": results,
+        "provenance": provenance.build(),
     }
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)

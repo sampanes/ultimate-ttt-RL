@@ -131,6 +131,19 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--resume", action="store_true",
                     help="skip arms whose corpus already has the right count")
+    ap.add_argument("--solve", action="store_true",
+                    help="enable solved-node propagation in the teacher's "
+                         "search. Arms generated with and without this are NOT "
+                         "comparable as a sim-count contrast -- write them to a "
+                         "different --out.")
+    ap.add_argument("--suffix", default="",
+                    help="appended to each arm's directory name, e.g. "
+                         "--suffix _solve -> sims800_solve")
+    ap.add_argument("--expect-x-sha256", default="",
+                    help="fail unless the sampled planes hash to this. Use it "
+                         "when regenerating targets for an EXISTING pilot's "
+                         "positions under a new --out, so 'same positions' is "
+                         "proven rather than inferred from matching seeds.")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -166,7 +179,7 @@ def main():
           f"{len(args.sims)} arms x {args.positions:,} positions")
 
     for s in args.sims:
-        arm_dir = os.path.join(args.out, f"sims{s}")
+        arm_dir = os.path.join(args.out, f"sims{s}{args.suffix}")
         done = sorted(glob.glob(os.path.join(arm_dir, "data", "shard_*.pt")))
         if args.resume and done:
             have = sum(torch.load(p, map_location="cpu",
@@ -179,7 +192,8 @@ def main():
         # load-bearing (mcts.py records 1 wave -> 0.00 strength).
         eff = max(1, s // MCTS._MIN_WAVES)
         mcts = MCTS(model, args.device, n_sims=s, c_puct=1.5,
-                    add_dirichlet_at_root=False, wave_size=eff)
+                    add_dirichlet_at_root=False, wave_size=eff,
+                    solve=args.solve)
         pis = torch.zeros((len(sample), 81), dtype=torch.float32)
         qroot = np.zeros(len(sample), dtype=np.float32)
 
@@ -206,7 +220,7 @@ def main():
     # from what actually landed on disk rather than trusting the write path.
     hashes = {}
     for s in args.sims:
-        shards = sorted(glob.glob(os.path.join(args.out, f"sims{s}",
+        shards = sorted(glob.glob(os.path.join(args.out, f"sims{s}{args.suffix}",
                                                "data", "shard_*.pt")))
         h = hashlib.sha256()
         for p in shards:
@@ -216,7 +230,13 @@ def main():
     distinct = set(hashes.values())
     if len(distinct) != 1:
         raise SystemExit(f"[X] arms do not share identical x planes: {hashes}")
-    print(f"[OK] all arms share identical x planes ({hashes[str(args.sims[0])][:16]})")
+    shared = hashes[str(args.sims[0])]
+    print(f"[OK] all arms share identical x planes ({shared[:16]})")
+    if args.expect_x_sha256 and shared != args.expect_x_sha256:
+        raise SystemExit(
+            f"[X] planes hash {shared[:16]} but --expect-x-sha256 wanted "
+            f"{args.expect_x_sha256[:16]}. These are NOT the same positions as "
+            f"the pilot being compared against; the comparison would be void.")
 
     manifest = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -226,6 +246,8 @@ def main():
         "teacher_gen": teacher_gen,
         "positions": args.positions,
         "sims": args.sims,
+        "solved_node_propagation": bool(args.solve),
+        "arm_suffix": args.suffix,
         "max_shards": args.max_shards,
         "seed": args.seed,
         "shard_size": args.shard_size,

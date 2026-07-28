@@ -78,18 +78,26 @@ def run_primary(args, device, results):
             if not os.path.exists(p):
                 raise SystemExit(f"[X] missing student {p}")
         m800, m50 = load_student(p800, device, args.arch), load_student(p50, device, args.arch)
+        match_seed = H2H_BASE_SEED + seed
         with torch.no_grad():
             f800 = _raw_fn(m800, device, sample_moves=0)
             f50 = _raw_fn(m50, device, sample_moves=0)
             t0 = time.time()
-            outcomes = play_match_detailed(f800, f50, args.games,
-                                           H2H_BASE_SEED + seed)
+            outcomes = play_match_detailed(f800, f50, args.games, match_seed)
         score, (lo, hi), se = outcome_ci(outcomes)
         w = sum(1 for o in outcomes if o == 1.0)
         d = sum(1 for o in outcomes if o == 0.5)
         ll = sum(1 for o in outcomes if o == 0.0)
+        # Per-game outcomes and the match seed are persisted so a later run can
+        # be paired GAME BY GAME against this one. `_eval_openings(n, seed)`
+        # depends on the seed alone and emits a prefix-stable stream, the
+        # per-game reseed is seed + opening_idx*2 + side, and students move with
+        # sample_moves=0, so two runs sharing match_seed play game i from the
+        # identical opening, colour and RNG. Without this vector only seed-level
+        # pairing is defensible -- see tools/pooled_estimator.pairing_status.
         per_seed[seed] = {"score": score, "ci95": [lo, hi], "se": se,
                           "wins": w, "draws": d, "losses": ll,
+                          "match_seed": match_seed, "outcomes": outcomes,
                           "seconds": time.time() - t0}
         pooled.extend(outcomes)
         print(f"  seed {seed:>3}  {fmt_ci(score, lo, hi)}  W{w}/D{d}/L{ll}")

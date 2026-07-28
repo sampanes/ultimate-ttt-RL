@@ -36,11 +36,29 @@ search curve in memory `uttt-gen13-search-curve` and `loss_logs/sims_sweep_gen13
    (`agents/mcts.py:123`) and the whole tree is discarded when the function
    returns. The subtree the opponent walks into is rebuilt from scratch next move.
 
-4. **No proven-win/loss propagation.** Terminal leaves are detected and their
-   clean +/-1.0 / 0.0 value cached on the node (`_terminal_value`, lines 298-302),
-   but that value is backed up like any ordinary neural estimate via `_backup`.
-   There is no solved-status flag, no exact proof, and no pruning of solved
-   branches -- search keeps sampling a branch whose outcome is already forced.
+4. **Proven-win/loss propagation: IMPLEMENTED 2026-07-27, opt-in
+   (`MCTS(..., solve=True)`), still OFF by default.** `node.solved` holds
+   None / +1 / 0 / -1 from that node's to-play perspective, stored separately
+   from N/W so a proof can never be averaged into the neural estimate.
+   Terminal children are marked at EXPANSION via one engine clone+make_move per
+   legal move, so every expansion is an exact 1-ply search; `_solve_from_children`
+   does the AND/OR backward induction; `_best_child` takes a proven win outright
+   and refuses proven losses; descent stops at any solved node and backs up the
+   exact value, so a proven subtree costs no network evaluation. `search()` also
+   reconciles the returned visit policy with the proof (one-hot on a proven win,
+   zero on refuted moves), because raw counts can otherwise hand back a target
+   whose argmax is known to lose.
+
+   Soundness is tested against exhaustive minimax on random late-game positions
+   (`agents/test_mcts.py::test_solved_claims_agree_with_exhaustive_minimax`), and
+   `tools/measure_solved_targets.py --parity-check` asserts that with solve=False
+   the search still reproduces the frozen distillation-pilot corpus bit-for-bit.
+
+   Was previously described here as absent; the old text read: "There is no
+   solved-status flag, no exact proof, and no pruning of solved branches --
+   search keeps sampling a branch whose outcome is already forced." That is
+   exactly the defect RESULT_DISTILL_PILOT.md later measured, and is why this
+   moved to the front of the queue. See RESULT_SOLVED_NODES.md.
 
 5. **Parameters are not budget-tuned.** `c_puct=1.5` is fixed and flagged in the
    module docstring as never tuned (compounded by the value-SCALE mismatch:

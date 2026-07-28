@@ -23,7 +23,7 @@ import os
 import numpy as np
 
 from engine.constants import DRAW, EMPTY, O, X
-from engine.rules import _MINI_INDICES
+from engine.rules import _MINI_INDICES, rule_utl_get_next_mini
 from tools.analyze_search_disagreement import (
     LEGAL_BUCKETS, PHASE_BANDS, build_sample, js_divergence, kl_divergence,
     legal_bucket, phase_of)
@@ -32,6 +32,18 @@ from tools.analyze_search_disagreement import (
 # --------------------------------------------------------------------------- #
 # Strata the search pass did not record
 # --------------------------------------------------------------------------- #
+
+def mini_of(move):
+    """Which mini-board (0-8) does flat board index `move` (0-80) live in?
+
+    The board is row-major 9x9, so move = r*9 + c and the mini-board is
+    (r//3)*3 + (c//3). This is NOT `move // 9`, which is the board ROW: the two
+    agree only for moves in the leftmost mini of each band, so a row-based
+    version looks plausible on spot checks and is wrong on 2/3 of the board.
+    That exact mistake invalidated the mini_win_available and forced_target
+    strata of every run before 2026-07-27; see the INVALID_STRATA note below.
+    """
+    return (move // 27) * 3 + (move % 9) // 3
 
 def forced_target_state(st):
     """Is the mini-board the mover is SENT to open, won, drawn, or absent?
@@ -42,7 +54,9 @@ def forced_target_state(st):
     """
     if st.last_move is None:
         return "none"
-    target = st.last_move % 9
+    # The mini you are SENT to is the LOCAL cell of the last move,
+    # (r%3)*3 + (c%3) -- not `last_move % 9`, which is the column.
+    target = rule_utl_get_next_mini(st.last_move)
     w = st.mini_winners[target]
     if w in (X, O):
         return "won"
@@ -69,7 +83,8 @@ def tactical_flags(st, legal):
             immediate_win = True
             mini_win = True
             break
-        if s.mini_winners[m // 9] == mover and st.mini_winners[m // 9] == EMPTY:
+        k = mini_of(m)
+        if s.mini_winners[k] == mover and st.mini_winners[k] == EMPTY:
             mini_win = True
     return immediate_win, mini_win
 

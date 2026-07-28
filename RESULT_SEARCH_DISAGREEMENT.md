@@ -1,5 +1,12 @@
 # RESULT: does more search change the training target? (2026-07-26)
 
+> **ERRATA 2026-07-27.** Two strata in this document -- the forced-target
+> mini-board table, and any `mini_win_available` figure -- were computed with a
+> mini-board indexing bug and are INVALID. Every global metric (churn, JS
+> divergence, value delta, the disagreement subset, the phase and legal-move
+> tables, the mate-in-1 validity check) is unaffected, as are the conclusions.
+> Full account: `ERRATA_MINI_INDEX_BUG.md`.
+
 ## Question
 
 The proposed controlled-distillation study -- one fixed 172k student, teachers
@@ -83,15 +90,21 @@ Move-change rate by stratum:
 | 100->200 | 0.000 | 0.081 | 0.143 | 0.187 |
 | 200->800 | 0.000 | 0.184 | 0.257 | 0.307 |
 
+**INVALID -- do not cite this table.** See `ERRATA_MINI_INDEX_BUG.md`. The
+forced mini was computed as `last_move % 9`, which is the COLUMN, not the local
+cell; the labels are wrong on 11.88% of positions and the `drawn` column was
+structurally unreachable. Retained only so the historical record is legible.
+
 | forced target mini-board | open | won | drawn | none |
 |---|---|---|---|---|
 | 50->100 | 0.167 | 0.086 | 0.068 | 0.000 |
 | 100->200 | 0.158 | 0.096 | 0.045 | 0.000 |
 | 200->800 | 0.277 | 0.194 | 0.114 | 0.000 |
 
-Search changes its mind most in the opening, in wide positions, and when the
-mover is confined to a live mini-board. It changes its mind least in the
-endgame, in narrow positions, and never when there is only one legal move.
+Search changes its mind most in the opening and in wide positions. It changes
+its mind least in the endgame, in narrow positions, and never when there is only
+one legal move. (The original text also claimed a forced-mini effect; that
+clause rested on the invalid table above and is withdrawn.)
 
 **Validity check.** On the 450 positions where a mate-in-1 exists, move-change
 collapses to 0.011 / 0.016 / 0.082; on the rest it is 0.148 / 0.143 / 0.257.
