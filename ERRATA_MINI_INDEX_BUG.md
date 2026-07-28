@@ -131,7 +131,8 @@ degrading into a tautology if someone reintroduces the bug on both sides.
 JSON leaves in place with `_INVALID`, the reason, and `_invalid_original` so
 nothing is erased, and drops a `.INVALID_COLUMNS.txt` sidecar next to each
 gzipped CSV. It is idempotent, and `--check` exits non-zero if any affected
-stratum is unstamped. Current state: **410 JSON leaves + 2 CSV sidecars**.
+stratum is unstamped. Current state: **410 JSON leaves + 3 sidecars** (two `position_strata.csv.gz`,
+one `models/distill_pilot/index.npz`).
 
 ## Reproduce
 

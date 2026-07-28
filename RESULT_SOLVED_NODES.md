@@ -272,6 +272,13 @@ forced-win blunders are removed.
 `results/solved_targets/summary.json` (provenance-stamped), `policies.npz`
 (all six arms, 5,144 x 81), `target_shift_by_stratum.json`.
 
+`results/` is gitignored by repo convention -- generated runs stay local,
+curated milestone reports live at the repo root -- so these files are NOT in
+git and the numbers quoted above are the record. `EXPERIMENT_SOLVED_PILOT.json`
+is the tracked half: it pins the 14 inputs (teacher checkpoint bytes, every
+anchor's source, the estimator, the seeds) by sha256, so the reproduce block
+below can be shown to have run against the same stack.
+
 ## Reproduce
 
     set CUBLAS_WORKSPACE_CONFIG=:4096:8

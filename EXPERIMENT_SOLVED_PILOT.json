@@ -1,0 +1,147 @@
+{
+  "frozen_at": "2026-07-28T08:12:35",
+  "git": {
+    "commit": "0a2f45d321644c8ef842e92f2f24a80f918173f0",
+    "branch": "actor-critical-league",
+    "dirty": false
+  },
+  "spec": {
+    "name": "solved_pilot_50_vs_800_solve_on",
+    "question": "Does solved-node propagation shrink the 800-target penalty measured in RESULT_DISTILL_PILOT.md? Same 50,000 frozen positions, same student, same panel; the ONLY change is that the teacher's search proves forced results and stops sampling them.",
+    "why": "The pilot's mechanism was PUCT dilution: at 800 sims the teacher put a visit on every legal move of a mate-in-1 and kept 0.693 mass on the win, vs 0.825 at 50 sims. If that dilution is the dominant causal path, removing it should move the student result.",
+    "relation_to_previous": {
+      "frozen_manifest": "EXPERIMENT_DISTILL_PILOT.json",
+      "drifted_files": [
+        "agents/mcts.py",
+        "tools/make_distill_corpus.py",
+        "tools/teacher_sim_ladder.py"
+      ],
+      "drift_is_expected": true,
+      "why_the_comparison_still_holds": "Those three files changed, so the OLD manifest's --verify now reports drift and that is correct -- it must not be re-frozen. The comparison survives on a stronger guarantee than a file hash: with solve=False the search reproduces every one of the frozen pilot's targets BIT-FOR-BIT, verified on all measured positions at both 50 and 800 sims by tools/measure_solved_targets.py. Behaviour of the default path is proven unchanged by output, not asserted by hash."
+    },
+    "hash_files": [
+      "models/expert_iter_v2/teacher.pt",
+      "agents/gregory.py",
+      "agents/deterministics.py",
+      "agents/mcts.py",
+      "agents/neural_net_agent_3.py",
+      "agents/agent_base.py",
+      "engine/rules.py",
+      "scripts/train_student_offline.py",
+      "tools/make_distill_corpus.py",
+      "tools/measure_solved_targets.py",
+      "tools/teacher_sim_ladder.py",
+      "tools/eval_distill_pilot.py",
+      "tools/pooled_estimator.py",
+      "SEEDS_SOLVED_PILOT.json"
+    ],
+    "corpus": {
+      "source": "models/corpus_gen22",
+      "sample_seed": 20260727,
+      "max_shards": 500,
+      "positions": 50000,
+      "expect_x_sha256": "c0d695adca04e6ca1996474070ef77b89f026475020b67d7293471a432211d1e",
+      "expect_x_sha256_note": "the frozen pilot's shared planes hash. make_distill_corpus --expect-x-sha256 fails the run unless it matches, so 'same positions' is proven, not inferred from matching seeds.",
+      "sims_arms": [
+        50,
+        800
+      ],
+      "solved_node_propagation": true,
+      "dirichlet": false,
+      "c_puct": 1.5
+    },
+    "student": {
+      "arch": "squeeze",
+      "init_seeds": [
+        11,
+        22,
+        33
+      ],
+      "data_seeds": [
+        11,
+        22,
+        33
+      ],
+      "steps": 40000,
+      "batch_size": 512,
+      "lr": 0.002,
+      "lr_min": 0.0001,
+      "lr_half_life_steps": 15000,
+      "value_coef": 1.0,
+      "unchanged_from": "EXPERIMENT_DISTILL_PILOT.json",
+      "why_three_seeds": "One seed was authorised as a mechanistic read, but the pilot measured an across-seed spread of 0.132 at this student size -- larger than the effect being looked for. Training costs ~4 min per student, so three seeds is ~25 extra minutes and is what makes the result comparable to the published pooled 0.4108 rather than to a single noisy draw."
+    },
+    "evaluation": {
+      "primary": "student_800_solve vs student_50_solve head to head",
+      "primary_games": 800,
+      "pooled_games": 2400,
+      "external_ladder": {
+        "random": 4401,
+        "winblock": 3301,
+        "gregory_d3": 8801,
+        "gregory_d4": 8802
+      },
+      "external_games": 300,
+      "panel_unchanged_from": "EXPERIMENT_DISTILL_PILOT.json"
+    },
+    "prereg_threshold": {
+      "baseline_pooled_score": 0.4108,
+      "baseline_per_seed": {
+        "11": 0.3331,
+        "22": 0.465,
+        "33": 0.4344
+      },
+      "baseline_penalty": 0.0892,
+      "materially_shrinks": "pooled score >= 0.4554, i.e. at least HALF the 0.0892 penalty recovered, AND the 95% interval on the delta against 0.4108 excludes zero",
+      "resolution_check": "each pooled score has SE ~0.009 at n=2400. Measured half-widths for a 0.0446 shift: PRIMARY 0.0164 (5.3 SE), CONFIRMATORY 0.0238, SENSITIVITY 0.0240 (3.6 SE), WARNING 0.0798. The first three resolve the threshold effect; the fourth cannot and is not a gate. Verified by `python -m tools.pooled_estimator --demo-at-threshold` before any result existed.",
+      "gating": "Do NOT run this at all unless the measurement pass shows: forced-win dilution eliminated or sharply reduced; non-tactical targets not regressed; teacher strength maintained or improved on the ladder; and proof correction reaching enough production-relevant positions to plausibly alter training."
+    },
+    "estimator": {
+      "implementation": "tools/pooled_estimator.py",
+      "primary_statistic": "game-weighted pooled score across the three matched seed pairs: pooled = sum_s (w_s + 0.5 d_s) / sum_s n_s. NOT the equal-weight mean of three percentages -- if any pair is extended past 800 games the equal-weight mean would overweight the short pairs.",
+      "variance": "observed-variance, not binomial. A draw scores exactly 0.5 with zero variance and this matchup draws ~30%, so Wilson/binomial is needlessly conservative. mean = (w + 0.5d)/n, E[x^2] = (w + 0.25d)/n, var = E[x^2] - mean^2.",
+      "hierarchy": {
+        "PRIMARY": "pooled solved result vs the fixed published baseline 0.4108. Tests the exact preregistered intervention claim. THE ONLY PASS/FAIL GATE.",
+        "CONFIRMATORY": "paired by seed. Most efficient analysis: each solved seed is matched to the corresponding old seed, so the large seed-specific student-strength effect cancels.",
+        "SENSITIVITY": "two-sample at game level -- baseline carries its own measured sampling error.",
+        "GENERALIZATION_WARNING": "seed-level random-effects / two-sample. Reported, never a gate. With three highly heterogeneous seeds (I^2 = 0.959, spread 0.1325) it asks a broader replication-across-training-seeds question that this pilot was never powered to answer, and it will fail even for a real effect. It must not retroactively invalidate the pilot."
+      },
+      "paired_statistic": {
+        "per_seed": "delta_seed = solved_score_seed - baseline_score_seed",
+        "primary": "weighted pooled delta across paired games",
+        "secondary_descriptive": "arithmetic mean of the three seed-level deltas, with a t(0.975, df=2) interval that is wide by construction",
+        "pairing_rule": "Use paired openings and colour swaps wherever the old and new evaluations permit direct pairing. Do NOT claim pairing for games that did not use identical opening schedules. Game-level pairing is licensed iff the two runs share a match seed: _eval_openings(n, seed) depends on the seed alone and emits a prefix-stable stream, game_seed = seed + opening_idx*2 + side, and students move with sample_moves=0. Otherwise fall back to seed-level pairing, where var(delta_s) = se_new^2 + se_base^2."
+      },
+      "recovery_measures": {
+        "absolute_recovery": "solved_pooled - 0.4108",
+        "fraction_recovered": "absolute_recovery / 0.0892",
+        "remaining_penalty": "0.5 - solved_pooled",
+        "why_all_three": "so a result near 0.456 cannot be reported ambiguously as either success or continued reversal. It would be both: the intervention materially recovered the baseline penalty, while the deeper-target student still lost."
+      },
+      "scope_of_inference": "The experiment can establish recovery for these preregistered matched training seeds. It cannot precisely estimate how consistently that recovery generalizes across arbitrary new training seeds.",
+      "null_calibration": "`--demo` feeds the baseline back through the estimator: recovery comes out at +0.0000 and the gate reads False. Run before any solved result existed."
+    },
+    "decision_rules": {
+      "reversal_gone_or_flipped": "solved propagation addressed a major causal mechanism",
+      "forced_improves_reversal_remains": "dominant problem is non-tactical churn; go to target extraction or weighting, NOT optimizer work",
+      "strength_up_but_slower": "keep solving as a correctness feature and re-evaluate under EQUAL-TIME rather than equal-simulation budgets",
+      "coverage_negligible_outside_tactics": "do not spend another training run on it after this pilot"
+    }
+  },
+  "file_hashes": {
+    "models/expert_iter_v2/teacher.pt": "cfef6febd4a430368d6b9864fd4ae9e9c52d5be7cc4f560ca3723498d668d5ba",
+    "agents/gregory.py": "8d531bd07fa5b1b5301dd034a7518913b109bb9ecea42c90038e6181da899fcb",
+    "agents/deterministics.py": "76dd7513f30ac908ae77c1cf1ca0045ad98597911095deb0450cb0f75cdc2b10",
+    "agents/mcts.py": "1d9d602a71498dbdb2c0f0682317e2c958e66beba6c61c7ca7bf39f7449a36f0",
+    "agents/neural_net_agent_3.py": "64e7af58ae3e5cda071391f020ef080a9655bd7b1325bac95bb999ae2e348aed",
+    "agents/agent_base.py": "9ed9a701a5aeab9aab77e039bbd5cd2fc0a8ccf2901489d15dda0ebb878d73bc",
+    "engine/rules.py": "88c326e96a102752dfd14a341d4041049fe2399581769fdefcccf04c55d988e2",
+    "scripts/train_student_offline.py": "f1a05707c8dbd338f21c2ba12b0ad7a00d61606ec732441d3000b308d8869c20",
+    "tools/make_distill_corpus.py": "daed3844e46cea38ad408e434f3cf9333c0fdbf7b660f8cd1335e4735a4b12ca",
+    "tools/measure_solved_targets.py": "4659ab722c7c6d8437d0ffe8aa1816ce9ff2168291f6a5ec815a11c82af0307f",
+    "tools/teacher_sim_ladder.py": "c2290ffa98abd29314880459c3b3890ed12cb6b1ac4f82258f63f0deb29d895f",
+    "tools/eval_distill_pilot.py": "b1f3cafe3bbd2c2b0fd8ac5f94879942ab226c0876187fd87115a43ff879ef91",
+    "tools/pooled_estimator.py": "06cce5faca65e47b946c2141b72413a23c94b07d95d6cecf76f8936c14d92987",
+    "SEEDS_SOLVED_PILOT.json": "fabbebc1ed24b2e88e2c261c56ea14380e5389a30755d92a9c2e121964cd0f94"
+  }
+}
