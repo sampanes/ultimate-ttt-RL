@@ -119,6 +119,95 @@ def winning_moves(state, legal):
     return out
 
 
+def backfill_decision(summary, deep_sims=800):
+    """Should the expensive deep arm be rerun just to recover proof-timing buckets?
+
+    Written BEFORE the coverage numbers exist, for the same reason the estimator
+    was: a rerun costing ~55 minutes is exactly the kind of call that gets
+    rationalised after the fact in whichever direction is convenient.
+
+    The owner's rule, transcribed. Backfill 50 and 200 (cheap, ~17 min combined)
+    if non-expansion proofs are materially present at all. Rerun the deep arm
+    ONLY if timing resolution could actually change the interpretation, i.e.
+    either:
+
+      (a) more than 10% of deep-arm proofs land AFTER root expansion, or
+      (b) late proofs account for a meaningful fraction of proof-corrected
+          target changes.
+
+    (b) has no number attached in the instruction, so one is fixed here rather
+    than left to judgement at reading time: LATE_SHARE_OF_CHANGES = 0.10, the
+    same bar as (a). Reported explicitly as a chosen threshold, not a measured
+    one, so it can be argued with in advance instead of after.
+
+    Note what is NOT the trigger: mere absence of the middle buckets. Those are
+    secondary instrumentation. `visits_off_proven_at_proof` already measures
+    pre-proof target distortion DIRECTLY, rather than using arrival time as a
+    proxy for it, so the interpretation usually does not depend on the split.
+    """
+    POST_EXPANSION_SHARE = 0.10
+    LATE_SHARE_OF_CHANGES = 0.10
+
+    timing = (summary.get("proof_timing") or {}).get(str(deep_sims)) or {}
+    recon = (summary.get("reconciliation") or {}).get(str(deep_sims)) or {}
+    n_solved = timing.get("n_solved") or 0
+
+    # root_expansion and unsolved survive in the old schema via
+    # proof_at_sim_0_rate, so (a) is answerable even without the buckets.
+    at0 = timing.get("proof_at_sim_0_rate")
+    share = timing.get("share_of_proofs_from_expansion")
+    if share is None and at0 is not None and timing.get("n_searched"):
+        share = at0 * timing["n_searched"] / n_solved if n_solved else None
+    post = (1.0 - share) if share is not None else None
+
+    out = {
+        "deep_sims": deep_sims,
+        "thresholds": {"post_expansion_share": POST_EXPANSION_SHARE,
+                       "late_share_of_corrected_changes": LATE_SHARE_OF_CHANGES,
+                       "second_threshold_is_a_choice": (
+                           "the instruction said 'a meaningful fraction' "
+                           "without a number; 0.10 fixed here in advance")},
+        "measured": {"n_solved": n_solved,
+                     "share_from_expansion": share,
+                     "share_after_expansion": post,
+                     "n_proof_corrected_changes": recon.get("n_changed")},
+        "buckets_present": bool(timing.get("when_proved")),
+    }
+
+    if post is None:
+        out["verdict"] = "UNDECIDABLE -- no proof timing recorded for this arm"
+        out["backfill_cheap_arms"] = True
+        out["rerun_deep_arm"] = False
+        return out
+
+    trigger_a = post > POST_EXPANSION_SHARE
+    # (b) is only computable once the buckets exist, which is the point of the
+    # cheap backfill: run 50 and 200 first, then re-ask.
+    late = None
+    if timing.get("when_proved") and recon.get("n_changed"):
+        w = timing["when_proved"]
+        late_n = w.get("simulation_11_to_50", 0) + w.get("simulation_51_plus", 0)
+        late = late_n / recon["n_changed"]
+    out["measured"]["late_proofs_per_corrected_change"] = late
+    trigger_b = late is not None and late > LATE_SHARE_OF_CHANGES
+
+    out["trigger_a_post_expansion_exceeds_10pct"] = trigger_a
+    out["trigger_b_late_proofs_material"] = trigger_b
+    out["backfill_cheap_arms"] = bool(post > 0.0)
+    out["rerun_deep_arm"] = bool(trigger_a or trigger_b)
+    out["verdict"] = (
+        f"rerun the {deep_sims} arm: " +
+        ", ".join([t for t, ok in
+                   (("post-expansion proofs exceed 10%", trigger_a),
+                    ("late proofs are a material share of corrections",
+                     trigger_b)) if ok])
+        if out["rerun_deep_arm"] else
+        f"do NOT rerun the {deep_sims} arm -- {post:.1%} of proofs land after "
+        f"root expansion, below the 10% bar, and timing resolution cannot "
+        f"change the interpretation")
+    return out
+
+
 def tactical_class(state, legal):
     """mate_in_1 / other_tactical / non_tactical, plus the winning-move set.
 
@@ -126,9 +215,10 @@ def tactical_class(state, legal):
     either some legal move hands the opponent an immediate win (we can blunder),
     or some legal move claims a mini-board. Both are decided by playing the move
     on a clone, so the mini-board test compares mini_winners before and after
-    rather than doing index arithmetic -- tools/summarize_search_disagreement.py's
-    version of this uses `m // 9`, which is the board ROW, not the mini index, so
-    its mini_win flag is wrong and is deliberately not reused here.
+    rather than doing index arithmetic at all. That is why this file was never
+    touched by the mini-board indexing bug that invalidated the summarizer's
+    mini_win stratum (see ERRATA_MINI_INDEX_BUG.md) -- there is no index to get
+    wrong. Keep it that way.
     """
     mover = state.player
     wins, mini, blunder = [], False, False
@@ -233,7 +323,20 @@ def main():
                     help="|q_root_800 - q_root_50| below this counts as a "
                          "near-equivalent swap")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--decide-backfill", metavar="SUMMARY_JSON",
+                    help="read a landed summary.json and print the "
+                         "pre-registered proof-timing backfill decision; runs "
+                         "no search and exits")
     args = ap.parse_args()
+
+    if args.decide_backfill:
+        with open(args.decide_backfill, encoding="utf-8") as fh:
+            d = backfill_decision(json.load(fh), deep_sims=max(args.sims))
+        print(json.dumps(d, indent=2))
+        print(f"\ncheap backfill (50, 200): {d['backfill_cheap_arms']}")
+        print(f"rerun deep arm          : {d['rerun_deep_arm']}")
+        print(f"verdict: {d['verdict']}")
+        return
 
     os.makedirs(args.output, exist_ok=True)
     idx = np.load(os.path.join(args.pilot, "index.npz"), allow_pickle=True)
