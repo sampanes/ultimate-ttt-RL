@@ -217,11 +217,44 @@ A correctness fix that costs time is still a correctness fix.
 |---|---|---|
 | 1 | forced-win dilution eliminated or sharply reduced | **PASS** -- eliminated: 0.7356 -> 1.0000 win-move mass at 800 sims, entropy to 0.0 |
 | 2 | non-tactical targets not regressed | **PASS** -- mildly sharpened at every budget; 32/32 reconciliation changes are strict improvements |
-| 3 | teacher strength maintained or improved on the ladder | **PENDING** -- paired ladder in flight |
+| 3 | teacher strength maintained or improved on the ladder | **PASS** -- improved at every budget, monotonically in depth (see below) |
 | 4 | proof correction reaches enough production-relevant positions | **PASS** -- 29.4% of targets change at natural rates, 11.7% materially, concentrated in exactly the diagnosed failure mode |
 
-Gate 3 is the only one the measurement cannot answer, which is why the ladder is
-a separate step. **The distillation pilot stays blocked until it lands.**
+**All four gates pass.** The distillation pilot is unblocked.
+
+## Gate 3: the paired ladder
+
+400 games per rung. The three A/B rungs share opening seed 7810, so their deltas
+are paired across sim counts and comparable to each other, not just each to 0.5.
+
+| rung | score for solve-on | 95% CI | W/D/L | wall-clock |
+|---|---|---|---|---|
+| 50+solve vs 50 | 0.5375 | [0.5003, 0.5747] | 131/168/101 | x1.040 |
+| 200+solve vs 200 | 0.5475 | [0.5084, 0.5866] | 148/142/110 | x1.064 |
+| 800+solve vs 800 | **0.5725** | [0.5336, 0.6114] | 159/140/101 | x1.036 |
+
+Every rung separates from chance, and the gain is **monotone in depth**:
++0.0375, +0.0475, +0.0725. That is the shape the dilution mechanism predicts --
+dilution grows with sim count, so removing it pays more the deeper you search.
+It is also the strongest available evidence that the target measurement and the
+strength result are describing the same phenomenon rather than two unrelated
+effects.
+
+The lower bound at 50 sims is 0.5003, i.e. it clears zero by a hair. Read that
+rung as "solving does not hurt at shallow budgets" rather than as a measured
+gain.
+
+**Does solving erase the deeper-is-stronger finding?** No -- it slightly
+strengthens it. With both sides solving, on the same opening set the solve-off
+comparison used (seed 7705):
+
+| comparison | score for 800 | per doubling |
+|---|---|---|
+| 800 vs 200, solve off (published) | 0.5381 | +0.019 |
+| 800+solve vs 200+solve | **0.5537** [0.5157, 0.5918] | **+0.0269** |
+
+So deeper search remains genuinely better, and is worth slightly more once its
+forced-win blunders are removed.
 
 ## Open items
 
