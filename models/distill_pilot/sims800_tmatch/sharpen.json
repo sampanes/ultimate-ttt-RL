@@ -1,0 +1,8 @@
+{
+  "source_arm": 800,
+  "match_arm": 50,
+  "per_position": true,
+  "temperature": 1.0827971754982788,
+  "target_top_mass": 0.46590563654899597,
+  "achieved_top_mass": 0.46584367752075195
+}
