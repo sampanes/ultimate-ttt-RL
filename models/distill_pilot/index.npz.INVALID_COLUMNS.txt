@@ -1,0 +1,8 @@
+INVALID COLUMNS in index.npz
+
+  - forced_target
+  - mini_win
+
+Every other column in this file is unaffected.
+
+INVALID -- computed with the mini-board indexing bug (move // 9 is the board ROW, not the mini index; last_move % 9 is the COLUMN, not the forced mini). Fixed 2026-07-27. mini_win_available was mislabelled on 17.29% of positions (true rate 0.3705 vs reported 0.1977); forced_target on 11.88%, never emitting 'drawn'. Do not cite these numbers. Regenerate with the fixed tools/summarize_search_disagreement.py if they are needed.

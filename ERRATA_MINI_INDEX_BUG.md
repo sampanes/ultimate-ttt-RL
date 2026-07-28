@@ -43,11 +43,37 @@ numbers that can be caveated and cited; they are discarded.
 
 ## What is invalid
 
-* every `mini_win_available` figure ever produced by this script
-* every `forced_target` / `by_forced_target` figure ever produced by this script
+The two functions were not confined to the file they live in. `tactical_flags`
+and `forced_target_state` are imported by two other tools, so the bad values
+propagated into artifacts those tools wrote:
+
+| consumer | artifact | poisoned fields |
+|---|---|---|
+| `summarize_search_disagreement.py` | `summary_analysis.json`, `position_strata.csv.gz`, `diagnostic_top_js.json` | `by_forced_target`, `mini_win_available` |
+| `adjudicate_move_disagreement.py` | `adjudication_200v800.json` | `by_forced_target`, `mini_win_available` |
+| `make_distill_corpus.py` | every corpus `index.npz` | `forced_target`, `mini_win` columns |
+
+So, invalid:
+
+* every `mini_win_available` / `mini_win` figure produced by any of the three
+* every `forced_target` / `by_forced_target` figure produced by any of the three
 * the `forced_target` and `mini_win_available` COLUMNS of
   `position_strata.csv.gz` (both copies)
+* the `forced_target` and `mini_win` COLUMNS of every `index.npz` built before
+  2026-07-27, including `models/distill_pilot/index.npz`
 * the `forced target mini-board` table in `RESULT_SEARCH_DISAGREEMENT.md`
+
+**No consumer ever read the poisoned index columns.** Verified by tracing every
+reader of `index.npz`: `measure_solved_targets.py` reads `immediate_win` and
+`phase`; `eval_distill_pilot.py` reads `immediate_win`, `phase`, `legal_bucket`
+and `q_root_*`. Both take their mate-in-1 flag from `immediate_win`, which comes
+from `flags[0]` (`s.winner == mover`) and is clean. Nothing selects, filters,
+weights or reports on `mini_win` or `forced_target`. They are dead columns that
+were wrong.
+
+Corpora built from 2026-07-27 onward carry correct values in those columns,
+which means the columns are not comparable across that date. Since nothing reads
+them, that inconsistency is recorded rather than repaired.
 
 ## What remains valid
 
@@ -62,11 +88,16 @@ Per the owner's instruction, unrelated global metrics were NOT regenerated.
 
 ## Why it cannot reach search, targets, or the distillation findings
 
-The bug lived exclusively in a post-hoc summarizer that reads policies which
-were already computed and written to disk. Verified by audit:
+The bad expressions only ever produced DESCRIPTIVE LABELS. They labelled
+positions for reporting; they never chose a move, scored a position, selected or
+weighted a training row, or entered a loss. Verified by audit:
 
 * `tools/summarize_search_disagreement.py` is the only site of either
-  expression. The two occurrences are lines 60 and 87 of the pre-fix file.
+  expression. The two occurrences are lines 60 and 87 of the pre-fix file. The
+  other two tools import those functions rather than reimplementing them, so
+  fixing the source fixed all three call sites at once.
+* the only artifact the labels reached that anything downstream opens is
+  `index.npz`, and its poisoned columns are never read (traced above).
 * `tools/analyze_search_disagreement.py` -- the pass that actually replayed
   MCTS and produced `policies.npz` -- computes **no strata at all**. Its only
   mini-board arithmetic recomputes `mini_winners` through the engine's own

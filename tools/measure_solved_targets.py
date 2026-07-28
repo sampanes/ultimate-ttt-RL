@@ -154,10 +154,17 @@ def backfill_decision(summary, deep_sims=800):
 
     # root_expansion and unsolved survive in the old schema via
     # proof_at_sim_0_rate, so (a) is answerable even without the buckets.
+    # That field is computed over the SOLVED records only -- `(psim == 0).mean()`
+    # where psim comes from `sr`, not from every searched root -- so it is
+    # already the share of proofs from expansion and needs no rescaling. An
+    # earlier version of this function multiplied it by n_searched/n_solved and
+    # produced a NEGATIVE post-expansion share, which would have suppressed
+    # both the rerun and the cheap backfill. The 10% thresholds below are
+    # untouched; only the denominator was wrong.
     at0 = timing.get("proof_at_sim_0_rate")
     share = timing.get("share_of_proofs_from_expansion")
-    if share is None and at0 is not None and timing.get("n_searched"):
-        share = at0 * timing["n_searched"] / n_solved if n_solved else None
+    if share is None:
+        share = at0
     post = (1.0 - share) if share is not None else None
 
     out = {

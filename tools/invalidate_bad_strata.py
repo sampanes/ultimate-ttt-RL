@@ -78,6 +78,13 @@ CSV_TARGETS = {
         ["forced_target", "mini_win_available"],
     "results/disagreement_bak/position_strata.csv.gz":
         ["forced_target", "mini_win_available"],
+    # tools/make_distill_corpus.py IMPORTS the two buggy functions rather than
+    # reimplementing them, so every corpus index it wrote before 2026-07-27
+    # carries the same two poisoned columns. Nothing reads them -- every
+    # consumer takes its mate-in-1 flag from `immediate_win`, which is clean --
+    # but they are wrong and are marked so. Rewriting an .npz to embed a marker
+    # would rewrite the whole archive, so these get a sidecar too.
+    "models/distill_pilot/index.npz": ["forced_target", "mini_win"],
 }
 
 
