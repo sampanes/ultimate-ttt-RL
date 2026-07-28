@@ -177,6 +177,10 @@ SOLVED_PILOT = {
         "tools/measure_solved_targets.py",
         "tools/teacher_sim_ladder.py",
         "tools/eval_distill_pilot.py",
+        # The analysis itself is frozen, not just the data collection. Once
+        # results exist, an unhashed estimator could be adjusted to suit them.
+        "tools/pooled_estimator.py",
+        "SEEDS_SOLVED_PILOT.json",
     ],
     "corpus": {
         "source": "models/corpus_gen22",
@@ -234,15 +238,89 @@ SOLVED_PILOT = {
             "recovered, AND the 95% interval on the delta against 0.4108 "
             "excludes zero"),
         "resolution_check": (
-            "each pooled score has SE ~0.009 at n=2400, so the delta has SE "
-            "~0.013 and a 0.0446 shift separates at ~3.4 SE. The design can "
-            "answer its own question."),
+            "each pooled score has SE ~0.009 at n=2400. Measured half-widths "
+            "for a 0.0446 shift: PRIMARY 0.0164 (5.3 SE), CONFIRMATORY 0.0238, "
+            "SENSITIVITY 0.0240 (3.6 SE), WARNING 0.0798. The first three "
+            "resolve the threshold effect; the fourth cannot and is not a "
+            "gate. Verified by `python -m tools.pooled_estimator "
+            "--demo-at-threshold` before any result existed."),
         "gating": ("Do NOT run this at all unless the measurement pass shows: "
                    "forced-win dilution eliminated or sharply reduced; "
                    "non-tactical targets not regressed; teacher strength "
                    "maintained or improved on the ladder; and proof correction "
                    "reaching enough production-relevant positions to plausibly "
                    "alter training."),
+    },
+    # The analysis plan, fixed before results exist. Implemented by
+    # tools/pooled_estimator.py, which is hashed above; if the two ever
+    # disagree, this text is the pre-registration and the code is the bug.
+    "estimator": {
+        "implementation": "tools/pooled_estimator.py",
+        "primary_statistic": (
+            "game-weighted pooled score across the three matched seed pairs: "
+            "pooled = sum_s (w_s + 0.5 d_s) / sum_s n_s. NOT the equal-weight "
+            "mean of three percentages -- if any pair is extended past 800 "
+            "games the equal-weight mean would overweight the short pairs."),
+        "variance": (
+            "observed-variance, not binomial. A draw scores exactly 0.5 with "
+            "zero variance and this matchup draws ~30%, so Wilson/binomial is "
+            "needlessly conservative. mean = (w + 0.5d)/n, "
+            "E[x^2] = (w + 0.25d)/n, var = E[x^2] - mean^2."),
+        "hierarchy": {
+            "PRIMARY": (
+                "pooled solved result vs the fixed published baseline 0.4108. "
+                "Tests the exact preregistered intervention claim. THE ONLY "
+                "PASS/FAIL GATE."),
+            "CONFIRMATORY": (
+                "paired by seed. Most efficient analysis: each solved seed is "
+                "matched to the corresponding old seed, so the large "
+                "seed-specific student-strength effect cancels."),
+            "SENSITIVITY": (
+                "two-sample at game level -- baseline carries its own measured "
+                "sampling error."),
+            "GENERALIZATION_WARNING": (
+                "seed-level random-effects / two-sample. Reported, never a "
+                "gate. With three highly heterogeneous seeds (I^2 = 0.959, "
+                "spread 0.1325) it asks a broader "
+                "replication-across-training-seeds question that this pilot "
+                "was never powered to answer, and it will fail even for a real "
+                "effect. It must not retroactively invalidate the pilot."),
+        },
+        "paired_statistic": {
+            "per_seed": "delta_seed = solved_score_seed - baseline_score_seed",
+            "primary": "weighted pooled delta across paired games",
+            "secondary_descriptive": (
+                "arithmetic mean of the three seed-level deltas, with a "
+                "t(0.975, df=2) interval that is wide by construction"),
+            "pairing_rule": (
+                "Use paired openings and colour swaps wherever the old and new "
+                "evaluations permit direct pairing. Do NOT claim pairing for "
+                "games that did not use identical opening schedules. Game-level "
+                "pairing is licensed iff the two runs share a match seed: "
+                "_eval_openings(n, seed) depends on the seed alone and emits a "
+                "prefix-stable stream, game_seed = seed + opening_idx*2 + side, "
+                "and students move with sample_moves=0. Otherwise fall back to "
+                "seed-level pairing, where var(delta_s) = se_new^2 + se_base^2."),
+        },
+        "recovery_measures": {
+            "absolute_recovery": "solved_pooled - 0.4108",
+            "fraction_recovered": "absolute_recovery / 0.0892",
+            "remaining_penalty": "0.5 - solved_pooled",
+            "why_all_three": (
+                "so a result near 0.456 cannot be reported ambiguously as "
+                "either success or continued reversal. It would be both: the "
+                "intervention materially recovered the baseline penalty, while "
+                "the deeper-target student still lost."),
+        },
+        "scope_of_inference": (
+            "The experiment can establish recovery for these preregistered "
+            "matched training seeds. It cannot precisely estimate how "
+            "consistently that recovery generalizes across arbitrary new "
+            "training seeds."),
+        "null_calibration": (
+            "`--demo` feeds the baseline back through the estimator: recovery "
+            "comes out at +0.0000 and the gate reads False. Run before any "
+            "solved result existed."),
     },
     "decision_rules": {
         "reversal_gone_or_flipped": "solved propagation addressed a major causal mechanism",
