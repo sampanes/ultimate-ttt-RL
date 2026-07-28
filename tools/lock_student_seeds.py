@@ -27,11 +27,12 @@ recomputation and the fourth by direct comparison once the corpora exist.
 
     python -m tools.lock_student_seeds                  # write the lock file
     python -m tools.lock_student_seeds --check          # re-verify, exit 1 on drift
-    python -m tools.lock_student_seeds --corpora A B    # add the arm-equality proof
+    python -m tools.lock_student_seeds --corpora A B --out PROOF.json
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
@@ -106,11 +107,23 @@ def batch_order_hash(seed, n, steps, batch_size):
 
 
 def corpus_arm_equality(arm_a, arm_b):
-    """Prove the two arms differ ONLY in pi -- same x, same z, same order."""
+    """Prove the two arms differ ONLY in pi -- same x, same z, same order.
+
+    Arm layout is make_distill_corpus's: <arm>/data/shard_*.pt, each a dict of
+    torch tensors {x, pi, z, teacher_gen}. An earlier version of this function
+    globbed *.npz directly in <arm> and would have concatenated an empty list;
+    it had never been run, because it can only run once both arms exist.
+    """
     def cat(arm, key):
-        shards = sorted(f for f in os.listdir(arm) if f.endswith(".npz"))
-        return np.concatenate([np.load(os.path.join(arm, f))[key]
-                               for f in shards], axis=0)
+        shards = sorted(glob.glob(os.path.join(arm, "data", "shard_*.pt")))
+        if not shards:
+            raise SystemExit(
+                f"[X] no data/shard_*.pt under {arm} -- point --corpora at the "
+                f"ARM directories (e.g. models/distill_pilot_solve/sims50), "
+                f"not at the corpus root.")
+        return np.concatenate(
+            [torch.load(p, map_location="cpu", weights_only=False)[key].numpy()
+             for p in shards], axis=0)
 
     out = {"arm_a": arm_a, "arm_b": arm_b}
     for key in ("x", "z"):
@@ -180,6 +193,13 @@ def main():
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--corpora", nargs=2, metavar=("ARM_A", "ARM_B"))
     ap.add_argument("--n-examples", type=int, default=None)
+    ap.add_argument("--out", default=LOCK_PATH,
+                    help="where to write. Defaults to the lock file itself, "
+                         "but once that file is frozen into an experiment "
+                         "manifest it must NOT be rewritten -- point --out at "
+                         "a separate artifact instead. A preregistration is "
+                         "the plan; an arm-equality proof is a result, and a "
+                         "result must not be able to edit the plan.")
     args = ap.parse_args()
 
     doc = build(args.n_examples, args.corpora)
@@ -198,7 +218,7 @@ def main():
         print(f"[OK] {LOCK_PATH} still reproduces exactly")
         return
 
-    with open(LOCK_PATH, "w", encoding="utf-8") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
 
     print(f"student_seeds        {doc['student_seeds']}")
@@ -211,7 +231,7 @@ def main():
     print(f"distinct inits per seed   {doc['seeds_produce_distinct_inits']}")
     eq = doc["corpus_arm_equality"]
     print(f"corpus arm equality       {eq.get('status', eq.get('valid_pairing'))}")
-    print(f"[OK] wrote {LOCK_PATH}")
+    print(f"[OK] wrote {args.out}")
 
 
 if __name__ == "__main__":
