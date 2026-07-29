@@ -1,0 +1,50 @@
+{
+  "created": "2026-07-28T17:15:09",
+  "arms": [
+    50,
+    800
+  ],
+  "seeds": [
+    11,
+    22,
+    33
+  ],
+  "steps": 40000,
+  "batch_size": 512,
+  "lr": 0.002,
+  "lr_min": 0.0001,
+  "lr_half_life_steps": 15000,
+  "value_coef": 1.0,
+  "runs": {
+    "s11_sims50": {
+      "out": "models/distill_pilot_solve\\students\\s11_sims50.pt",
+      "seconds": 241.52004647254944,
+      "init_fingerprint": -14.112606452778
+    },
+    "s11_sims800": {
+      "out": "models/distill_pilot_solve\\students\\s11_sims800.pt",
+      "seconds": 241.04702639579773,
+      "init_fingerprint": -14.112606452778
+    },
+    "s22_sims50": {
+      "out": "models/distill_pilot_solve\\students\\s22_sims50.pt",
+      "seconds": 241.79116439819336,
+      "init_fingerprint": 7.553479878232
+    },
+    "s22_sims800": {
+      "out": "models/distill_pilot_solve\\students\\s22_sims800.pt",
+      "seconds": 240.64008831977844,
+      "init_fingerprint": 7.553479878232
+    },
+    "s33_sims50": {
+      "out": "models/distill_pilot_solve\\students\\s33_sims50.pt",
+      "seconds": 239.85885095596313,
+      "init_fingerprint": -13.291046839207
+    },
+    "s33_sims800": {
+      "out": "models/distill_pilot_solve\\students\\s33_sims800.pt",
+      "seconds": 243.70102095603943,
+      "init_fingerprint": -13.291046839207
+    }
+  }
+}

@@ -222,6 +222,12 @@ A correctness fix that costs time is still a correctness fix.
 
 **All four gates pass.** The distillation pilot is unblocked.
 
+**The pilot then returned a null.** See `RESULT_SOLVED_PILOT.md`: solving
+recovers 0.97% of the distillation penalty (+0.0009, threshold +0.0446), with
+resolution to spare. Everything in THIS document still holds -- the targets are
+fixed and the teacher is stronger -- but none of it reaches the student, so
+mate-in-1 dilution is not what makes the 800-sim teacher a worse teacher.
+
 ## Gate 3: the paired ladder
 
 400 games per rung. The three A/B rungs share opening seed 7810, so their deltas

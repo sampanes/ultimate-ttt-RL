@@ -1,0 +1,27 @@
+{
+  "created": "2026-07-28T16:45:09",
+  "corpus": "models/corpus_gen22",
+  "checkpoint": "models/expert_iter_v2/teacher.pt",
+  "checkpoint_sha256": "cfef6febd4a430368d6b9864fd4ae9e9c52d5be7cc4f560ca3723498d668d5ba",
+  "teacher_gen": 22,
+  "positions": 50000,
+  "sims": [
+    50,
+    800
+  ],
+  "solved_node_propagation": true,
+  "arm_suffix": "",
+  "max_shards": 500,
+  "seed": 20260727,
+  "shard_size": 10000,
+  "sampling": "uniform random, natural phase distribution (NOT stratified)",
+  "value_target": "original corpus game outcome z, identical across arms",
+  "policy_target": "arm's own full MCTS visit distribution",
+  "dirichlet": false,
+  "c_puct": 1.5,
+  "x_sha256_shared": "c0d695adca04e6ca1996474070ef77b89f026475020b67d7293471a432211d1e",
+  "search_seconds": {
+    "50": 2355.575663089752,
+    "800": 28290.30741405487
+  }
+}
