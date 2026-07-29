@@ -112,7 +112,8 @@ def parse_spec(spec):
         k, v = part.split("=", 1)
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
-                          "reuse", "solve", "maxsims", "name", "reserve"}
+                          "reuse", "solve", "maxsims", "name", "reserve",
+                          "bexp"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -137,13 +138,18 @@ class TimedPlayer:
         self.solve = o.get("solve", "1") == "1"
         self.max_sims = int(o.get("maxsims", 200_000))
         self.reserve = float(o["reserve"]) if "reserve" in o else None
+        # bexp=0 forces the old per-leaf expansion, so the batching change can
+        # be judged by STRENGTH at equal wall clock rather than by its own
+        # throughput figure.
+        self.bexp = (o["bexp"] == "1") if "bexp" in o else None
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
                          c_puct=self.c_puct, add_dirichlet_at_root=False,
                          wave_size=self.wave, solve=self.solve,
                          time_budget_ms=self.budget_ms,
-                         max_sims=self.max_sims, reserve_ms=self.reserve)
+                         max_sims=self.max_sims, reserve_ms=self.reserve,
+                         batched_expand=self.bexp)
         self.searcher = TreeReuseSearcher(self.mcts, enabled=self.reuse,
                                           count_nodes=count_nodes)
         self.name = o.get("name") or self._auto_name()
@@ -159,10 +165,14 @@ class TimedPlayer:
             bits.append("reuse")
         if self.solve:
             bits.append("solve")
+        if self.mcts.batched_expand:
+            bits.append("bexp")
         return "-".join(bits)
 
     def config(self):
         return {"name": self.name, "budget_ms": self.budget_ms,
+                "batched_expand": self.mcts.batched_expand,
+                "reserve_ms": self.mcts.reserve_ms,
                 "n_sims": None if self.budget_ms else self.n_sims,
                 "wave_size": self.wave, "c_puct": self.c_puct,
                 "tree_reuse": self.reuse, "solve": self.solve,
@@ -239,7 +249,7 @@ REC_COLS = ("move_ms", "search_ms", "simulations_completed",
             "filled", "move_num", "worst_chunk_ms")
 
 
-def play_match(pa, pb, n_games, seed, warmup=0):
+def play_match(pa, pb, n_games, seed, warmup=0, gc_mode="deferred"):
     """Paired openings, colours swapped, per-game reseed.
 
     Line-for-line the same game protocol as
@@ -290,6 +300,13 @@ def play_match(pa, pb, n_games, seed, warmup=0):
                     state.make_move(mv)
                     move_num += 1
                 played += 1
+                # Collect between GAMES, never between moves: in deployment the
+                # opponent's turn is genuinely free time, but in this harness
+                # both players share one process, so a collect between moves
+                # would land inside the other player's budget and corrupt its
+                # latency. A game boundary belongs to neither.
+                if gc_mode == "deferred":
+                    gc.collect()
                 if is_warmup:
                     continue
                 outcomes.append(1.0 if state.winner == a_side else
@@ -479,12 +496,17 @@ def main():
     ap.add_argument("--anchors", nargs="+", default=["gregory_d4"],
                     choices=list(ANCHOR_SEEDS))
     ap.add_argument("--seed", type=int, default=ARENA_BASE_SEED)
-    ap.add_argument("--gc-off", action="store_true",
-                    help="DIAGNOSTIC ONLY, not a fix: disable cyclic GC for the "
-                         "whole run to test whether the latency tail is GC "
-                         "pauses. MCTSNode forms parent<->children cycles, so "
-                         "discarded trees can only be freed by the cyclic "
-                         "collector -- leaving this on for a long run leaks.")
+    ap.add_argument("--gc", choices=["deferred", "auto", "off"],
+                    default="deferred",
+                    help="deferred (default): automatic cyclic collection off "
+                         "during play, one explicit collect at each GAME "
+                         "boundary. Safe because TreeReuseSearcher.release() "
+                         "breaks the tree cycles itself, so refcounting "
+                         "reclaims trees and the collect is only insurance "
+                         "against third-party cycles. auto: CPython defaults, "
+                         "whose gen-2 scans walk the whole live tree mid-chunk "
+                         "and own the latency tail. off: never collect -- "
+                         "diagnostic only, leaks any cycle we do not break.")
     ap.add_argument("--count-nodes", action="store_true",
                     help="two subtree walks per move; instrumentation only, "
                          "off during a timing run")
@@ -496,9 +518,10 @@ def main():
 
     if args.device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    if args.gc_off:
+    if args.gc != "auto":
         gc.disable()
-        print("[!] cyclic GC DISABLED -- diagnostic run, memory will grow")
+        print(f"[!] automatic cyclic GC off (--gc {args.gc}); "
+              f"{'collecting at game boundaries' if args.gc == 'deferred' else 'NEVER collecting -- diagnostic'}")
 
     payload = {"tag": args.tag, "mode": args.mode, "games": args.games,
                "warmup_games": args.warmup_games, "seed": args.seed,
@@ -530,7 +553,8 @@ def main():
     results = {}
     for a, b, seed, label in pairs:
         t0 = time.time()
-        outcomes = play_match(a, b, args.games, seed, warmup=args.warmup_games)
+        outcomes = play_match(a, b, args.games, seed, warmup=args.warmup_games,
+                              gc_mode=args.gc)
         dt = time.time() - t0
         score, (lo, hi), se = outcome_ci(outcomes)
         w = sum(1 for o in outcomes if o == 1.0)
