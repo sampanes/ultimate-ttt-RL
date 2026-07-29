@@ -844,11 +844,46 @@ class TreeReuseSearcher:
         # search, but it is instrumentation, so it is opt-in and never on in a
         # timing run that is measuring the search itself.
         self.count_nodes = count_nodes
+        self._root = None          # before reset(), which now releases it
         self.reset()
         self.reset_stats()
 
+    @staticmethod
+    def release(root, keep=None):
+        """Break parent<->children cycles so refcounting can free the tree now.
+
+        THE LATENCY TAIL IS THE CYCLIC COLLECTOR. A discarded search tree is
+        cyclic garbage -- every node points at its parent and every parent at
+        its children -- so refcounting cannot touch it and only gc can. At a 1 s
+        budget with ~2,700 expansions per move that is a lot of garbage per
+        move, and the collector's pauses land mid-chunk where no deadline
+        predictor can see them. Measured, wave 8 batched:
+
+            gc on   worst chunk mean 25.2 ms, p99 87.6, max 90.6  -> p99 1037 ms
+            gc off  worst chunk mean  3.1 ms, p99  5.2, max  7.9  -> p99  980 ms
+
+        Simply disabling gc would leak, because these cycles are exactly what
+        needs collecting. Breaking them ourselves means the tree dies by
+        refcount, at a moment we choose, for one O(nodes) walk instead of an
+        unpredictable full-heap scan.
+
+        `keep` is a subtree to spare -- it and everything under it are left
+        untouched, which is what makes this safe to call right after a re-root.
+        """
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if n is keep:
+                continue          # retained: leave its subtree wholly intact
+            kids = n.children
+            n.children = {}
+            n.parent = None
+            stack.extend(kids.values())
+
     def reset(self):
         """Drop the tree. Call between games."""
+        if self._root is not None:
+            self.release(self._root)
         self._root = None
         self._board = None
         self._to_play = None
@@ -924,6 +959,13 @@ class TreeReuseSearcher:
             self.stat_inherited_sims += root.N
             reused_nodes = self._count(root) if self.count_nodes else 0
             self.stat_reused_nodes += reused_nodes
+
+        # Free last move's tree BEFORE searching, sparing whatever was adopted.
+        # Order matters: after _adopt (which needs the old root) and after
+        # _count (which needs it intact), but before the clock starts, so the
+        # walk is never charged to the deadline it exists to protect.
+        if self._root is not None:
+            self.release(self._root, keep=root)
 
         pi, new_root = self.mcts.search(state, root=root)
         if isinstance(self.mcts.last, dict):

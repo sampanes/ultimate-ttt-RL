@@ -349,6 +349,51 @@ def test_reuse_rejects_when_we_did_not_play_the_move_it_stored():
     assert s._to_play == st.player
 
 
+def test_release_breaks_cycles_so_the_tree_dies_by_refcount():
+    """With cyclic GC off, a released tree must still be freed. If it is not,
+    the latency fix leaks instead of collecting, which is worse than the
+    problem it solves."""
+    import gc as _gc
+
+    from agents.mcts import MCTSNode
+
+    def live():
+        # MCTSNode has __slots__ without __weakref__, so weak references are
+        # impossible; counting tracked instances is the direct evidence.
+        return sum(1 for o in _gc.get_objects() if type(o) is MCTSNode)
+
+    s = _fresh_searcher(n_sims=300)
+    _gc.collect()
+    before = live()
+    pi, root = s.search(GameState())
+    del pi, root                     # searcher._root is the only handle left
+    grown = live()
+    assert grown - before > 100, (before, grown)
+
+    _gc.disable()
+    try:
+        s.reset()
+        after = live()
+    finally:
+        _gc.enable()
+    leaked = after - before
+    assert leaked < 0.1 * (grown - before), (before, grown, after)
+
+
+def test_release_spares_the_retained_subtree():
+    s = _fresh_searcher(n_sims=600)
+    st = GameState()
+    pi, _ = s.search(st)
+    st.make_move(int(pi.argmax()))
+    st.make_move(_first_legal(st))
+    _pi2, root2 = s.search(st)
+    # The adopted root must still carry its inherited statistics and children:
+    # releasing the old tree must not have emptied the part we kept.
+    assert s.stat_hits == 1, s.stats()
+    assert root2.children, "retained subtree was cleared by release()"
+    assert root2.N > 0
+
+
 def test_reset_between_games_drops_the_tree():
     s = _fresh_searcher()
     s.search(GameState())
