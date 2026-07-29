@@ -110,15 +110,26 @@ def board_to_tensor(board):# TODO, player=None):
     arr[arr == O] = -1.0
     return torch.from_numpy(arr).view(-1)  # flatten to vector
 
-_FILL_PLANES = None   # tri-state cache: None=unknown, then bool (per engine)
+# Explicit override: None = detect, True/False = force. scripts/test_hot_path
+# sets it to False to obtain the pure-numpy reference to compare against.
+_FILL_PLANES = None
+# Detected capability, keyed by state TYPE. It was previously one process-wide
+# bool answered by whichever engine happened to be constructed first, which is
+# wrong as soon as both are live in one process (a test or tool that touches
+# GameState and _PyGameState): the C++ answer was reused for the Python state
+# and raised AttributeError on the missing method.
+_FILL_PLANES_BY_TYPE = {}
 
 
 def _has_fill_planes(state) -> bool:
-    """True when the C++ engine exposes fill_planes (S8 fast path)."""
-    global _FILL_PLANES
-    if _FILL_PLANES is None:
-        _FILL_PLANES = hasattr(state, "fill_planes")
-    return _FILL_PLANES
+    """True when this state's engine exposes fill_planes (S8 fast path)."""
+    if _FILL_PLANES is not None:
+        return _FILL_PLANES
+    t = type(state)
+    got = _FILL_PLANES_BY_TYPE.get(t)
+    if got is None:
+        got = _FILL_PLANES_BY_TYPE[t] = hasattr(state, "fill_planes")
+    return got
 
 
 def wave_planes(states, device) -> torch.Tensor:
