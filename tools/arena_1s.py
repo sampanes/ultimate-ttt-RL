@@ -45,6 +45,7 @@ counts. Latency is therefore reported as a distribution, never as one number.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import random
@@ -111,7 +112,7 @@ def parse_spec(spec):
         k, v = part.split("=", 1)
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
-                          "reuse", "solve", "maxsims", "name"}
+                          "reuse", "solve", "maxsims", "name", "reserve"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -135,13 +136,14 @@ class TimedPlayer:
         self.reuse = o.get("reuse", "0") == "1"
         self.solve = o.get("solve", "1") == "1"
         self.max_sims = int(o.get("maxsims", 200_000))
+        self.reserve = float(o["reserve"]) if "reserve" in o else None
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
                          c_puct=self.c_puct, add_dirichlet_at_root=False,
                          wave_size=self.wave, solve=self.solve,
                          time_budget_ms=self.budget_ms,
-                         max_sims=self.max_sims)
+                         max_sims=self.max_sims, reserve_ms=self.reserve)
         self.searcher = TreeReuseSearcher(self.mcts, enabled=self.reuse,
                                           count_nodes=count_nodes)
         self.name = o.get("name") or self._auto_name()
@@ -193,6 +195,7 @@ class TimedPlayer:
                 rec["tree_nodes_reused"] or 0, rec["inherited_simulations"],
                 rec["transposition_hits"], mv,
                 int(np.count_nonzero(state.board)), move_num,
+                rec["worst_chunk_ms"],
             ))
             self.policies.append(pi.copy())
         return mv
@@ -225,14 +228,15 @@ class AnchorPlayer:
         ms = (time.perf_counter() - t0) * 1000.0
         if self.recording:
             self.records.append((ms, ms, 0, 0, 0, 0, 0, 0, int(mv),
-                                 int(np.count_nonzero(state.board)), move_num))
+                                 int(np.count_nonzero(state.board)), move_num,
+                                 0.0))
         return int(mv)
 
 
 REC_COLS = ("move_ms", "search_ms", "simulations_completed",
             "neural_evaluations", "nodes_expanded", "tree_nodes_reused",
             "inherited_simulations", "transposition_hits", "chosen_move",
-            "filled", "move_num")
+            "filled", "move_num", "worst_chunk_ms")
 
 
 def play_match(pa, pb, n_games, seed, warmup=0):
@@ -321,6 +325,13 @@ def latency_report(player):
         "overhead_ms": {
             "mean": float((ms - col["search_ms"]).mean()),
             "max": float((ms - col["search_ms"]).max()),
+        },
+        # A chunk is atomic, so its duration is the floor on how far a search
+        # can overrun the deadline no matter how good the predictor is.
+        "worst_chunk_ms": {
+            "mean": float(col["worst_chunk_ms"].mean()),
+            "p99": float(np.percentile(col["worst_chunk_ms"], 99)),
+            "max": float(col["worst_chunk_ms"].max()),
         },
         "latency_ms": {
             "mean": float(ms.mean()),
@@ -421,6 +432,9 @@ def print_report(player, rep):
     if "requirement" in rep:
         r = rep["requirement"]
         verdict = "PASS" if r["PASS"] else "FAIL"
+        w = rep["worst_chunk_ms"]
+        print(f"    worst chunk  mean {w['mean']:6.1f} ms  p99 {w['p99']:6.1f}  "
+              f"max {w['max']:6.1f}   (atomic: the floor on any overrun)")
         print(f"    requirement  [{verdict}] p99 {r['p99_ms']:.1f} <= "
               f"{REQUIREMENT['p99_ms']:.0f} and max {r['max_ms']:.1f} <= "
               f"{REQUIREMENT['max_ms']:.0f}  "
@@ -465,6 +479,12 @@ def main():
     ap.add_argument("--anchors", nargs="+", default=["gregory_d4"],
                     choices=list(ANCHOR_SEEDS))
     ap.add_argument("--seed", type=int, default=ARENA_BASE_SEED)
+    ap.add_argument("--gc-off", action="store_true",
+                    help="DIAGNOSTIC ONLY, not a fix: disable cyclic GC for the "
+                         "whole run to test whether the latency tail is GC "
+                         "pauses. MCTSNode forms parent<->children cycles, so "
+                         "discarded trees can only be freed by the cyclic "
+                         "collector -- leaving this on for a long run leaks.")
     ap.add_argument("--count-nodes", action="store_true",
                     help="two subtree walks per move; instrumentation only, "
                          "off during a timing run")
@@ -476,6 +496,9 @@ def main():
 
     if args.device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    if args.gc_off:
+        gc.disable()
+        print("[!] cyclic GC DISABLED -- diagnostic run, memory will grow")
 
     payload = {"tag": args.tag, "mode": args.mode, "games": args.games,
                "warmup_games": args.warmup_games, "seed": args.seed,

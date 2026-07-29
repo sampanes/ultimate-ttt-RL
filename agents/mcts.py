@@ -152,7 +152,8 @@ class MCTS:
                  add_dirichlet_at_root=False, dir_alpha=0.3, dir_eps=0.25,
                  wave_size=1, solve=False,
                  time_budget_ms=None, max_sims=0, min_sims=1,
-                 deadline_margin=1.15):
+                 deadline_margin=1.15, reserve_ms=None,
+                 batched_expand=None):
         self.model    = model
         self.device   = device
         self.n_sims   = n_sims
@@ -171,6 +172,24 @@ class MCTS:
         self.max_sims = int(max_sims)
         self.min_sims = max(1, int(min_sims))
         self.deadline_margin = float(deadline_margin)
+        # Headroom held back from the stated budget. Predictive admission
+        # handles the ordinary case, but it can only foresee a chunk that
+        # behaves like recent chunks: a GC pause or a driver hiccup lands
+        # mid-chunk and no predictor can see it coming. Measured on the first
+        # 1 s baseline -- p99 1000.6 ms, worst move 1054.9 -- so the tail is
+        # real, small, and exactly what a reserve is for.
+        self.reserve_ms = (max(5.0, 0.02 * time_budget_ms)
+                           if reserve_ms is None and time_budget_ms
+                           else (reserve_ms or 0.0))
+        # Batched wave expansion (see _expand_wave). DEFAULTS TO TIMED MODE
+        # ONLY, and that restriction is deliberate rather than cautious: the
+        # wave path is what generated the frozen distillation corpora, and
+        # softmaxing a (K, 81) block reduces in a different order than 81
+        # separate vectors, so the priors differ in the last bits. Under a clock
+        # that is irrelevant; under a fixed simulation count it would make
+        # tools/extract_child_q report drift against artifacts already hashed.
+        self.batched_expand = (bool(time_budget_ms) if batched_expand is None
+                               else bool(batched_expand))
         self.reset_stats()
 
     def reset_stats(self):
@@ -241,6 +260,8 @@ class MCTS:
             # --- wall-clock budget accounting -----------------------------
             "elapsed_ms": elapsed * 1000.0,
             "budget_ms": self.time_budget_ms,
+            "reserve_ms": self.reserve_ms,
+            "worst_chunk_ms": getattr(self, "worst_chunk_ms", 0.0),
             "simulations_completed": sims_done,
             "neural_evaluations": nn_total,
             "nodes_expanded": self.stat_expansions - self._search_exp_start,
@@ -341,6 +362,11 @@ class MCTS:
         sims_done = 0
         pred = None
         self.stopped_early = False
+        # Worst single chunk in this search. A chunk is atomic -- once a
+        # batched forward pass is launched the deadline cannot interrupt it --
+        # so this is the floor on how far a search can overrun, and the number
+        # to look at when the reserve turns out to be too small.
+        self.worst_chunk_ms = 0.0
         while True:
             if self.max_sims and sims_done >= self.max_sims:
                 break
@@ -385,6 +411,8 @@ class MCTS:
             else:
                 self._run_wave(root, root_state, chunk, sims_done)
             dt = time.perf_counter() - t0
+            if dt * 1000.0 > self.worst_chunk_ms:
+                self.worst_chunk_ms = dt * 1000.0
             # Rise to a slow chunk immediately, decay away from it gradually:
             # a single stall must not be averaged into invisibility, because
             # the next chunk is the one that would blow the deadline.
@@ -406,7 +434,7 @@ class MCTS:
         `_reroot` is the supported way to satisfy them.
         """
         t_search = time.perf_counter()
-        deadline = (t_search + self.time_budget_ms / 1000.0
+        deadline = (t_search + (self.time_budget_ms - self.reserve_ms) / 1000.0
                     if self.time_budget_ms else None)
         reused = root is not None
         inherited = root.N if reused else 0
@@ -564,9 +592,13 @@ class MCTS:
                 logits_b = logits_b.unsqueeze(0)
                 values_b = values_b.unsqueeze(0)
 
-            for k, (_, node, state) in enumerate(to_eval):
-                self._expand_from_logits(node, state, logits_b[k], add_noise=False)
-                leaf_values[id(node)] = float(values_b[k].item())
+            if self.batched_expand:
+                leaf_values = self._expand_wave(to_eval, logits_b, values_b)
+            else:
+                for k, (_, node, state) in enumerate(to_eval):
+                    self._expand_from_logits(node, state, logits_b[k],
+                                             add_noise=False)
+                    leaf_values[id(node)] = float(values_b[k].item())
 
         # Undo virtual loss then apply real backup for each pending sim.
         for node, state, path in pending:
@@ -669,6 +701,46 @@ class MCTS:
             cur = cur.parent
 
     # ------------------------------------------------------------------
+
+    def _expand_wave(self, to_eval, logits_b, values_b):
+        """Expand a whole wave with TWO device transfers instead of two per leaf.
+
+        `_expand_from_logits` masks and softmaxes ON the device and then pulls
+        the row back, so every leaf costs a host->device tensor build
+        (`torch.tensor(list, device=cuda)`, already known to be slow for small
+        lists) plus a device->host sync. For a wave of K that is 2K round trips
+        AFTER the single batched forward pass, which is why batch size stopped
+        paying: measured at a 1 s budget, 1,399 nn-evals/s at wave 8 against
+        1,525 at wave 64 -- 9% for an 8x batch. The forward pass was never the
+        bottleneck; the per-leaf traffic around it was.
+
+        Masking the whole (K, 81) block at once leaves exactly two transfers.
+
+        Returns {id(node): leaf_value}.
+        """
+        k = len(to_eval)
+        valids = [rule_utl_valid_moves(s.board, s.last_move, s.mini_winners)
+                  for _, _, s in to_eval]
+        mask = np.zeros((k, 81), dtype=bool)
+        for i, v in enumerate(valids):
+            mask[i, v] = True
+        mask_t = torch.from_numpy(mask).to(logits_b.device)
+        probs = F.softmax(logits_b.masked_fill(~mask_t, float("-inf")), dim=1)
+        probs_np = probs.cpu().numpy()                       # one transfer
+        values_np = values_b.reshape(-1).cpu().numpy()       # one transfer
+
+        out = {}
+        for i, (_pi, node, state) in enumerate(to_eval):
+            row = probs_np[i]
+            next_to_play = O if state.player == X else X
+            for mv in valids[i]:
+                node.children[mv] = MCTSNode(parent=node, prior=float(row[mv]),
+                                             move=mv, to_play=next_to_play)
+            self.stat_expansions += 1
+            if self.solve:
+                self._mark_terminal_children(node, state)
+            out[id(node)] = float(values_np[i])
+        return out
 
     def _expand_from_logits(self, node, state, logits, add_noise=False):
         """Populate node.children from pre-computed 1-D (81,) policy logits."""

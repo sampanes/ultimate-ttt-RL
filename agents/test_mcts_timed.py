@@ -190,6 +190,69 @@ def test_fixed_sim_path_never_stops_early():
 
 
 # --------------------------------------------------------------------------- #
+# 2b. Batched wave expansion
+# --------------------------------------------------------------------------- #
+class RandomLogitStub:
+    """Distinct logits per row, so a batched softmax that silently broadcast
+    one row over the whole block would be caught."""
+
+    def __init__(self, seed=7):
+        self.g = torch.Generator().manual_seed(seed)
+
+    def forward_both(self, x):
+        k = x.shape[0] if x.dim() == 4 else 1
+        logits = torch.randn(k, 81, generator=self.g) * 2.0
+        values = torch.randn(k, generator=self.g)
+        if k == 1:
+            # Mirror ConvNet.forward_both, which squeezes batch=1 to
+            # (81,)/scalar. The wave path re-adds the dimension.
+            return logits[0], values[0]
+        return logits, values
+
+
+def test_batched_expansion_matches_per_leaf():
+    """Same priors and same leaf values, to floating point. The batched path
+    exists purely to remove device round trips; if it changes what the search
+    sees it is not an optimisation, it is a different search."""
+    for wave in (2, 8, 16):
+        trees = []
+        for batched in (False, True):
+            m = MCTS(RandomLogitStub(), "cpu", n_sims=wave * 20,
+                     wave_size=wave, add_dirichlet_at_root=False,
+                     batched_expand=batched)
+            _pi, root = m.search(_play(GameState(), 3))
+            trees.append(root)
+        a, b = trees
+        assert sorted(a.children) == sorted(b.children), wave
+        for mv in a.children:
+            ca, cb = a.children[mv], b.children[mv]
+            assert abs(ca.prior - cb.prior) < 1e-6, (wave, mv, ca.prior, cb.prior)
+            assert ca.N == cb.N, (wave, mv, ca.N, cb.N)
+            assert abs(ca.W - cb.W) < 1e-4, (wave, mv, ca.W, cb.W)
+
+
+def test_batched_expansion_is_off_for_fixed_simulation_counts():
+    """The wave path generated the frozen distillation corpora. A different
+    softmax reduction order changes priors in the last bits, which would make
+    tools/extract_child_q report drift against hashed artifacts."""
+    assert MCTS(UniformZeroStub(), "cpu", n_sims=64).batched_expand is False
+    assert MCTS(UniformZeroStub(), "cpu", n_sims=10 ** 9,
+                time_budget_ms=100).batched_expand is True
+
+
+def test_batched_expansion_marks_terminal_children_when_solving():
+    """_mark_terminal_children is what proves a mate at expansion; losing it in
+    the batched path would silently disable solving for every wave leaf."""
+    st = _state_one_move_from_x_win()
+    m = MCTS(UniformZeroStub(), "cpu", n_sims=10 ** 9, wave_size=4,
+             add_dirichlet_at_root=False, solve=True, time_budget_ms=300,
+             batched_expand=True)
+    pi, root = m.search(st)
+    assert int(pi.argmax()) == 8
+    assert root.solved == 1
+
+
+# --------------------------------------------------------------------------- #
 # 3. Tree reuse -- adoption safety
 # --------------------------------------------------------------------------- #
 def _fresh_searcher(n_sims=64, **kw):
