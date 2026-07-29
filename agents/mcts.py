@@ -150,7 +150,9 @@ class MCTS:
 
     def __init__(self, model, device, n_sims=100, c_puct=1.5,
                  add_dirichlet_at_root=False, dir_alpha=0.3, dir_eps=0.25,
-                 wave_size=1, solve=False):
+                 wave_size=1, solve=False,
+                 time_budget_ms=None, max_sims=0, min_sims=1,
+                 deadline_margin=1.15):
         self.model    = model
         self.device   = device
         self.n_sims   = n_sims
@@ -162,6 +164,13 @@ class MCTS:
         # OFF by default on purpose: production expert iteration must not change
         # behaviour just because this landed. Callers opt in explicitly.
         self.solve = bool(solve)
+        # Wall-clock mode. None keeps the fixed-simulation behaviour exactly.
+        # See _run_budget for why the deadline is predictive rather than checked
+        # after the fact, and what max_sims / min_sims / deadline_margin bound.
+        self.time_budget_ms = time_budget_ms
+        self.max_sims = int(max_sims)
+        self.min_sims = max(1, int(min_sims))
+        self.deadline_margin = float(deadline_margin)
         self.reset_stats()
 
     def reset_stats(self):
@@ -173,6 +182,9 @@ class MCTS:
         self.stat_nn_batches = 0   # forward_both calls
         self.stat_probes     = 0   # clone+make_move terminal probes
         self.stat_solved_roots = 0
+        self.stat_sims       = 0   # simulations actually run (varies under a clock)
+        self.stat_early_stops = 0  # deadline searches that returned on a proof
+        self.stopped_early   = False
         # Own wall clock. A match's total elapsed time cannot be split between
         # two arms after the fact, so each search times itself.
         self.stat_seconds    = 0.0
@@ -205,10 +217,41 @@ class MCTS:
         self._proof_off_visits = off_proven
         self._proof_nn_evals = self.stat_nn_evals
 
-    def _finish_record(self, root, pi_raw_argmax, corrected_argmax):
-        """One row per search, for the coverage / timing / reconciliation tables."""
+    def _begin_record(self):
+        """Snapshot the cumulative counters so the per-search deltas are exact."""
+        self._search_nn_start = self.stat_nn_evals
+        self._search_exp_start = self.stat_expansions
+        self._search_probe_start = self.stat_probes
+        self._proof_sim = None
+        self._proof_refuted_visits = None
+        self._proof_off_visits = None
+        self._proof_nn_evals = None
+
+    def _finish_record(self, root, pi_raw_argmax, corrected_argmax,
+                       sims_done=0, elapsed=0.0, inherited=0, reused=False):
+        """One row per search: what it cost, what it decided, what it inherited.
+
+        Always written, including when solve=False. Under a wall clock the
+        per-move cost IS the measurement -- `simulations_completed` is an output
+        rather than a setting -- so a caller must be able to read it off every
+        search, not only the solved ones.
+        """
         nn_total = self.stat_nn_evals - self._search_nn_start
         rec = {
+            # --- wall-clock budget accounting -----------------------------
+            "elapsed_ms": elapsed * 1000.0,
+            "budget_ms": self.time_budget_ms,
+            "simulations_completed": sims_done,
+            "neural_evaluations": nn_total,
+            "nodes_expanded": self.stat_expansions - self._search_exp_start,
+            "tree_nodes_reused": None,   # filled by the caller that re-roots
+            "inherited_simulations": inherited,
+            "reused_tree": reused,
+            "stopped_early": self.stopped_early,
+            "transposition_hits": 0,     # no DAG yet; key kept so the schema is
+                                         # stable across the search-engine work
+            "chosen_move": int(corrected_argmax),
+            # --- pre-existing fields --------------------------------------
             "root_solved": root.solved,
             "root_n": root.N,
             "n_sims": self.n_sims,
@@ -236,74 +279,151 @@ class MCTS:
             rec["corrected_argmax_solved"] = cor_child.solved
         self.last = rec
 
-    @torch.no_grad()
-    def search(self, root_state):
-        t_search = time.perf_counter()
-        root = MCTSNode(to_play=root_state.player)
-        self.stat_searches += 1
-        if self.solve:
-            self._search_nn_start = self.stat_nn_evals
-            self._search_exp_start = self.stat_expansions
-            self._search_probe_start = self.stat_probes
-            self._proof_sim = None
-            self._proof_refuted_visits = None
-            self._proof_off_visits = None
-            self._proof_nn_evals = None
+    def _run_sim(self, root, root_state):
+        """One simulation of the original serial path (wave_size == 1)."""
+        node  = root
+        state = _clone(root_state)
+
+        while node.children and not node.is_terminal:
+            node = self._best_child(node)
+            state.make_move(node.move)
+            if state.winner is not None:
+                node.is_terminal    = True
+                node.terminal_value = self._terminal_value(state, node.to_play)
+                if self.solve:
+                    self._mark_solved(node, node.terminal_value)
+                break
+            if node.solved is not None:
+                break   # proven subtree: no point searching it again
+
+        if node.solved is not None:
+            value = float(node.solved)
+        elif node.is_terminal:
+            value = node.terminal_value
         else:
-            # None, not a stale dict: `last` is only written when solving, and a
-            # caller reading the PREVIOUS position's record would be a silent
-            # data error rather than a visible one.
-            self.last = None
-        self._expand(root, root_state, add_noise=self.add_dirichlet)
+            value = self._expand(node, state, add_noise=False)
+            # Expansion may itself have proved the node (a terminal child was
+            # found). An exact value beats the net's guess.
+            if node.solved is not None:
+                value = float(node.solved)
+
+        self._backup(node, value)
+
+    def _run_budget(self, root, root_state, deadline):
+        """Drive simulations until the budget -- count or clock -- runs out.
+
+        Returns the number of simulations actually completed.
+
+        DEADLINE ADMISSION. A chunk is started only if it is PREDICTED to finish
+        before the deadline. Checking the clock afterwards instead would
+        overshoot by a whole chunk on essentially every move, and a chunk here
+        is a batched forward pass -- exactly the p99 tail a move budget exists
+        to bound. The predictor is deliberately pessimistic (fast up, slow down,
+        times a margin) because overshooting the budget FAILS the requirement
+        while stopping early only costs a few simulations.
+
+        The fixed-simulation path is unchanged: with `deadline is None` the
+        chunking, the _MIN_WAVES clamp and the proof-note points are the same
+        ones the pre-existing loops used.
+        """
+        serial = self.wave_size == 1
+        if deadline is None:
+            # Clamp so every search gets at least _MIN_WAVES waves of depth.
+            eff = 1 if serial else max(
+                1, min(self.wave_size, self.n_sims // self._MIN_WAVES))
+        else:
+            # Under a clock the total is not known in advance, so the caller's
+            # wave_size stands; a 1 s search runs hundreds of waves and the
+            # depth floor _MIN_WAVES protects is never in danger. The arena
+            # asserts the realised wave count anyway.
+            eff = 1 if serial else self.wave_size
+
+        sims_done = 0
+        pred = None
+        self.stopped_early = False
+        while True:
+            if self.max_sims and sims_done >= self.max_sims:
+                break
+            # A PROVEN root cannot be improved on. search() returns the proof's
+            # move regardless of how the remaining visits fall, so every further
+            # simulation is a descent into an already-settled subtree that
+            # cannot change the answer -- and because those descents skip the
+            # network they are nearly free, so the loop would happily burn the
+            # whole deadline on tens of thousands of them. Returning at once is
+            # both correct and the single cheapest latency win available.
+            #
+            # Deadline mode ONLY. Under a fixed simulation count the visit
+            # counts are the product (they are distillation targets), and the
+            # frozen pilot corpora were generated by that path -- changing it
+            # would silently invalidate artifacts already on disk.
+            #
+            # The min_sims guard is load-bearing, not tidiness. A root proven at
+            # EXPANSION (before any simulation) has zero visits everywhere, and
+            # a proven loss or draw falls through to the visit counts -- so
+            # breaking at sims_done == 0 hands back an all-zero policy whose
+            # argmax is cell 0, an illegal move. One chunk gives the counts
+            # something to order.
+            if (deadline is not None and self.solve
+                    and root.solved is not None
+                    and sims_done >= self.min_sims):
+                self.stopped_early = True
+                self.stat_early_stops += 1
+                break
+            if deadline is None:
+                if sims_done >= self.n_sims:
+                    break
+                chunk = min(eff, self.n_sims - sims_done)
+            else:
+                chunk = eff
+                if sims_done >= self.min_sims and pred is not None:
+                    if time.perf_counter() + pred * self.deadline_margin > deadline:
+                        break
+
+            t0 = time.perf_counter()
+            if serial:
+                self._run_sim(root, root_state)
+            else:
+                self._run_wave(root, root_state, chunk, sims_done)
+            dt = time.perf_counter() - t0
+            # Rise to a slow chunk immediately, decay away from it gradually:
+            # a single stall must not be averaged into invisibility, because
+            # the next chunk is the one that would blow the deadline.
+            pred = dt if pred is None else max(dt, 0.6 * pred + 0.4 * dt)
+
+            sims_done += chunk
+            if self.solve:
+                self._note_proof(root, sims_done)
+        return sims_done
+
+    @torch.no_grad()
+    def search(self, root_state, root=None):
+        """Run one search; return (visit policy, root node).
+
+        `root` continues from a subtree kept across a move (see TreeReuseSearcher).
+        It must already be expanded, its `to_play` must match `root_state.player`,
+        and it must have been DETACHED from its old parent -- otherwise every
+        backup walks up into the discarded tree. The caller owns those checks;
+        `_reroot` is the supported way to satisfy them.
+        """
+        t_search = time.perf_counter()
+        deadline = (t_search + self.time_budget_ms / 1000.0
+                    if self.time_budget_ms else None)
+        reused = root is not None
+        inherited = root.N if reused else 0
+        if not reused:
+            root = MCTSNode(to_play=root_state.player)
+        self.stat_searches += 1
+        self._begin_record()
+        if not reused:
+            self._expand(root, root_state, add_noise=self.add_dirichlet)
         if self.solve:
             # A mate-in-1 root is proven by the root expansion itself, before a
             # single simulation runs. Recording that as sim 0 is exact, and it
             # is the case the whole feature exists for.
             self._note_proof(root, 0)
 
-        if self.wave_size == 1:
-            # Original single-sim path -- byte-identical to prior behaviour
-            # whenever solve=False.
-            for sim_i in range(self.n_sims):
-                node  = root
-                state = _clone(root_state)
-
-                while node.children and not node.is_terminal:
-                    node = self._best_child(node)
-                    state.make_move(node.move)
-                    if state.winner is not None:
-                        node.is_terminal    = True
-                        node.terminal_value = self._terminal_value(state, node.to_play)
-                        if self.solve:
-                            self._mark_solved(node, node.terminal_value)
-                        break
-                    if node.solved is not None:
-                        break   # proven subtree: no point searching it again
-
-                if node.solved is not None:
-                    value = float(node.solved)
-                elif node.is_terminal:
-                    value = node.terminal_value
-                else:
-                    value = self._expand(node, state, add_noise=False)
-                    # Expansion may itself have proved the node (a terminal
-                    # child was found). An exact value beats the net's guess.
-                    if node.solved is not None:
-                        value = float(node.solved)
-
-                self._backup(node, value)
-                if self.solve:
-                    self._note_proof(root, sim_i + 1)
-        else:
-            # Clamp so every search gets at least _MIN_WAVES waves of depth.
-            eff_wave = max(1, min(self.wave_size, self.n_sims // self._MIN_WAVES))
-            sims_done = 0
-            while sims_done < self.n_sims:
-                wave = min(eff_wave, self.n_sims - sims_done)
-                self._run_wave(root, root_state, wave, sims_done)
-                sims_done += wave
-                if self.solve:
-                    self._note_proof(root, sims_done)
+        sims_done = self._run_budget(root, root_state, deadline)
+        self.stat_sims += sims_done
 
         pi = np.zeros(81, dtype=np.float32)
         for mv, child in root.children.items():
@@ -332,8 +452,10 @@ class MCTS:
                 pi[:] = 0.0
                 pi[best.move] = 1.0
                 self.stat_solved_roots += 1
-                self._finish_record(root, raw_argmax, best.move)
-                self.stat_seconds += time.perf_counter() - t_search
+                elapsed = time.perf_counter() - t_search
+                self.stat_seconds += elapsed
+                self._finish_record(root, raw_argmax, best.move, sims_done,
+                                    elapsed, inherited, reused)
                 return pi, root
             losses = [c for c in root.children.values() if c.solved == 1]
             if losses and len(losses) < len(root.children):
@@ -343,9 +465,24 @@ class MCTS:
         s = pi.sum()
         if s > 0:
             pi /= s
-        if self.solve:
-            self._finish_record(root, raw_argmax, int(pi.argmax()))
-        self.stat_seconds += time.perf_counter() - t_search
+        elif root.children:
+            # Nothing to normalise. An all-zero pi argmaxes to cell 0, which is
+            # illegal in almost every position, so a caller taking argmax would
+            # crash the game rather than play badly. The priors are a proper
+            # distribution over exactly the legal moves, so they are the correct
+            # degenerate answer.
+            for mv, child in root.children.items():
+                pi[mv] = child.prior
+            t = pi.sum()
+            if t > 0:
+                pi /= t
+            else:
+                for mv in root.children:
+                    pi[mv] = 1.0 / len(root.children)
+        elapsed = time.perf_counter() - t_search
+        self.stat_seconds += elapsed
+        self._finish_record(root, raw_argmax, int(pi.argmax()), sims_done,
+                            elapsed, inherited, reused)
         return pi, root
 
     # ------------------------------------------------------------------
@@ -602,6 +739,143 @@ class MCTS:
         if state.winner in (DRAW, None):
             return 0.0
         return 1.0 if state.winner == to_play else -1.0
+
+
+class TreeReuseSearcher:
+    """Carry the search tree across moves instead of rebuilding it every turn.
+
+    After we move and the opponent replies, the subtree under the position
+    actually reached was already searched. Throwing it away and starting from an
+    empty root spends the whole move budget re-deriving statistics we owned a
+    moment ago. Re-rooting keeps them, so a fixed wall clock buys strictly more
+    effective search without touching the network.
+
+    ADOPTION IS PROVEN, NOT ASSUMED. The stored root is only adopted when the
+    board differs from it by exactly one of our marks and one of theirs, both
+    moves exist as nodes, the survivor is already expanded, and its `to_play`
+    matches the position handed in. Anything else -- a new game, an opponent
+    that took back a move, a caller reusing one searcher for two games -- is a
+    MISS and silently falls back to a fresh tree. A wrongly adopted tree would
+    score a different position's statistics, which is a silent strength bug of
+    the worst kind, so every condition is checked rather than inferred from the
+    caller's good behaviour.
+
+    Detaching (`parent = None`) is load-bearing: `_backup` walks parents to the
+    top, so an attached survivor would push every new simulation up into the
+    discarded tree and inflate counts nobody reads.
+    """
+
+    def __init__(self, mcts, enabled=True, count_nodes=False):
+        self.mcts = mcts
+        self.enabled = enabled
+        # Node counting is two full subtree walks per move. Cheap next to a 1 s
+        # search, but it is instrumentation, so it is opt-in and never on in a
+        # timing run that is measuring the search itself.
+        self.count_nodes = count_nodes
+        self.reset()
+        self.reset_stats()
+
+    def reset(self):
+        """Drop the tree. Call between games."""
+        self._root = None
+        self._board = None
+        self._to_play = None
+
+    # Why a candidate subtree was not adopted. `unexpanded` is the interesting
+    # one: the survivor is a perfectly real node, the opponent just replied with
+    # a move this search barely looked at, so there is nothing under it to keep.
+    # That is a statement about search coverage, not about the reuse mechanism,
+    # and lumping it in with the genuine misses would hide it.
+    MISS_REASONS = ("no_tree", "not_two_ply", "our_move_missing",
+                    "reply_missing", "unexpanded", "to_play_mismatch")
+
+    def reset_stats(self):
+        self.stat_hits = 0
+        self.stat_misses = 0
+        self.stat_inherited_sims = 0
+        self.stat_reused_nodes = 0
+        self.stat_prev_nodes = 0
+        self.stat_miss_reason = {k: 0 for k in self.MISS_REASONS}
+
+    @staticmethod
+    def _count(node):
+        n, stack = 0, [node]
+        while stack:
+            n += 1
+            stack.extend(stack.pop().children.values())
+        return n
+
+    def _adopt(self, state):
+        """(survivor subtree, reason). The node is None whenever reason is set."""
+        if self._root is None:
+            return None, "no_tree"
+        b0, b1 = self._board, tuple(state.board)
+        changed = ([] if len(b0) != len(b1) else
+                   [i for i in range(len(b0)) if b0[i] != b1[i]])
+        # Exactly two plies: ours then theirs. One ply means the game ended on
+        # our move (so we are never asked again) and anything else is not our
+        # tree -- a new game, or a caller sharing one searcher across games.
+        if len(changed) != 2:
+            return None, "not_two_ply"
+        ours = [i for i in changed if b1[i] == self._to_play]
+        if len(ours) != 1:
+            return None, "not_two_ply"
+        our_mv = ours[0]
+        opp_mv = changed[1] if changed[0] == our_mv else changed[0]
+        node = self._root.children.get(our_mv)
+        if node is None:
+            return None, "our_move_missing"
+        node = node.children.get(opp_mv)
+        if node is None:
+            return None, "reply_missing"
+        # An unexpanded survivor has no priors, so adopting it would hand
+        # search() a root it documents as already expanded. It also has N == 0,
+        # so a fresh tree inherits exactly as much: nothing.
+        if not node.children:
+            return None, "unexpanded"
+        if node.to_play != state.player:
+            return None, "to_play_mismatch"
+        node.parent = None
+        return node, None
+
+    def search(self, state):
+        root, reason = (self._adopt(state) if self.enabled
+                        else (None, "no_tree"))
+        if self.count_nodes and self._root is not None:
+            self.stat_prev_nodes += self._count(self._root)
+        if root is None:
+            self.stat_misses += 1
+            self.stat_miss_reason[reason] += 1
+            reused_nodes = 0
+        else:
+            self.stat_hits += 1
+            self.stat_inherited_sims += root.N
+            reused_nodes = self._count(root) if self.count_nodes else 0
+            self.stat_reused_nodes += reused_nodes
+
+        pi, new_root = self.mcts.search(state, root=root)
+        if isinstance(self.mcts.last, dict):
+            self.mcts.last["tree_nodes_reused"] = reused_nodes if root else 0
+        self._root = new_root
+        self._board = tuple(state.board)
+        self._to_play = state.player
+        return pi, new_root
+
+    def stats(self):
+        moves = self.stat_hits + self.stat_misses
+        return {
+            "moves": moves,
+            "reuse_hits": self.stat_hits,
+            "reuse_miss": self.stat_misses,
+            "reuse_rate": self.stat_hits / moves if moves else 0.0,
+            "inherited_sims_per_move": (self.stat_inherited_sims / moves
+                                        if moves else 0.0),
+            "reused_nodes_per_move": (self.stat_reused_nodes / moves
+                                      if moves else 0.0),
+            "node_retention": (self.stat_reused_nodes / self.stat_prev_nodes
+                               if self.stat_prev_nodes else None),
+            "miss_reason": dict(self.stat_miss_reason),
+        }
 
 
 class MCTSAgent(Agent):
