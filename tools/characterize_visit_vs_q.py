@@ -65,6 +65,17 @@ def qsummary(v):
             **{f"p{int(q * 100)}": float(np.quantile(v, q)) for q in QUANTILES}}
 
 
+def nanstat(fn, v):
+    """None rather than a NaN warning when a stratum has nothing defined --
+    single-legal-move positions have no rank correlation to report."""
+    v = np.asarray(v, dtype=np.float64)
+    return float(fn(v)) if np.isfinite(v).any() else None
+
+
+def f4(x, w=11):
+    return f"{'':>{w}}" if x is None else f"{x:>{w}.4f}"
+
+
 def avg_rank(v):
     """Average ranks, ascending, ties shared. Visit counts tie constantly at
     low budgets, and competition ranks would invent an ordering among moves the
@@ -118,12 +129,26 @@ def load_arm(child_q_dir, sims):
     pi = d["pi_visits"].astype(np.float64)
     tot = pi.sum(1, keepdims=True)
     d["pi_norm"] = np.divide(pi, tot, out=np.zeros_like(pi), where=tot > 0)
+    # PERSPECTIVE -- the single easiest thing to get backwards here.
+    #
+    # child_q is stored in the CHILD's to_play frame, and the child's mover is
+    # the OPPONENT of the player choosing the move. MCTS._best_child scores
+    # -c.Q() for exactly this reason. So the value of a move TO THE MOVER is
+    # the negation, and every comparison against the visit counts must use it.
+    #
+    # Comparing visits against raw child_q measures agreement between what the
+    # search played and what would be good FOR THE OPPONENT, which produces a
+    # near-perfect inversion (Spearman -0.74) that reads as a catastrophic
+    # search defect and is nothing but the sign. The tell is mate-in-1: a
+    # winning child is terminal at -1 in its own frame, so on raw child_q the
+    # forced win looks like the worst move on the board.
+    d["child_v"] = -d["child_q"]
     return d
 
 
 def within_arm(d):
     """Part 1 statistics, per position."""
-    q, n = d["child_q"], d["child_n"]
+    q, n = d["child_v"], d["child_n"]      # mover's frame -- see load_arm
     legal, visited = d["legal_mask"], d["visited_mask"]
     rows = q.shape[0]
     pi = d["pi_norm"]
@@ -188,6 +213,33 @@ def strata(idx, s, rows):
     }
 
 
+def sign_check(arms, idx, rows, out):
+    """Refuse to report anything if the value frame is inverted.
+
+    On a mate-in-1 the winning move is TERMINAL at -1 in the child's own frame,
+    which makes it the maximum in the mover's frame. A search that reliably
+    finds mates therefore cannot disagree with the mover-frame best value most
+    of the time. If it appears to, the sign is wrong -- which is precisely the
+    bug the first run of this file shipped with, and it read as a catastrophic
+    search defect rather than as an analysis error.
+    """
+    _d, s = arms[800]
+    mate = idx["immediate_win"][:rows].astype(bool)
+    if not mate.any():
+        return None
+    agree = float(s["visit_is_q_best"][mate].mean())
+    print(f"\n[sign check] over {int(mate.sum()):,} mate-in-1 positions, the "
+          f"800-sim visit argmax is the mover-frame best value "
+          f"{agree:.4f} of the time")
+    if agree < 0.5:
+        raise SystemExit(
+            "[X] the value frame is INVERTED. child_q is stored in the child's "
+            "to_play frame and must be negated before it is compared with "
+            "anything the mover chose (see load_arm). Refusing to emit tables.")
+    out["sign_check_mate_in_1_agreement"] = agree
+    return agree
+
+
 def part1(arms, idx, rows, out):
     print("\n" + "=" * 78)
     print("PART 1 -- visit versus Q disagreement WITHIN each arm")
@@ -195,8 +247,10 @@ def part1(arms, idx, rows, out):
     block = {}
     for sims, (d, s) in arms.items():
         cens = int((s["legal"] & ~s["visited"]).sum())
-        head = (f"  {'stratum':<22}{'n':>7}{'visit!=Qbest':>14}"
-                f"{'spearman':>11}{'mass off Q':>12}{'Q deficit':>11}")
+        # V = the child value in the MOVER's frame (-child_q). Named apart from
+        # Q throughout so a reader cannot mistake which sign is on the table.
+        head = (f"  {'stratum':<22}{'n':>7}{'visit!=Vbest':>14}"
+                f"{'spearman':>11}{'mass off V':>12}{'V deficit':>11}")
         print(f"\n  arm sims={sims}   "
               f"{cens:,} of {int(s['legal'].sum()):,} legal children unvisited "
               f"({cens / s['legal'].sum():.4f}) -- excluded from every column")
@@ -210,28 +264,29 @@ def part1(arms, idx, rows, out):
                 "n": int(m.sum()),
                 "argmax_disagreement_rate":
                     float(1.0 - s["visit_is_q_best"][m].mean()),
-                "spearman_mean": float(np.nanmean(s["spearman"][m])),
-                "spearman_median": float(np.nanmedian(s["spearman"][m])),
+                "spearman_mean": nanstat(np.nanmean, s["spearman"][m]),
+                "spearman_median": nanstat(np.nanmedian, s["spearman"][m]),
                 "spearman_undefined_share":
                     float(np.mean(~np.isfinite(s["spearman"][m]))),
-                "mass_outside_top_q_mean":
-                    float(np.nanmean(s["mass_outside_top_q"][m])),
-                "q_deficit_mean": float(np.nanmean(s["q_deficit"][m])),
-                "q_deficit_median": float(np.nanmedian(s["q_deficit"][m])),
-                "share_q_deficit_over_reference":
+                "mass_outside_top_v_mean":
+                    nanstat(np.nanmean, s["mass_outside_top_q"][m]),
+                "v_deficit_mean": nanstat(np.nanmean, s["q_deficit"][m]),
+                "v_deficit_median": nanstat(np.nanmedian, s["q_deficit"][m]),
+                "share_v_deficit_over_reference":
                     float(np.nanmean(s["q_deficit"][m] > REFERENCE_GAP)),
                 "mean_visited_children": float(s["n_visited"][m].mean()),
             }
             v = rowsout[name]
             print(f"  {name:<22}{v['n']:>7,}{v['argmax_disagreement_rate']:>14.4f}"
-                  f"{v['spearman_mean']:>11.4f}{v['mass_outside_top_q_mean']:>12.4f}"
-                  f"{v['q_deficit_mean']:>11.4f}")
+                  f"{f4(v['spearman_mean'])}{f4(v['mass_outside_top_v_mean'], 12)}"
+                  f"{f4(v['v_deficit_mean'])}")
         block[f"sims{sims}"] = {
             "unvisited_legal_children": cens,
             "unvisited_share_of_legal": float(cens / s["legal"].sum()),
-            "q_deficit_distribution": qsummary(s["q_deficit"]),
+            "value_frame": "mover (-child_q); see load_arm",
+            "v_deficit_distribution": qsummary(s["q_deficit"]),
             "spearman_distribution": qsummary(s["spearman"]),
-            "top_two_q_gap_distribution": qsummary(s["top_two_q_gap"]),
+            "top_two_v_gap_distribution": qsummary(s["top_two_q_gap"]),
             "by_stratum": rowsout,
         }
     out["part1_within_arm"] = block
@@ -247,7 +302,7 @@ def part2(arms, idx, rows, out):
     mv50, mv800 = s50["top_visit"], s800["top_visit"]
     changed = mv50 != mv800
 
-    q800 = d800["child_q"]
+    q800 = d800["child_v"]                 # mover's frame -- see load_arm
     vis800 = d800["visited_mask"]
     # Q of each arm's pick, both read off the 800 tree. NaN if 800 never
     # visited that move -- which is itself one of the reported quantities, not
@@ -387,6 +442,7 @@ def main():
     idx = np.load(os.path.join(args.pilot, "index.npz"), allow_pickle=True)
     out = {"positions": int(rows), "reference_gap": REFERENCE_GAP}
 
+    sign_check(arms, idx, rows, out)
     part1(arms, idx, rows, out)
     changed, adv = part2(arms, idx, rows, out)
     part3(changed, adv, out)
