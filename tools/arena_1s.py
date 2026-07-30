@@ -66,21 +66,19 @@ from engine.rules import rule_utl_valid_moves
 from scripts.expert_iter import _agent_fn, _eval_openings
 from scripts.train_alphazero import NETWORK_CONFIGS
 from scripts.train_student_offline import AB_ARCHS
-from tools import provenance
+from tools import engine_registry, provenance
 from tools.analyze_search_disagreement import PHASE_BANDS
 from tools.teacher_sim_ladder import outcome_ci
 
-# Frozen 2026-07-28, before the first implementation comparison.
-REQUIREMENT = {
-    "budget_ms": 1000,
-    "p99_ms": 1000.0,
-    "max_ms": 1250.0,
-    "frozen": "2026-07-28, before any candidate was benchmarked",
-}
+# Frozen 2026-07-28, before the first implementation comparison. Defined once,
+# in the registry, so the requirement and the engines it judges cannot drift
+# apart -- see tools/engine_registry.py.
+REQUIREMENT = engine_registry.REQUIREMENT
 
 # Own namespace, so an arena run can never silently share an opening set with
-# the distillation pilot (9901) or the teacher sim ladder (77xx/78xx).
-ARENA_BASE_SEED = 6100
+# the distillation pilot (9901) or the teacher sim ladder (77xx/78xx). The
+# sub-namespaces (ladder / anchor / tune / confirm) are frozen in the registry.
+ARENA_BASE_SEED = engine_registry.SEEDS["headline"]
 ANCHOR_SEEDS = {"random": 6141, "winblock": 6142,
                 "gregory_d3": 6143, "gregory_d4": 6144}
 
@@ -120,9 +118,22 @@ def parse_spec(spec):
 
 
 class TimedPlayer:
-    """A network plus search, under a move deadline, recording what it cost."""
+    """A network plus search, under a move deadline, recording what it cost.
 
-    def __init__(self, spec, device, count_nodes=False):
+    A spec of the form `engine:<name>` is resolved from the frozen registry and
+    then VERIFIED against its stored fingerprint. Prefer it for anything being
+    compared against a published number: a literal spec still inherits wave,
+    reserve, min_sims and the virtual-loss constant from code defaults, and a
+    later edit to any of those would move a "frozen" configuration without
+    changing a single character of the command line.
+    """
+
+    def __init__(self, spec, device, count_nodes=False,
+                 allow_anchor_drift=False):
+        self.engine_name = None
+        if spec.startswith("engine:"):
+            self.engine_name = spec.split(":", 1)[1].strip()
+            spec = engine_registry.spec_of(self.engine_name)
         o = parse_spec(spec)
         self.ckpt = o.get("ckpt", DEFAULT_CKPT)
         self.arch = o.get("arch", "arena22")
@@ -153,6 +164,16 @@ class TimedPlayer:
         self.searcher = TreeReuseSearcher(self.mcts, enabled=self.reuse,
                                           count_nodes=count_nodes)
         self.name = o.get("name") or self._auto_name()
+        # A ladder rung above the deployment budget is evaluation-only: its job
+        # is to be a hard fixed opponent, not to ship, so holding it to the
+        # deployment p99 would be a category error. Anything at or below the
+        # budget is still judged, registry engine or not.
+        self.latency_exempt = self.engine_name in engine_registry.LADDER_EXEMPT
+        self.provenance = None
+        if self.engine_name:
+            self.provenance = engine_registry.verify(
+                self.engine_name, self,
+                strict_sources=(False if allow_anchor_drift else None))
         self.records = []
         self.policies = []
         self.recording = True
@@ -171,6 +192,10 @@ class TimedPlayer:
 
     def config(self):
         return {"name": self.name, "budget_ms": self.budget_ms,
+                "engine": self.engine_name,
+                "fingerprint": (self.provenance or {}).get("fingerprint"),
+                "source_drift": (self.provenance or {}).get("source_drift"),
+                "latency_exempt": self.latency_exempt,
                 "batched_expand": self.mcts.batched_expand,
                 "reserve_ms": self.mcts.reserve_ms,
                 "n_sims": None if self.budget_ms else self.n_sims,
@@ -372,7 +397,16 @@ def latency_report(player):
         },
     }
     budget = player.config().get("budget_ms")
-    if budget:
+    if budget and getattr(player, "latency_exempt", False):
+        # Reported, never judged. Silence here would be worse: an exempt rung
+        # can still reveal a stall, and the p99 is how you would see it.
+        rep["requirement"] = {
+            "exempt": True,
+            "p99_ms": rep["latency_ms"]["p99"],
+            "max_ms": rep["latency_ms"]["max"],
+            "reason": "evaluation-only ladder rung above the deployment budget",
+        }
+    elif budget:
         over = ms > REQUIREMENT["p99_ms"]
         rep["requirement"] = {
             "p99_ms": rep["latency_ms"]["p99"],
@@ -446,7 +480,12 @@ def print_report(player, rep):
               f"node retention {ret}")
         if miss:
             print(f"                 misses: {miss}")
-    if "requirement" in rep:
+    if rep.get("requirement", {}).get("exempt"):
+        w = rep["worst_chunk_ms"]
+        print(f"    worst chunk  mean {w['mean']:6.1f} ms  p99 {w['p99']:6.1f}  "
+              f"max {w['max']:6.1f}")
+        print(f"    requirement  [EXEMPT] {rep['requirement']['reason']}")
+    elif "requirement" in rep:
         r = rep["requirement"]
         verdict = "PASS" if r["PASS"] else "FAIL"
         w = rep["worst_chunk_ms"]
@@ -510,6 +549,12 @@ def main():
     ap.add_argument("--count-nodes", action="store_true",
                     help="two subtree walks per move; instrumentation only, "
                          "off during a timing run")
+    ap.add_argument("--allow-anchor-drift", action="store_true",
+                    help="build a registry ANCHOR even though the engine "
+                         "source no longer matches its frozen bytes. The "
+                         "resulting score is not comparable with anything "
+                         "measured against the real anchor -- if you need this, "
+                         "re-run from the arena-1s-baseline tag instead")
     ap.add_argument("--tag", default="baseline")
     ap.add_argument("--outdir", default="results/arena_1s")
     ap.add_argument("--device",
@@ -526,26 +571,40 @@ def main():
     payload = {"tag": args.tag, "mode": args.mode, "games": args.games,
                "warmup_games": args.warmup_games, "seed": args.seed,
                "device": args.device, "requirement": REQUIREMENT,
+               "gc_mode": args.gc,
+               "baseline_tag": engine_registry.BASELINE_TAG,
+               "environment": engine_registry.environment(),
+               "environment_drift": engine_registry.env_drift(),
                "provenance": provenance.build()}
+    if payload["environment_drift"]:
+        print("[!] environment differs from the frozen baseline: "
+              f"{sorted(payload['environment_drift'])} -- configurations are "
+              "still valid, latency comparisons against frozen numbers are not")
 
-    pa = TimedPlayer(args.player_a, args.device, count_nodes=args.count_nodes)
+    mk = lambda spec: TimedPlayer(spec, args.device,
+                                  count_nodes=args.count_nodes,
+                                  allow_anchor_drift=args.allow_anchor_drift)
+
+    pa = mk(args.player_a)
     print(f"A: {pa.name}  ({pa.net_info['params']:,} params, "
-          f"gen {pa.net_info['gen']})")
+          f"gen {pa.net_info['gen']})"
+          + (f"  [engine:{pa.engine_name} {pa.provenance['fingerprint']}]"
+             if pa.engine_name else "  [ad-hoc spec, NOT registry-frozen]"))
 
     if args.mode == "bench":
         # The same configuration on both sides. The score is 0.5 by
         # construction and is NOT the point: this measures latency, throughput
         # and per-phase simulation counts over realistic positions, which is
         # the baseline every later candidate is compared against.
-        pb = TimedPlayer(args.player_a, args.device,
-                         count_nodes=args.count_nodes)
+        pb = mk(args.player_a)
         pb.name = pa.name + "-mirror"
         pairs = [(pa, pb, args.seed, "self")]
     elif args.mode == "h2h":
-        pb = TimedPlayer(args.player_b, args.device,
-                         count_nodes=args.count_nodes)
+        pb = mk(args.player_b)
         print(f"B: {pb.name}  ({pb.net_info['params']:,} params, "
-              f"gen {pb.net_info['gen']})")
+              f"gen {pb.net_info['gen']})"
+              + (f"  [engine:{pb.engine_name} {pb.provenance['fingerprint']}]"
+                 if pb.engine_name else "  [ad-hoc spec, NOT registry-frozen]"))
         pairs = [(pa, pb, args.seed, "h2h")]
     else:
         pairs = [(pa, build_anchor(a), ANCHOR_SEEDS[a], a) for a in args.anchors]
