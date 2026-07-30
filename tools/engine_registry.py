@@ -71,6 +71,7 @@ SEEDS = {
     "anchor": 6300,     # a candidate measured against a frozen anchor
     "tune": 6400,       # elimination rounds of a parameter sweep
     "confirm": 6500,    # held out: the powered final between sweep survivors
+    "profile": 6600,    # instrumented runs; no score is ever read off these
 }
 
 # Files whose bytes define how a search plays. An anchor built while any of
