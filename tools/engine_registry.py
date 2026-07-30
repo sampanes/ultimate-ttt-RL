@@ -204,6 +204,37 @@ def spec_of(name):
     return ",".join(f"{k}={v}" for k, v in sorted(ENGINES[name].items()))
 
 
+def derived_spec(name, overrides):
+    """A frozen engine plus DECLARED overrides -- for sweeping one parameter.
+
+    A sweep candidate is deliberately not the frozen engine, so it cannot match
+    a frozen fingerprint. What must still be guaranteed is that it differs in
+    exactly what was asked for and in nothing else, which is what the returned
+    `diff` is checked against by the caller. Overrides may only replace keys the
+    base already pins: adding a new one would mean the base was not fully
+    specified, and silently accepting it would defeat the registry.
+
+    Returns (spec_string, diff_keys).
+    """
+    if name not in ENGINES:
+        raise SystemExit(f"[X] unknown engine '{name}'. "
+                         f"known: {sorted(ENGINES)}")
+    base = ENGINES[name]
+    new = set(overrides) - set(base)
+    if new:
+        raise SystemExit(
+            f"[X] engine '{name}' does not pin {sorted(new)}, so overriding "
+            f"it would change something the frozen spec never declared. "
+            f"Add it to the registry entry first.")
+    merged = dict(base)
+    merged.update({k: str(v) for k, v in overrides.items()})
+    diff = {k for k in merged if base[k] != merged[k]} - {"name"}
+    if "name" not in overrides and diff:
+        merged["name"] = (base["name"] + "-"
+                          + "-".join(f"{k}{merged[k]}" for k in sorted(diff)))
+    return ",".join(f"{k}={v}" for k, v in sorted(merged.items())), diff
+
+
 def resolved_config(player):
     """Everything about a built player that can change how it plays.
 
@@ -259,7 +290,7 @@ def check_sources(strict):
     return sorted(drift)
 
 
-def verify(name, player, strict_sources=None):
+def verify(name, player, strict_sources=None, overrides=None):
     """Assert a built player IS the frozen engine. Returns a provenance dict."""
     if strict_sources is None:
         strict_sources = name in ANCHOR_ROLES
@@ -270,6 +301,21 @@ def verify(name, player, strict_sources=None):
         raise SystemExit(
             f"[X] engine '{name}': checkpoint {cfg['ckpt']} has changed.\n"
             f"    frozen {want_ck}\n    found  {cfg['ckpt_sha256']}")
+
+    if overrides:
+        # A derived candidate cannot match the frozen fingerprint -- that is
+        # the point of it. The checkpoint and source checks still apply, and
+        # the base fingerprint is recorded so the result stays traceable to a
+        # frozen configuration rather than floating free.
+        if name in ANCHOR_ROLES:
+            raise SystemExit(
+                f"[X] '{name}' is an ANCHOR and must not be overridden. A "
+                f"candidate may never alter the ruler it is measured against.")
+        return {"engine": name, "fingerprint": fingerprint(cfg),
+                "derived_from": name, "base_fingerprint": FINGERPRINTS.get(name),
+                "overrides": dict(overrides), "verified": True,
+                "source_drift": check_sources(strict_sources),
+                "baseline_tag": BASELINE_TAG, "resolved": cfg}
 
     got = fingerprint(cfg)
     want = FINGERPRINTS.get(name)

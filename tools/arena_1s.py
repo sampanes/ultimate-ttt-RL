@@ -131,9 +131,24 @@ class TimedPlayer:
     def __init__(self, spec, device, count_nodes=False,
                  allow_anchor_drift=False):
         self.engine_name = None
+        self.overrides = {}
         if spec.startswith("engine:"):
-            self.engine_name = spec.split(":", 1)[1].strip()
-            spec = engine_registry.spec_of(self.engine_name)
+            # engine:final            the frozen engine, fingerprint-checked
+            # engine:final+cpuct=2.0  the frozen engine with ONE declared
+            #                         change -- for sweeping a parameter
+            body = spec.split(":", 1)[1].strip()
+            name, _, ov = body.partition("+")
+            self.engine_name = name.strip()
+            if ov.strip():
+                self.overrides = parse_spec(ov)
+                spec, diff = engine_registry.derived_spec(self.engine_name,
+                                                          self.overrides)
+                if diff != set(self.overrides):
+                    raise SystemExit(
+                        f"[X] engine:{self.engine_name}+{ov} changes {diff}, "
+                        f"but only {set(self.overrides)} was declared")
+            else:
+                spec = engine_registry.spec_of(self.engine_name)
         o = parse_spec(spec)
         self.ckpt = o.get("ckpt", DEFAULT_CKPT)
         self.arch = o.get("arch", "arena22")
@@ -185,7 +200,8 @@ class TimedPlayer:
         if self.engine_name:
             self.provenance = engine_registry.verify(
                 self.engine_name, self,
-                strict_sources=(False if allow_anchor_drift else None))
+                strict_sources=(False if allow_anchor_drift else None),
+                overrides=self.overrides)
         self.records = []
         self.policies = []
         self.recording = True

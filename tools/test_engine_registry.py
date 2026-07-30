@@ -22,6 +22,10 @@ def build(name):
     return TimedPlayer(f"engine:{name}", DEV)
 
 
+def build_spec(spec):
+    return TimedPlayer(spec, DEV)
+
+
 class TestFrozenSet(unittest.TestCase):
 
     def test_every_engine_verifies(self):
@@ -232,6 +236,55 @@ class TestLadder(unittest.TestCase):
         self.assertTrue(rep["requirement"]["exempt"])
         self.assertNotIn("PASS", rep["requirement"])
         self.assertGreater(rep["latency_ms"]["p99"], 0)
+
+
+class TestDerivedEngines(unittest.TestCase):
+    """`engine:final+cpuct=2.0` -- a sweep candidate, traceable to a frozen base."""
+
+    def test_override_changes_only_what_was_declared(self):
+        p = build_spec("engine:final+cpuct=2.0")
+        base = build("final")
+        self.assertEqual(p.mcts.c_puct, 2.0)
+        self.assertEqual(base.mcts.c_puct, 1.5)
+        for field in ("time_budget_ms", "wave_size", "solve", "max_sims",
+                      "min_sims", "reserve_ms", "batched_expand",
+                      "deadline_margin"):
+            with self.subTest(field=field):
+                self.assertEqual(getattr(p.mcts, field),
+                                 getattr(base.mcts, field))
+        self.assertEqual(p.reuse, base.reuse)
+        self.assertEqual(p.ckpt, base.ckpt)
+
+    def test_derived_records_its_frozen_base(self):
+        p = build_spec("engine:final+cpuct=3.0")
+        self.assertEqual(p.provenance["derived_from"], "final")
+        self.assertEqual(p.provenance["base_fingerprint"],
+                         reg.FINGERPRINTS["final"])
+        self.assertEqual(p.provenance["overrides"], {"cpuct": "3.0"})
+        # Its own fingerprint MUST differ -- that is what makes it a candidate.
+        self.assertNotEqual(p.provenance["fingerprint"],
+                            reg.FINGERPRINTS["final"])
+
+    def test_an_anchor_can_never_be_overridden(self):
+        # The single most important guard here: a candidate must not be able to
+        # move the ruler it is being measured against.
+        for a in reg.ANCHOR_ROLES:
+            with self.subTest(anchor=a):
+                with self.assertRaises(SystemExit) as cm:
+                    build_spec(f"engine:{a}+cpuct=2.0")
+                self.assertIn("must not be overridden", str(cm.exception))
+
+    def test_override_must_replace_a_key_the_base_pins(self):
+        # Otherwise the base was not fully specified and the registry's whole
+        # guarantee is void.
+        with self.assertRaises(SystemExit) as cm:
+            reg.derived_spec("pocket_raw", {"cpuct": "2.0"})
+        self.assertIn("does not pin", str(cm.exception))
+
+    def test_plain_registry_engine_has_no_overrides(self):
+        p = build("final")
+        self.assertEqual(p.overrides, {})
+        self.assertNotIn("derived_from", p.provenance)
 
 
 class TestSeedPlan(unittest.TestCase):
