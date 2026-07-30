@@ -143,6 +143,17 @@ class TimedPlayer:
                 self.overrides = parse_spec(ov)
                 spec, diff = engine_registry.derived_spec(self.engine_name,
                                                           self.overrides)
+                if not diff:
+                    # A sweep restating the incumbent value. It would PLAY the
+                    # same, but a derived engine is exempt from the frozen
+                    # fingerprint check by design, and the control arm of a
+                    # sweep is exactly where that exemption must not apply.
+                    raise SystemExit(
+                        f"[X] engine:{self.engine_name}+{ov} changes nothing "
+                        f"-- those are already the frozen values. Use "
+                        f"engine:{self.engine_name} for the incumbent arm, so "
+                        f"it is verified against its frozen fingerprint "
+                        f"instead of being taken on trust as a candidate.")
                 if diff != set(self.overrides):
                     raise SystemExit(
                         f"[X] engine:{self.engine_name}+{ov} changes {diff}, "

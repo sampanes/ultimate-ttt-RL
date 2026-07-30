@@ -286,6 +286,24 @@ class TestDerivedEngines(unittest.TestCase):
         self.assertEqual(p.overrides, {})
         self.assertNotIn("derived_from", p.provenance)
 
+    def test_restating_the_frozen_value_is_not_a_derived_engine(self):
+        """A sweep's incumbent arm is `engine:final`, never
+        `engine:final+cpuct=1.5`.
+
+        The two would play identically, but only the first is checked against a
+        frozen fingerprint -- the second is a derived engine that happens to
+        match, and derived engines are exempt from that check by design. The
+        control arm of a sweep is precisely where that exemption must not
+        apply, so this is refused rather than quietly accepted.
+        """
+        _spec, diff = reg.derived_spec("final", {"cpuct": "1.5"})
+        self.assertEqual(diff, set(), "1.5 is no longer the frozen c_puct; "
+                                      "the sweep's incumbent arm must be "
+                                      "re-derived")
+        with self.assertRaises(SystemExit) as cm:
+            build_spec("engine:final+cpuct=1.5")
+        self.assertIn("changes nothing", str(cm.exception))
+
 
 class TestSeedPlan(unittest.TestCase):
 
