@@ -119,6 +119,20 @@ def _engine(ckpt, arch, ms, name, **over):
     return o
 
 
+# sims=0 means the network alone -- masked policy argmax, no tree. Only the
+# four options that can affect it are pinned; wave, reserve and bexp would be
+# decoration, and pinning dead knobs invites the belief that they did something.
+RAW_PINNED = {"ckpt", "arch", "sims", "name"}
+
+
+def _raw(ckpt, arch, name):
+    return {"ckpt": ckpt, "arch": arch, "sims": "0", "name": name}
+
+
+def is_raw(name):
+    return ENGINES[name].get("sims") == "0"
+
+
 ENGINES = {
     # -- the two configurations the 0.7229 headline was measured between ------
     # "original" is pinned, not reconstructed. It is rebuild-every-move plus
@@ -139,6 +153,14 @@ ENGINES = {
     # -- model-size arms, all at the deployment budget -----------------------
     "pocket": _engine(POCKET, "squeeze", 1000, "pocket_172k"),
     "midsize": _engine(MIDSIZE, "plain", 1000, "midsize_921k"),
+
+    # -- the networks alone, no search ---------------------------------------
+    # Without these a model-size result is uninterpretable: if the small net
+    # wins at 1,000 ms you cannot tell whether the network is better or whether
+    # it merely bought more search, and those imply opposite next moves.
+    "gen22_raw": _raw(GEN22, "arena22", "gen22_raw"),
+    "pocket_raw": _raw(POCKET, "squeeze", "pocket_raw"),
+    "midsize_raw": _raw(MIDSIZE, "plain", "midsize_raw"),
 }
 
 # Evaluation-only rungs. Exempt from the deployment latency requirement by
@@ -160,6 +182,9 @@ FINGERPRINTS = {
     "anchor_D": "dbc1514fb6b28f45",
     "pocket": "036f17c9aa644aad",
     "midsize": "5f38b819e7037640",
+    "gen22_raw": "fc29c23a40fc3184",
+    "pocket_raw": "ee530ad9254ab7a0",
+    "midsize_raw": "1da5604204f35072",
 }
 
 

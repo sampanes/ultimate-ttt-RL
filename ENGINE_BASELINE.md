@@ -89,6 +89,21 @@ none is inherited.
 | `anchor_D` | anchor | 4000 ms | 6,766,386 | 1 | 1 |
 | `pocket` | candidate | 1000 ms | 172,389 | 1 | 1 |
 | `midsize` | candidate | 1000 ms | 921,026 | 1 | 1 |
+| `gen22_raw` | network only | no search | 6,766,386 | -- | -- |
+| `pocket_raw` | network only | no search | 172,389 | -- | -- |
+| `midsize_raw` | network only | no search | 921,026 | -- | -- |
+
+The `_raw` arms are `sims=0`: masked policy argmax, no tree. They exist because
+a model-size result is otherwise uninterpretable -- if the small net wins at
+1,000 ms you cannot tell whether the network is better or whether it merely
+bought more search, and those two answers imply opposite next moves.
+
+`sims=0` is a separate code path rather than a one-simulation search, and that
+is not fastidiousness: at the root every child has `N=0`, so `sqrt(N_parent)=0`
+kills the PUCT exploration term for all of them, the scores tie, and the pick
+falls out of dict order. A 1-sim search agrees with the policy argmax on
+**0.197** of positions -- it would have been a plausible-looking way to measure
+the wrong thing.
 
 `original` and `final` differ in **exactly** `reuse` and `bexp` -- asserted by a
 test, because the 0.7229 attribution is false the moment a third difference

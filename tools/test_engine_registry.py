@@ -42,7 +42,72 @@ class TestFrozenSet(unittest.TestCase):
                   "maxsims", "reserve", "bexp", "name"}
         for name, spec in reg.ENGINES.items():
             with self.subTest(engine=name):
-                self.assertEqual(set(spec), pinned)
+                want = reg.RAW_PINNED if reg.is_raw(name) else pinned
+                self.assertEqual(set(spec), want)
+
+
+class TestRawNetworkArms(unittest.TestCase):
+    """sims=0 must really be the network, not a degenerate one-sim search."""
+
+    RAW = ["gen22_raw", "pocket_raw", "midsize_raw"]
+
+    def test_raw_players_have_no_search(self):
+        for n in self.RAW:
+            with self.subTest(engine=n):
+                p = build(n)
+                self.assertTrue(p.raw)
+                self.assertIsNone(p.searcher)
+                self.assertIsNone(p.budget_ms)
+
+    def test_raw_move_is_the_masked_policy_argmax(self):
+        # The reason this arm exists as its own code path. A 1-simulation
+        # search is NOT the raw network: at the root every child has N=0, so
+        # sqrt(N_parent)=0 kills the PUCT exploration term for all of them, the
+        # scores tie, and the pick falls out of dict order. Measured agreement
+        # with the policy argmax was 0.197.
+        import numpy as np
+        import torch
+        from agents.agent_base import board_to_tensor_from_gamestate
+        from engine.game import GameState
+        from engine.rules import rule_utl_valid_moves
+
+        p = build("pocket_raw")
+        state = GameState()
+        for _ in range(9):
+            if state.is_over():
+                break
+            valid = rule_utl_valid_moves(state.board, state.last_move,
+                                         state.mini_winners)
+            x = board_to_tensor_from_gamestate(state, v_computed=valid)
+            with torch.no_grad():
+                logits, _ = p.model.forward_both(x.unsqueeze(0))
+            lg = logits.reshape(-1).clone()
+            masked = torch.full((81,), float("-inf"))
+            masked[valid] = 0.0
+            self.assertEqual(p.move(state, 0), int(torch.argmax(lg + masked)))
+            state.make_move(valid[len(valid) // 2])
+
+    def test_raw_policy_is_a_distribution_over_legal_moves_only(self):
+        import numpy as np
+        from engine.game import GameState
+        from engine.rules import rule_utl_valid_moves
+
+        p = build("gen22_raw")
+        state = GameState()
+        state.make_move(40)
+        valid = set(rule_utl_valid_moves(state.board, state.last_move,
+                                         state.mini_winners))
+        pi = p._raw_policy(state)
+        self.assertAlmostEqual(float(pi.sum()), 1.0, places=5)
+        self.assertEqual({i for i in range(81) if pi[i] > 0}, valid)
+
+    def test_raw_arms_cover_every_searched_model(self):
+        # A model-size comparison needs the network arm for each size, or the
+        # "was it the net or the search" question cannot be answered.
+        searched = {reg.ENGINES[n]["ckpt"]
+                    for n in ("final", "pocket", "midsize")}
+        raw = {reg.ENGINES[n]["ckpt"] for n in self.RAW}
+        self.assertEqual(searched, raw)
 
 
 class TestGuardBites(unittest.TestCase):

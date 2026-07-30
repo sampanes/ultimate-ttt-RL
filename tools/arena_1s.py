@@ -54,7 +54,7 @@ import time
 import numpy as np
 import torch
 
-from agents.agent_base import ModelConfigCNN
+from agents.agent_base import ModelConfigCNN, board_to_tensor_from_gamestate
 from agents.deterministics import WinBlockAgent
 from agents.gregory import GregoryAgent
 from agents.mcts import MCTS, TreeReuseSearcher
@@ -143,6 +143,13 @@ class TimedPlayer:
             raise SystemExit("[X] give a player ms= or sims=, not both")
         self.budget_ms = float(o["ms"]) if "ms" in o else None
         self.n_sims = int(o.get("sims", 800))
+        # sims=0 is the NETWORK ALONE: masked policy argmax, no tree at all.
+        # It needs its own path rather than a 1-simulation search, because a
+        # 1-sim search is not the raw network -- at the root every child has
+        # N=0 and sqrt(N_parent)=0, so the PUCT exploration term vanishes for
+        # all of them, the scores tie, and the pick falls out of dict order.
+        # Measured: it agrees with the policy argmax on 0.197 of positions.
+        self.raw = self.n_sims == 0 and self.budget_ms is None
         self.wave = int(o.get("wave", 8))
         self.c_puct = float(o.get("cpuct", 1.5))
         self.reuse = o.get("reuse", "0") == "1"
@@ -161,8 +168,13 @@ class TimedPlayer:
                          time_budget_ms=self.budget_ms,
                          max_sims=self.max_sims, reserve_ms=self.reserve,
                          batched_expand=self.bexp)
-        self.searcher = TreeReuseSearcher(self.mcts, enabled=self.reuse,
-                                          count_nodes=count_nodes)
+        self.device = device
+        # No searcher in raw mode: latency_report keys the tree-reuse and
+        # early-stop blocks off this, and reporting a reuse rate for a player
+        # that has no tree would be noise dressed as data.
+        self.searcher = (None if self.raw else
+                         TreeReuseSearcher(self.mcts, enabled=self.reuse,
+                                           count_nodes=count_nodes))
         self.name = o.get("name") or self._auto_name()
         # A ladder rung above the deployment budget is evaluation-only: its job
         # is to be a hard fixed opponent, not to ship, so holding it to the
@@ -179,6 +191,8 @@ class TimedPlayer:
         self.recording = True
 
     def _auto_name(self):
+        if self.raw:
+            return f"{self.arch}-raw"
         budget = (f"{self.budget_ms:.0f}ms" if self.budget_ms
                   else f"{self.n_sims}sims")
         bits = [self.arch, budget, f"w{self.wave}"]
@@ -204,14 +218,36 @@ class TimedPlayer:
                 "max_sims": self.max_sims, **self.net_info}
 
     def new_game(self):
-        self.searcher.reset()
+        if self.searcher is not None:
+            self.searcher.reset()
 
     def reset_counters(self):
         """Drop everything accumulated so far. Used to discard the warmup."""
         self.records.clear()
         self.policies.clear()
         self.mcts.reset_stats()
-        self.searcher.reset_stats()
+        if self.searcher is not None:
+            self.searcher.reset_stats()
+
+    def _raw_policy(self, state):
+        """The network's own move: softmax over legal cells, argmax taken.
+
+        This is the honest floor for "what does the network know without
+        search", and it is the arm that makes a model-size comparison
+        interpretable -- if a small net wins at 1,000 ms, this says whether it
+        won because the network is better or only because more search fits.
+        """
+        valid = rule_utl_valid_moves(state.board, state.last_move,
+                                     state.mini_winners)
+        x = board_to_tensor_from_gamestate(state, v_computed=valid)
+        with torch.no_grad():
+            logits, _v = self.model.forward_both(
+                x.unsqueeze(0).to(self.device))
+        lg = logits.reshape(-1).float().cpu()
+        pi = np.zeros(81, dtype=np.float32)
+        sub = torch.softmax(lg[valid], dim=0).numpy()
+        pi[valid] = sub
+        return pi
 
     def move(self, state, move_num):
         # OUTER timer. The requirement is about the move the caller waits for,
@@ -219,6 +255,16 @@ class TimedPlayer:
         # interval MCTS.search times itself over. Reporting the inner number
         # against a deadline would quietly exclude work the deadline covers.
         t0 = time.perf_counter()
+        if self.raw:
+            pi = self._raw_policy(state)
+            mv = int(pi.argmax())
+            move_ms = (time.perf_counter() - t0) * 1000.0
+            if self.recording:
+                self.records.append((move_ms, move_ms, 0, 1, 0, 0, 0, 0, mv,
+                                     int(np.count_nonzero(state.board)),
+                                     move_num, 0.0))
+                self.policies.append(pi.copy())
+            return mv
         pi, _root = self.searcher.search(state)
         mv = int(pi.argmax())
         move_ms = (time.perf_counter() - t0) * 1000.0
