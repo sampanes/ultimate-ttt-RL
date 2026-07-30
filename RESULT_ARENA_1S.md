@@ -1,5 +1,13 @@
 # RESULT -- the 1,000 ms arena: search-engine work, measured by strength
 
+> **Superseded as the live reference by `ENGINE_BASELINE.md`.** This file is the
+> record of how the engine was built and what was rejected along the way; the
+> baseline it produced is now frozen at tag `arena-1s-baseline`, with named,
+> fingerprint-verified configurations in `tools/engine_registry.py`. Reproduce
+> anything here with `engine:final` / `engine:original`, not with the ad-hoc
+> spec strings in the Reproduce section below -- those still inherit code
+> defaults and are no longer the authority on what was run.
+
 The product is the complete network-plus-search agent under a move deadline, not
 the raw network. This is the first program judged that way: every change below
 was promoted or rejected on **win rate at an identical wall clock**, and no
