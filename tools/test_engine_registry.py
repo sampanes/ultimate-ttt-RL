@@ -354,6 +354,55 @@ class TestDerivedEngines(unittest.TestCase):
         self.assertIn("changes nothing", str(cm.exception))
 
 
+class TestRegressionGateOpponent(unittest.TestCase):
+    """The gate shipped as a mirror and PASSED an engine that fails against a
+    real opponent. These lock the fix."""
+
+    def test_a_mirror_is_refused(self):
+        from tools import regress_engine as rg
+        for name in ("final", "pocket", "pocket_r35"):
+            with self.subTest(engine=name):
+                with self.assertRaises(SystemExit) as cm:
+                    rg.choose_opponent(name, requested=name)
+                self.assertIn("mirror", str(cm.exception))
+
+    def test_a_mirror_is_still_possible_when_asked_for_explicitly(self):
+        from tools import regress_engine as rg
+        self.assertEqual(
+            rg.choose_opponent("final", requested="final", allow_mirror=True),
+            "final")
+
+    def test_defaults_never_mirror_and_always_exist(self):
+        from tools import regress_engine as rg
+        for name in reg.ENGINES:
+            if reg.is_raw(name):
+                continue
+            with self.subTest(engine=name):
+                opp = rg.choose_opponent(name)
+                self.assertNotEqual(opp, name)
+                self.assertIn(opp, reg.ENGINES)
+
+    def test_the_default_opponent_uses_a_different_network(self):
+        # Shared WEIGHTS are what inflate inheritance, not a shared name. Every
+        # non-raw engine -- including `original` and every anchor rung -- must
+        # default to an opponent that does not use its checkpoint.
+        from tools import regress_engine as rg
+        for name in reg.ENGINES:
+            if reg.is_raw(name):
+                continue
+            with self.subTest(engine=name):
+                opp = rg.choose_opponent(name)
+                self.assertNotEqual(reg.ENGINES[name]["ckpt"],
+                                    reg.ENGINES[opp]["ckpt"])
+
+    def test_the_inherit_floor_clears_the_measured_cross_network_value(self):
+        # `final` inherits 1551.9 / 3242.4 = 0.479 against `pocket`. The old
+        # 0.50 floor was calibrated on the same-network case (0.81) and would
+        # fail an engine that is behaving correctly.
+        from tools import regress_engine as rg
+        self.assertLess(rg.INHERIT_FLOOR, 1551.9 / 3242.4)
+
+
 class TestSeedPlan(unittest.TestCase):
 
     def test_seed_namespaces_are_distinct(self):

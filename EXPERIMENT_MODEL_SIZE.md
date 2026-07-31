@@ -1,5 +1,16 @@
 # PRE-REGISTRATION: 172k vs 6.77M under the 1,000 ms deadline
 
+> **CLOSED 2026-07-30 -- see `RESULT_MODEL_SIZE.md`.** The 172k network won,
+> 0.5854 [0.5360, 0.6349] over 240 games, inside the predicted 0.55-0.70. The
+> prediction was nonetheless right for the wrong reason: failure mode 1 fired.
+> The small net bought 1.24x the simulations, not a doubling, so the ladder
+> arithmetic this prediction rested on does not apply and cannot be claimed as
+> confirmed. Failure mode 2 (a worse-calibrated value head under search) did
+> not fire. `midsize` was reserved for a LOSS and is therefore not run.
+>
+> Left unedited below. The point of writing a prediction down is that it stays
+> written down.
+
 Written and committed **before the first game was played**, because the prior
 evidence is strong enough that a result in either direction could be
 rationalised after the fact. Committing the prediction first makes that

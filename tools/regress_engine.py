@@ -28,7 +28,25 @@ WHAT IT GUARDS, and why each check is shaped the way it is.
 3. INHERITED SIMULATIONS, as a ratio to new ones. Adoption alone is a hollow
    statistic -- a bug that re-rooted correctly but dropped the subtree's
    statistics would keep adoption at 0.957 and inherit nothing, and check 2
-   would not notice. The frozen ratio is 3149/3877 = 0.81; the floor is 0.5.
+   would not notice.
+
+   The floor is 0.35, and the reason it is not 0.5 is check 0 below. How much a
+   search inherits depends on how well it predicted the OPPONENT'S reply, which
+   depends on whether the opponent shares its network. Measured: `final`
+   inherits 0.81 of its new simulations against a same-network opponent and
+   only 0.48 against a different one. A 0.5 floor calibrated on the first case
+   fails legitimately on the second.
+
+0. THE OPPONENT IS NEVER A MIRROR, and this is the check that all the others
+   sit on. An engine playing a byte-identical copy of itself predicts its
+   replies far better than it predicts anyone else's, so it adopts a much
+   larger subtree and does much less re-rooting work. Measured on `pocket`:
+   3,707 inherited simulations per move against itself, 2,224 against `final`,
+   and an overhead p99 of 18.77 ms against 23.06 -- the difference between
+   passing the requirement and failing it. This gate shipped as a mirror and
+   PASSED an engine that fails against a real opponent. A deployment
+   requirement measured against the single most favourable opponent in
+   existence is not measuring deployment.
 
 4. THROUGHPUT, but ONLY when the environment matches the frozen baseline.
    This closes a hole the first three cannot: under a deadline, latency is
@@ -56,7 +74,10 @@ import time
 from tools import engine_registry as reg
 from tools.arena_1s import TimedPlayer, latency_report, play_match, print_report
 
-# Measured 2026-07-29 over 240 games on the reference box, engine `final`.
+# Measured 2026-07-29 over 240 games on the reference box, engine `final`
+# against `original` -- a SAME-NETWORK opponent, which is the favourable case
+# for inheritance. `inherited_sims_per_move` in particular does not transfer to
+# a cross-network opponent: the same engine inherits 1,551.9 against `pocket`.
 FROZEN = {
     "p99_ms": 998.7,
     "reuse_rate": 0.9569,
@@ -67,8 +88,41 @@ FROZEN = {
 }
 
 ADOPTION_SLACK = 0.01     # points below the structural ceiling
-INHERIT_FLOOR = 0.50      # inherited / new simulations
+# 0.35, not 0.50: inheritance depends on whether the opponent shares the
+# engine's network. Measured for `final`: 0.81 same-network, 0.48 cross-network.
+# The floor has to clear the cross-network case or the gate fails honestly-
+# behaving engines. It is still far below anything a working re-root produces.
+INHERIT_FLOOR = 0.35      # inherited / new simulations
 THROUGHPUT_FLOOR = 0.70   # of the frozen per-move network evaluations
+
+# A gate must not play an engine against a copy of itself -- see check 0. What
+# inflates inheritance is shared WEIGHTS, not a shared name or config, so the
+# default is derived from the checkpoint: an engine is gated against a standing
+# opponent that does not use its network. Pinning `{"final": "pocket"}` by name
+# would have left `original` and every anchor rung facing a same-network
+# opponent, which is the defect wearing a different hat.
+CROSS_NET_OPPONENT = {reg.GEN22: "pocket", reg.POCKET: "final"}
+FALLBACK_OPPONENT = "final"
+
+
+def choose_opponent(engine, requested=None, allow_mirror=False):
+    """The engine this gate plays against. Never the engine itself.
+
+    See check 0. Extracted so the rule can be tested without playing games.
+    """
+    if requested is None:
+        ckpt = reg.ENGINES[engine].get("ckpt")
+        requested = CROSS_NET_OPPONENT.get(ckpt, FALLBACK_OPPONENT)
+    opponent = requested
+    if opponent == engine and not allow_mirror:
+        raise SystemExit(
+            f"[X] engine and opponent are both '{opponent}'. An engine "
+            f"predicts its own replies far better than anyone else's, so a "
+            f"mirror adopts a much larger subtree and understates re-rooting "
+            f"cost -- measured at 4.3 ms of overhead p99, enough to turn a "
+            f"FAIL into a PASS. Pass --opponent <other> or, if a mirror is "
+            f"genuinely what you want, --allow-mirror.")
+    return opponent
 
 
 class Gate:
@@ -109,6 +163,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", default="final",
                     help="registry engine to gate (default: the promoted one)")
+    ap.add_argument("--opponent", default=None,
+                    help="engine to play against. Defaults to a DIFFERENT "
+                         "network -- never a mirror, which understates "
+                         "re-rooting cost by ~4 ms of overhead p99")
+    ap.add_argument("--allow-mirror", action="store_true",
+                    help="permit engine == opponent. The result is not a "
+                         "deployment latency measurement; see check 0")
     ap.add_argument("--games", type=int, default=10)
     ap.add_argument("--warmup-games", type=int, default=2)
     ap.add_argument("--device", default=None)
@@ -128,15 +189,21 @@ def main():
     gc.disable()
     print(f"[!] automatic cyclic GC off; collecting at game boundaries")
 
-    # The mirror is the same frozen engine on both sides, so the score is 0.5
-    # by construction and is not the measurement. What is measured is what this
-    # engine costs over realistic positions.
+    # The score is not the measurement -- 10 games cannot resolve strength and
+    # this gate never claims to. What is measured is what the engine COSTS over
+    # realistic positions, against an opponent it cannot predict.
+    opponent = choose_opponent(args.engine, args.opponent, args.allow_mirror)
+
     pa = TimedPlayer(f"engine:{args.engine}", device)
-    pb = TimedPlayer(f"engine:{args.engine}", device)
-    pb.name = pa.name + "-mirror"
+    pb = TimedPlayer(f"engine:{opponent}", device)
+    if opponent == args.engine:
+        pb.name = pa.name + "-mirror"
     print(f"gating engine:{args.engine}  fingerprint "
           f"{pa.provenance['fingerprint']}  "
           f"({pa.net_info['params']:,} params)")
+    print(f"opponent engine:{opponent}  ({pb.net_info['params']:,} params)"
+          + ("   [!] MIRROR -- not a deployment measurement"
+             if opponent == args.engine else ""))
     print(f"{args.games} games + {args.warmup_games} warmup, "
           f"{pa.budget_ms:.0f} ms per move, device {device}\n")
 
@@ -215,7 +282,8 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     out = os.path.join(args.outdir, f"{args.tag}.json")
     with open(out, "w", encoding="utf-8") as fh:
-        json.dump({"engine": args.engine, "games": args.games,
+        json.dump({"engine": args.engine, "opponent": opponent,
+                   "mirror": opponent == args.engine, "games": args.games,
                    "config": pa.config(), "report": rep,
                    "frozen": FROZEN, "environment": reg.environment(),
                    "environment_drift": drift, "seconds": dt,
