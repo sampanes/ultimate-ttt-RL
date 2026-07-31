@@ -109,6 +109,118 @@ class TestSamplerAccuracy(unittest.TestCase):
         self.assertAlmostEqual(shares.get("_spin_alpha", 0.0), 0.8, delta=0.10)
 
 
+class TestSamplerRobustness(unittest.TestCase):
+    """A long measurement must not be destroyed by the code that saves it."""
+
+    def test_a_none_line_number_is_recorded_not_crashed_on(self):
+        # f_lineno is None for a frame caught mid-teardown. It threw away a
+        # nine-minute run once, at the serialization line, after all the work
+        # was already done.
+        s = pt.StackSampler(threading.get_ident(), {"phase": "mid"})
+        s.leaf[("mid", "x.py", "f", None)] = 3
+        s.leaf[("mid", "x.py", "f", 12)] = 5
+        keys = ["%s|%s|%s|%s" % k for k in s.leaf]
+        self.assertEqual(len(keys), 2)
+        for k in keys:
+            phase, filename, func, line = k.rsplit("|", 3)
+            self.assertIn(line, ("None", "12"))
+
+    def test_report_survives_an_unparseable_line_number(self):
+        res = {
+            "in_search_samples": 8, "ms_per_move": 100.0,
+            "leaf": {"mid|/x/agents/mcts.py|_best_child|-1": 8},
+        }
+        shares = pt.report_sample(res)
+        self.assertAlmostEqual(shares["child scoring / best-child"], 1.0)
+
+
+class TestSamplerGilBias(unittest.TestCase):
+    """The defect that invalidated the first profile, kept as a regression.
+
+    The original ground-truth test compared two PURE-PYTHON functions and so
+    could never have caught this. A calibration workload has to span the axis
+    the instrument is used across.
+    """
+
+    def test_the_gil_bias_is_real_and_large(self):
+        def py_spin(sec):
+            end = time.perf_counter() + sec
+            while time.perf_counter() < end:
+                pass
+
+        def c_block(sec):
+            time.sleep(sec)     # GIL released: what a CUDA sync looks like
+
+        ctx = {"phase": "mid"}
+        s = pt.StackSampler(threading.get_ident(), ctx, hz=500)
+        s.start()
+        try:
+            for _ in range(2):
+                py_spin(0.25)
+                c_block(0.25)
+        finally:
+            s.stop()
+        by = {}
+        for (_ph, _f, fn, _l), n in s.leaf.items():
+            by[fn] = by.get(fn, 0) + n
+        total = sum(by.values())
+        self.assertGreater(total, 50)
+        c_share = by.get("c_block", 0) / total
+        # Ground truth is 0.5. If this ever drops near 0.5 the bias has been
+        # fixed and `--mode wrap` could be reconsidered as the primary.
+        self.assertGreater(c_share, 0.70,
+                           "GIL bias measured at %.3f -- was 0.864" % c_share)
+
+
+class TestExclusiveTimer(unittest.TestCase):
+
+    def test_nested_time_is_charged_to_the_inner_operation(self):
+        t = pt.ExclusiveTimer()
+
+        def inner():
+            end = time.perf_counter() + 0.05
+            while time.perf_counter() < end:
+                pass
+        wrapped_inner = t.wrap("inner", inner)
+
+        def outer():
+            wrapped_inner()
+            end = time.perf_counter() + 0.05
+            while time.perf_counter() < end:
+                pass
+        wrapped_outer = t.wrap("outer", outer)
+
+        wrapped_outer()
+        self.assertAlmostEqual(t.total["inner"], 0.05, delta=0.02)
+        self.assertAlmostEqual(t.total["outer"], 0.05, delta=0.02)
+        self.assertEqual(t.calls["outer"], 1)
+        self.assertEqual(t.calls["inner"], 1)
+
+    def test_calibration_prices_a_wrapped_call(self):
+        t = pt.ExclusiveTimer()
+        us = t.calibrate(n=20000)
+        self.assertGreater(us, 0.0)
+        self.assertLess(us, 5.0, "wrapper cost %.2f us is too high to "
+                                 "subtract credibly" % us)
+        self.assertNotIn("_calibration", t.total)
+
+    def test_every_wrap_target_resolves(self):
+        holders = {"MCTS": MCTS, "MOD": pt.mcts_mod,
+                   "REUSE": pt.TreeReuseSearcher}
+        for name, key, attr in pt.WRAP_TARGETS:
+            with self.subTest(op=name):
+                self.assertTrue(hasattr(holders[key], attr),
+                                "%s has no %s" % (key, attr))
+
+    def test_staticmethods_survive_being_wrapped(self):
+        # `release` and `_solve_from_children` are staticmethods; wrapping them
+        # as plain functions would silently pass `self` as the first argument.
+        for holder, attr in ((pt.TreeReuseSearcher, "release"),
+                             (MCTS, "_solve_from_children")):
+            with self.subTest(attr=attr):
+                self.assertIsInstance(holder.__dict__[attr], staticmethod)
+
+
 class TestClassification(unittest.TestCase):
     def test_every_named_operation_is_reachable(self):
         """The seven operations the owner named must each have a mapping."""

@@ -13,15 +13,30 @@ Both larger costs this program already removed are gone (plane building, 46%
 -> 3.6%; the per-leaf `_expand_from_logits` round trips, replaced by
 `_expand_wave`), so the tree is what remains.
 
-WHY SAMPLING, NOT cProfile. `_best_child` is called tens of thousands of times
-per move. cProfile adds ~1-2 us per call, which lands as tens of percent of the
-budget ON THE VERY FUNCTION being judged, and would manufacture the conclusion
-that selection dominates. A sampling profiler pays a small uniform cost instead
-and cannot bias one function against another. The price is that it gives
-percentages rather than exact call counts, which is why `--mode count` exists
-separately: exact counts from a short run whose TIMING is admittedly distorted,
-crossed against a microbenchmark of each operation in isolation. Three methods,
-different biases; agreement is the evidence, not any one table.
+THE SAMPLER IS DISCREDITED FOR THIS QUESTION -- read `--mode wrap` instead.
+It was built on the reasoning that cProfile's ~1-2 us per call would land as
+tens of percent of the budget on `_best_child` (called ~35,000 times a move)
+and manufacture the conclusion that selection dominates, whereas a sampler
+"cannot bias one function against another". That last clause is false. An
+in-process sampler can only take a sample while it holds the GIL, so it samples
+freely whenever the main thread has released it -- CUDA syncs, pybind crossings
+-- and waits out the switch interval during pure Python. Measured against a
+workload constructed to be an exact 50/50 split: **13.5% / 86.4%, a 6.4x bias
+toward C**. Every tree operation here is pure Python and everything it competes
+with releases the GIL, so the bias points straight at the answer. Reconciliation
+caught it at up to 353x.
+
+The sampler is kept, because its ranking WITHIN a single regime is still sound
+and its line-level detail inside the torch calls is genuinely useful. It must
+never be used to compare Python against C.
+
+FOUR METHODS, different biases; agreement is the evidence, not any one table:
+
+    wrap        wall time per operation, exclusive of nested ones. No GIL bias.
+                Overhead is real, priced by calibration, and subtracted.
+    sample      jittered stack sampler. GIL-biased -- see above.
+    count       exact per-simulation operation counts, timing distorted.
+    microbench  each operation in isolation, no games. Understates cache misses.
 
 MCTS IS NOT EDITED. `agents/mcts.py` is frozen and its sha256 is a hard gate in
 the registry, so this tool instruments from outside the process's own stack.
@@ -192,7 +207,12 @@ class StackSampler(threading.Thread):
                 continue
             phase = self.ctx["phase"]
             co = f.f_code
-            self.leaf[(phase, co.co_filename, co.co_name, f.f_lineno)] += 1
+            # f_lineno is None for a frame caught mid-teardown. Rare, but a
+            # sampler running for hours will hit it, and coercing here keeps
+            # every downstream consumer from having to know that.
+            line = f.f_lineno
+            self.leaf[(phase, co.co_filename, co.co_name,
+                       -1 if line is None else line)] += 1
             back = f.f_back
             self.pairs[(classify(co.co_filename, co.co_name),
                         "-" if back is None
@@ -259,7 +279,10 @@ def run_sample(engine, games, hz, device, seed):
         "in_search_samples": in_search,
         "per_sample_ms": per_sample_ms,
         "ms_per_move": in_search * per_sample_ms / moves if moves else 0.0,
-        "leaf": {"%s|%s|%s|%d" % k: v for k, v in sampler.leaf.items()},
+        # %s, never %d: a nine-minute measurement must not be destroyed by a
+        # format specifier at the moment it tries to save itself. Learned the
+        # hard way -- a single None line number threw away a whole run.
+        "leaf": {"%s|%s|%s|%s" % k: v for k, v in sampler.leaf.items()},
         "pairs": {"%s <- %s" % k: v for k, v in sampler.pairs.items()},
     }
 
@@ -332,6 +355,183 @@ def report_sample(res, top_lines=8):
                      src[:80]))
 
     return {op: n / in_search for op, n in by_op.items()}
+
+
+# ----------------------------------------------------------------------
+# Mode 1b: wrapper timing -- the method that replaced sampling
+# ----------------------------------------------------------------------
+
+class ExclusiveTimer:
+    """Wall time per operation, EXCLUDING nested operations.
+
+    WHY THIS EXISTS. The stack sampler in this file is unusable for the
+    question it was written for. Measured against a workload built to be an
+    exact 50/50 split between a pure-Python spin and a GIL-releasing block, it
+    reported 13.5% / 86.4% -- a 6.4x bias toward C. The cause is structural: an
+    in-process sampler can only take a sample while holding the GIL, so it
+    samples freely whenever the main thread has released it (CUDA syncs, pybind
+    crossings) and has to wait out the switch interval during pure Python. Every
+    tree operation under evaluation here is pure Python, and every thing they
+    were being compared against releases the GIL.
+
+    The original ground-truth test compared two pure-Python functions and was
+    therefore structurally incapable of catching this. That is the lesson: a
+    calibration workload has to span the axis the instrument is used across.
+
+    A wrapper has no such bias -- it measures the same clock in both regimes.
+    Its cost is real but small and, crucially, MEASURABLE: `calibrate()` prices
+    one wrapped call, and the report subtracts count x price. At ~0.3 us per
+    call against a 130 ms measurement that is a few percent, against a 353x
+    error from sampling.
+    """
+
+    def __init__(self):
+        self.total = collections.defaultdict(float)
+        self.calls = collections.defaultdict(int)
+        self._stack = []
+
+    def wrap(self, name, fn):
+        def inner(*a, **kw):
+            st = self._stack
+            st.append([name, time.perf_counter(), 0.0])
+            try:
+                return fn(*a, **kw)
+            finally:
+                _n, t0, child = st.pop()
+                dt = time.perf_counter() - t0
+                self.total[name] += dt - child
+                self.calls[name] += 1
+                if st:
+                    st[-1][2] += dt
+        return inner
+
+    def calibrate(self, n=200000):
+        """Microseconds of overhead added per wrapped call."""
+        def noop():
+            return None
+        wrapped = self.wrap("_calibration", noop)
+        t0 = time.perf_counter()
+        for _ in range(n):
+            wrapped()
+        hot = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        for _ in range(n):
+            noop()
+        cold = time.perf_counter() - t0
+        self.total.pop("_calibration", None)
+        self.calls.pop("_calibration", None)
+        return max(0.0, (hot - cold) / n * 1e6)
+
+
+# (owner-facing name, holder, attribute). Everything here is pure Python except
+# wave_planes, which is kept so the C++ plane fill and its device transfer can
+# be priced on the same clock as the tree.
+WRAP_TARGETS = [
+    ("child scoring / best-child", "MCTS", "_best_child"),
+    ("backup traversal",           "MCTS", "_backup"),
+    ("expansion",                  "MCTS", "_expand_wave"),
+    ("proof: terminal probes",     "MCTS", "_mark_terminal_children"),
+    ("proof: backward induction",  "MCTS", "_solve_from_children"),
+    ("proof: propagation",         "MCTS", "_propagate_solved"),
+    ("selection: state clone",     "MOD",  "_clone"),
+    ("legal-child iteration",      "MOD",  "rule_utl_valid_moves"),
+    ("plane build + H2D",          "MOD",  "wave_planes"),
+    ("tree release",               "REUSE", "release"),
+    ("tree reuse: adopt",          "REUSE", "_adopt"),
+]
+
+
+def run_wrap(engine, games, device, seed):
+    timer = ExclusiveTimer()
+    holders = {"MCTS": MCTS, "MOD": mcts_mod, "REUSE": TreeReuseSearcher}
+    saved = []
+    for name, holder_key, attr in WRAP_TARGETS:
+        holder = holders[holder_key]
+        raw = holder.__dict__.get(attr, getattr(holder, attr))
+        is_static = isinstance(raw, staticmethod)
+        fn = raw.__func__ if is_static else raw
+        saved.append((holder, attr, raw))
+        wrapped = timer.wrap(name, fn)
+        setattr(holder, attr, staticmethod(wrapped) if is_static else wrapped)
+    try:
+        pa = TimedPlayer("engine:%s" % engine, device)
+        pb = TimedPlayer("engine:%s" % engine, device)
+        play_match(pa, pb, games, seed, warmup=2, gc_mode="deferred")
+    finally:
+        for holder, attr, raw in saved:
+            setattr(holder, attr, raw)
+
+    per_call_us = timer.calibrate()
+    moves = len(pa.records) + len(pb.records)
+    sims = sum(r[2] for r in pa.records) + sum(r[2] for r in pb.records)
+    search_ms = sum(r[1] for r in pa.records) + sum(r[1] for r in pb.records)
+
+    rows = []
+    measured_ms = 0.0
+    overhead_ms = 0.0
+    for name in sorted(timer.total, key=lambda k: -timer.total[k]):
+        raw_ms = timer.total[name] * 1000.0
+        calls = timer.calls[name]
+        over = calls * per_call_us / 1000.0
+        rows.append((name, raw_ms - over, calls))
+        measured_ms += raw_ms - over
+        overhead_ms += over
+
+    total_ms = search_ms - overhead_ms
+    print("")
+    print("  %d moves, %.0f sims/move, %.1f ms/move of search"
+          " (%.1f ms/move was wrapper overhead, removed)"
+          % (moves, sims / moves, total_ms / moves, overhead_ms / moves))
+    print("  wrapper priced at %.3f us/call over %s calls"
+          % (per_call_us, format(sum(timer.calls.values()), ",")))
+    print("")
+    print("  %-30s %9s %8s %10s" % ("operation", "ms/move", "share",
+                                    "us/sim"))
+    print("  " + "-" * 62)
+    out = {}
+    for name, ms, calls in rows:
+        out[name] = ms / moves
+        print("  %-30s %9.1f %7.1f%% %10.2f"
+              % (name, ms / moves, 100.0 * ms / total_ms,
+                 ms * 1000.0 / sims))
+    resid = total_ms - measured_ms
+    print("  " + "-" * 62)
+    print("  %-30s %9.1f %7.1f%%   (network forward, state.make_move,"
+          " everything not wrapped)" % ("residual", resid / moves,
+                                        100.0 * resid / total_ms))
+
+    # `expansion` and `plane build` are NOT tree bookkeeping and must not be
+    # summed into it. `_expand_wave` is dominated by a device round trip -- a
+    # mask H2D, a softmax, and two D2H pulls -- with only the node-allocation
+    # loop inside it being Python. `wave_planes` is a C++ fill plus an H2D
+    # copy. Adding them to the tree total would attribute 328 ms of CUDA
+    # traffic to a port that cannot touch it, which is precisely the mistake
+    # this profile exists to prevent.
+    MIXED = ("expansion", "plane build + H2D")
+    tree = sum(v for k, v in out.items() if k not in MIXED)
+    mixed = sum(v for k, v in out.items() if k in MIXED)
+    print("")
+    print("  pure-Python tree bookkeeping   %7.1f ms/move  %5.1f%%"
+          % (tree, 100.0 * tree * moves / total_ms))
+    print("  device traffic + expansion     %7.1f ms/move  %5.1f%%   MIXED:"
+          " mostly H2D/D2H around the forward pass, plus node allocation"
+          % (mixed, 100.0 * mixed * moves / total_ms))
+    print("  residual                       %7.1f ms/move  %5.1f%%"
+          % (resid / moves, 100.0 * resid / total_ms))
+    print("")
+    print("  CAVEAT: part of the device-traffic bucket is the GPU actually")
+    print("  computing, awaited at the first .cpu(). Separating compute from")
+    print("  transfer needs CUDA events; until then that share is an UPPER")
+    print("  bound on what restructuring the transfers could recover.")
+    out["_residual"] = resid / moves
+    out["_mixed_ms_per_move"] = mixed
+    out["_total_ms_per_move"] = total_ms / moves
+    out["_tree_ms_per_move"] = tree
+    out["_tree_share"] = tree * moves / total_ms
+    out["_wrapper_us_per_call"] = per_call_us
+    out["_overhead_ms_per_move"] = overhead_ms / moves
+    out["_sims_per_move"] = sims / moves
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -607,7 +807,7 @@ def reconcile(shares, counts, bench, ms_per_move):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mode", default="all",
-                    choices=("sample", "count", "microbench", "all"))
+                    choices=("sample", "wrap", "count", "microbench", "all"))
     ap.add_argument("--engine", default="final",
                     help="registry engine to profile (default: final)")
     ap.add_argument("--games", type=int, default=12)
@@ -632,10 +832,25 @@ def main():
                "git_head": engine_registry.git_head()}
     shares, counts, bench, sample = {}, None, None, None
 
+    os.makedirs(OUT_DIR, exist_ok=True)
+    path = os.path.join(OUT_DIR, "%s.json" % args.tag)
+
+    def save():
+        """Persist after every stage, never only at the end.
+
+        A nine-minute measurement was once destroyed by a format specifier in
+        the line that tried to save it. Reporting is presentation; it must not
+        be able to lose data that has already been collected.
+        """
+        with open(path, "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+
     if args.mode in ("sample", "all"):
         print("=== 1. sampling profile, real %s ms workload ===" % args.engine)
         sample = run_sample(args.engine, args.games, args.hz, args.device,
                             args.seed)
+        payload["sample"] = sample
+        save()
         print("  %d samples over %.1f s (%.0f Hz achieved of %d requested;"
               " the OS sleep granularity sets this, nothing divides by the"
               " request)"
@@ -645,8 +860,16 @@ def main():
               % (sample["moves"], sample["sims_per_move"],
                  sample["ms_per_move"]))
         shares = report_sample(sample)
-        payload["sample"] = sample
         payload["shares"] = shares
+        save()
+
+    if args.mode in ("wrap", "all"):
+        print("")
+        print("=== 1b. wrapper timing (no GIL bias; overhead priced and"
+              " subtracted) ===")
+        payload["wrap"] = run_wrap(args.engine, args.games, args.device,
+                                   args.seed + 2)
+        save()
 
     if args.mode in ("count", "all"):
         print("")
@@ -654,12 +877,14 @@ def main():
         counts = run_count(args.engine, args.count_games, args.device,
                            args.seed + 1)
         payload["counts"] = counts
+        save()
 
     if args.mode in ("microbench", "all"):
         print("")
         print("=== 3. isolated cost per operation ===")
         bench = run_microbench("cpu")
         payload["microbench"] = bench
+        save()
 
     if args.mode == "all" and shares and counts and bench:
         print("")
@@ -667,10 +892,7 @@ def main():
         payload["modelled_ms"] = reconcile(shares, counts, bench,
                                            sample["ms_per_move"])
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(OUT_DIR, "%s.json" % args.tag)
-    with open(path, "w") as fh:
-        json.dump(payload, fh, indent=2, default=str)
+    save()
     print("")
     print("wrote %s" % path)
 
