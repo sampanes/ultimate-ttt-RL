@@ -7,6 +7,16 @@ WHAT IT GUARDS, and why each check is shaped the way it is.
 
 1. LATENCY  p99 <= 1000 ms, max <= 1250 ms. The frozen operational requirement.
 
+1b. RESERVE HEADROOM, which is check 1 stated as a cause instead of a verdict.
+   The search honours its own deadline: over 5,517 measured moves it never
+   exceeded 981.1 ms against a 980 ms target, and the worst chunk on the moves
+   that DID blow the requirement was 3.3 ms. Every p99 miss so far has come
+   from the work the caller waits for and the search does not time -- re-rooting
+   and releasing the discarded tree. The reserve exists to absorb exactly that,
+   so `overhead p99 <= reserve` fails before the requirement does and names the
+   thing to fix. It is how `pocket` was found to miss p99 by 2.3 ms while its
+   search was blameless.
+
 2. TREE-REUSE ADOPTION, measured against its own structural ceiling rather than
    a flat number. The only unavoidable miss is the first move of each game, when
    no tree exists yet, so the ceiling is `1 - games/moves` and a fixed floor
@@ -146,6 +156,21 @@ def main():
             f"frozen baseline was {FROZEN['p99_ms']} ms")
     g.check("latency max <= 1250 ms", lat["max"] <= reg.REQUIREMENT["max_ms"],
             f"{lat['max']:.1f}", f"<= {reg.REQUIREMENT['max_ms']:.0f}")
+
+    # Check 1 says whether the requirement was met. This says WHY, before it
+    # stops being met. The search holds its own deadline to within a
+    # millisecond, so a p99 miss is never search overrun -- it is the work the
+    # caller waits for and the search does not time: re-rooting and releasing
+    # the discarded tree. That is what the reserve is held back for, so
+    # `overhead p99 <= reserve` is the same statement as check 1, expressed as
+    # something actionable.
+    over_p99 = rep["overhead_ms"]["p99"]
+    reserve = pa.mcts.reserve_ms
+    g.check("reserve covers caller-side work", over_p99 <= reserve,
+            f"{over_p99:.2f}", f"<= {reserve:.0f}",
+            f"re-root + release outside the search's deadline; "
+            f"{reserve - over_p99:+.2f} ms of margin. This is the check that "
+            f"fires FIRST -- p99 misses are caused here, not in the search")
 
     if pa.reuse:
         # One unavoidable miss per game: the first move has no prior tree.

@@ -238,6 +238,55 @@ class TestLadder(unittest.TestCase):
         self.assertGreater(rep["latency_ms"]["p99"], 0)
 
 
+class TestLatencyCorrectedPocket(unittest.TestCase):
+    """`pocket_r35` -- the strength winner with a reserve that covers the work
+    the caller waits for but the search does not time."""
+
+    def test_the_measured_arm_is_left_exactly_as_measured(self):
+        # `pocket` scored 0.5854 against `final` AND missed p99 by 2.3 ms.
+        # Editing it to fix that would detach a published number from the
+        # configuration that produced it.
+        self.assertEqual(reg.ENGINES["pocket"]["reserve"], "20")
+        self.assertEqual(reg.FINGERPRINTS["pocket"], "036f17c9aa644aad")
+
+    def test_it_differs_from_pocket_in_exactly_the_reserve(self):
+        a, b = reg.ENGINES["pocket"], reg.ENGINES["pocket_r35"]
+        diff = {k for k in a if a[k] != b[k]} - {"name"}
+        self.assertEqual(diff, {"reserve"})
+
+    def test_the_reserve_reaches_the_built_search(self):
+        # The bug this guards: _engine() used to force reserve from the budget
+        # table AFTER applying overrides, so a declared reserve was silently
+        # discarded and the "corrected" engine would have been the broken one.
+        p = build("pocket_r35")
+        self.assertEqual(p.mcts.reserve_ms, 35.0)
+        self.assertEqual(build("pocket").mcts.reserve_ms, 20.0)
+
+    def test_it_covers_the_measured_overshoot(self):
+        # Measured over 5,517 moves: overhead p99 23.78 ms, worst-chunk p99
+        # 5.4 ms. A reserve below their sum cannot pass the requirement.
+        self.assertGreaterEqual(float(reg.ENGINES["pocket_r35"]["reserve"]),
+                                23.78 + 5.4)
+
+    def test_it_is_not_latency_exempt(self):
+        # It is a DEPLOYMENT candidate. The whole point is that it is judged.
+        self.assertNotIn("pocket_r35", reg.LADDER_EXEMPT)
+        self.assertFalse(build("pocket_r35").latency_exempt)
+
+    def test_it_is_not_an_anchor(self):
+        self.assertNotIn("pocket_r35", reg.ANCHOR_ROLES)
+
+    def test_every_other_fingerprint_survived_the_precedence_change(self):
+        # Overrides now win over the budget-derived reserve. No pre-existing
+        # entry overrides reserve, so nothing already published may move.
+        for name in ("original", "final", "anchor_A", "anchor_B", "anchor_C",
+                     "anchor_D", "pocket", "midsize"):
+            with self.subTest(engine=name):
+                ms = int(float(reg.ENGINES[name]["ms"]))
+                self.assertEqual(reg.ENGINES[name]["reserve"],
+                                 reg._RESERVE[ms])
+
+
 class TestDerivedEngines(unittest.TestCase):
     """`engine:final+cpuct=2.0` -- a sweep candidate, traceable to a frozen base."""
 

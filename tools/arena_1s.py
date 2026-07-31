@@ -437,8 +437,15 @@ def latency_report(player):
         # Everything the caller waits for that the search did not time itself
         # over: re-rooting, instrumentation, the argmax. Reported so a p99 miss
         # can be attributed to search or to the wrapper around it.
+        # p99 is the one that decides the requirement. The search holds its own
+        # deadline to within a millisecond, so move_p99 is essentially
+        # (budget - reserve) + overhead_p99: when this exceeds the reserve, the
+        # move p99 exceeds the budget, and no amount of search tuning helps.
+        # Measured in the model-size decision match: 23.78 ms against a 20 ms
+        # reserve for `pocket`, which is the whole of its 2.3 ms p99 miss.
         "overhead_ms": {
             "mean": float((ms - col["search_ms"]).mean()),
+            "p99": float(np.percentile(ms - col["search_ms"], 99)),
             "max": float((ms - col["search_ms"]).max()),
         },
         # A chunk is atomic, so its duration is the floor on how far a search
@@ -529,6 +536,7 @@ def print_report(player, rep):
           f"p99 {lat['p99']:7.1f}  max {lat['max']:7.1f}  "
           f"mean {lat['mean']:7.1f}   "
           f"(non-search overhead mean {rep['overhead_ms']['mean']:.2f} ms, "
+          f"p99 {rep['overhead_ms']['p99']:.2f}, "
           f"max {rep['overhead_ms']['max']:.2f})")
     print(f"    per move     {per['simulations']:8.1f} sims  "
           f"{per['neural_evaluations']:8.1f} nn-evals  "

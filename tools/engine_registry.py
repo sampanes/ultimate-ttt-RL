@@ -109,14 +109,22 @@ _FINAL = {"wave": "8", "cpuct": "1.5", "solve": "1", "reuse": "1", "bexp": "1",
 
 # reserve_ms defaults to max(5, 2% of budget) inside MCTS. Pinned explicitly at
 # every rung so the ladder does not silently re-derive it if that rule changes.
+#
+# THIS RESERVE ONLY COVERS CHUNK OVERRUN. It is held back from the SEARCH's own
+# deadline, and the search honours it: over 5,517 measured moves the search
+# never exceeded 981.1 ms against its 980 ms deadline. What it does not cover is
+# the work the caller waits for OUTSIDE `MCTS.search` -- re-rooting, releasing
+# the discarded tree, the argmax -- which reached 23.8 ms at p99 and pushed 106
+# moves past the 1,000 ms requirement in the model-size decision match. See
+# `_RESERVE_DEPLOY`.
 _RESERVE = {250: "5", 500: "10", 1000: "20", 2000: "40", 4000: "80"}
 
 
 def _engine(ckpt, arch, ms, name, **over):
     o = dict(_FINAL)
-    o.update(over)
     o.update({"ckpt": ckpt, "arch": arch, "ms": str(ms), "name": name,
               "reserve": _RESERVE[ms]})
+    o.update(over)          # a DECLARED override wins, reserve included
     return o
 
 
@@ -152,8 +160,30 @@ ENGINES = {
     "anchor_D": _engine(GEN22, "arena22", 4000, "anchor_D_4000ms"),
 
     # -- model-size arms, all at the deployment budget -----------------------
+    # `pocket` is FROZEN AS MEASURED, latency failure included. It is the arm
+    # that scored 0.5854 against `final`, and rewriting it to fix that failure
+    # would silently detach the published number from the configuration that
+    # produced it. The correction lives in a separate entry below.
     "pocket": _engine(POCKET, "squeeze", 1000, "pocket_172k"),
     "midsize": _engine(MIDSIZE, "plain", 1000, "midsize_921k"),
+
+    # -- the latency-corrected deployment candidate ---------------------------
+    # `pocket` wins on strength but misses the frozen p99 by 2.3 ms, and the
+    # cause is not the search: over 5,517 moves the search never exceeded
+    # 981.1 ms against its own 980 ms deadline, and the worst chunk on the 106
+    # failing moves was 3.3 ms. All of the overshoot is caller-side tree work
+    # -- `_adopt`, `release()` of the discarded tree -- which is inside the
+    # move the requirement is written against but outside the interval the
+    # search times itself over. It costs MORE here than for `final` for the
+    # reason `pocket` is faster: 4,193 sims/move builds a 24% bigger tree to
+    # walk. Raising the reserve is the configuration fix; moving that walk off
+    # the critical path is tree-core work, not a knob.
+    #
+    # 35 ms covers the measured p99 overhead (23.8) plus p99 chunk overrun
+    # (5.4) with room, and costs 1.5% of thinking time -- worth ~0.002 by the
+    # anchor ladder against an 0.0854 edge.
+    "pocket_r35": _engine(POCKET, "squeeze", 1000, "pocket_172k_r35",
+                          reserve="35"),
 
     # -- the networks alone, no search ---------------------------------------
     # Without these a model-size result is uninterpretable: if the small net
@@ -183,6 +213,7 @@ FINGERPRINTS = {
     "anchor_D": "dbc1514fb6b28f45",
     "pocket": "036f17c9aa644aad",
     "midsize": "5f38b819e7037640",
+    "pocket_r35": "d9769168cae6af7c",
     "gen22_raw": "fc29c23a40fc3184",
     "pocket_raw": "ee530ad9254ab7a0",
     "midsize_raw": "1da5604204f35072",
