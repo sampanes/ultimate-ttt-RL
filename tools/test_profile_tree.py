@@ -19,6 +19,7 @@ from engine.constants import X, O
 from engine.rules import rule_utl_valid_moves
 from tools import engine_registry
 from tools import profile_tree as pt
+from tools.arena_1s import play_match
 
 
 def _spin_alpha(seconds):
@@ -37,7 +38,7 @@ class TestSamplerAccuracy(unittest.TestCase):
     """Ground truth is set by construction, then read back off the sampler."""
 
     def _profile(self, alpha_s, beta_s, hz=500):
-        ctx = {"phase": "mid"}
+        ctx = {"phase": "mid", "on": True}
         s = pt.StackSampler(threading.get_ident(), ctx, hz=hz)
         s.start()
         try:
@@ -67,7 +68,7 @@ class TestSamplerAccuracy(unittest.TestCase):
         want = [pyrandom.random() for _ in range(5)]
 
         pyrandom.seed(12345)
-        ctx = {"phase": "mid"}
+        ctx = {"phase": "mid", "on": True}
         s = pt.StackSampler(threading.get_ident(), ctx, hz=500)
         s.start()
         try:
@@ -84,7 +85,7 @@ class TestSamplerAccuracy(unittest.TestCase):
         _spin_alpha(0.30)
         clean = time.perf_counter() - t0
 
-        ctx = {"phase": "mid"}
+        ctx = {"phase": "mid", "on": True}
         s = pt.StackSampler(threading.get_ident(), ctx, hz=1000)
         s.start()
         t0 = time.perf_counter()
@@ -151,7 +152,7 @@ class TestSamplerGilBias(unittest.TestCase):
         def c_block(sec):
             time.sleep(sec)     # GIL released: what a CUDA sync looks like
 
-        ctx = {"phase": "mid"}
+        ctx = {"phase": "mid", "on": True}
         s = pt.StackSampler(threading.get_ident(), ctx, hz=500)
         s.start()
         try:
@@ -341,6 +342,93 @@ class TestReconciliation(unittest.TestCase):
         # k=3 sits halfway between the 2 and 4 rows: 3.0 us x 1000 = 3.0 ms
         self.assertAlmostEqual(model["child scoring / best-child"], 3.0,
                                places=6)
+
+
+class _StubPlayer:
+    """The least `play_match` will drive: enough of TimedPlayer to be warmed
+    up, reset and recorded. `hook` stands in for the search internals every
+    instrument in the profiler wraps."""
+
+    def __init__(self, name, hook):
+        self.name = name
+        self.hook = hook
+        self.records = []
+        self.policies = []
+        self.recording = True
+
+    def new_game(self):
+        pass
+
+    def reset_counters(self):
+        self.records.clear()
+        self.policies.clear()
+
+    def move(self, state, move_num):
+        self.hook()
+        mv = rule_utl_valid_moves(state.board, state.last_move,
+                                  state.mini_winners)[0]
+        if self.recording:
+            self.records.append(mv)
+        return mv
+
+
+class TestWarmupGate(unittest.TestCase):
+    """The defect that inflated the first published tree profile.
+
+    `play_match(warmup=N)` discards the warmup from the PLAYERS -- records,
+    policies, the cumulative MCTS counters, the reuse tallies. Every instrument
+    in this file accumulates from outside the players and kept counting the
+    warmup, while the denominator (moves, sims, search_ms) did not. Two games
+    in fourteen is 16.7%.
+    """
+
+    def test_the_gate_excludes_exactly_the_warmup(self):
+        ctx = pt.new_ctx()
+        timer = pt.ExclusiveTimer(ctx)
+        seen = {"n": 0}
+
+        def op():
+            seen["n"] += 1          # ungated: fires on warmup moves too
+
+        hook = timer.wrap("op", op)
+        pa, pb = _StubPlayer("a", hook), _StubPlayer("b", hook)
+        for p in (pa, pb):
+            pt.instrument_player(p, ctx)
+        play_match(pa, pb, 2, seed=11, warmup=2, gc_mode="none")
+
+        moves = len(pa.records) + len(pb.records)
+        self.assertGreater(moves, 0)
+        # The warmup really did run through the instrument ...
+        self.assertGreater(seen["n"], moves)
+        # ... and exactly none of it reached the total that gets divided by
+        # `moves`. Equality, not a tolerance: this is a counting bug.
+        self.assertEqual(timer.calls["op"], moves)
+
+    def test_calibration_still_works_with_the_gate_shut(self):
+        ctx = pt.new_ctx()          # starts closed
+        timer = pt.ExclusiveTimer(ctx)
+        self.assertGreater(timer.calibrate(n=20000), 0.0)
+        self.assertFalse(ctx["on"], "calibrate must restore the gate")
+        self.assertEqual(timer.calls, {})
+
+    def test_sampler_counts_warmup_ticks_but_does_not_attribute_them(self):
+        """`samples` is the rate calibrator and must span the whole wall clock;
+        only the attribution is gated."""
+        ctx = {"phase": "mid", "on": False}
+        s = pt.StackSampler(threading.get_ident(), ctx, hz=500)
+        s.start()
+        try:
+            _spin_alpha(0.5)
+            ctx["on"] = True
+            _spin_beta(0.5)
+        finally:
+            s.stop()
+        attributed = sum(s.leaf.values())
+        self.assertGreater(attributed, 0)
+        self.assertGreater(s.samples, attributed)
+        funcs = {func for (_ph, _f, func, _l) in s.leaf}
+        self.assertNotIn("_spin_alpha", funcs)
+        self.assertIn("_spin_beta", funcs)
 
 
 if __name__ == "__main__":

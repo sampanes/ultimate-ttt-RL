@@ -30,6 +30,12 @@ The sampler is kept, because its ranking WITHIN a single regime is still sound
 and its line-level detail inside the torch calls is genuinely useful. It must
 never be used to compare Python against C.
 
+THE WARMUP GATE IS LOAD-BEARING -- see `new_ctx()`. Every instrument here
+accumulates from outside the players, and `play_match(warmup=N)` only discards
+the warmup from the players themselves. Without the gate, two warmup games in
+fourteen inflated every wrapped operation by 16.7% against a denominator that
+excluded them. That defect was in the first published version of this profile.
+
 FOUR METHODS, different biases; agreement is the evidence, not any one table:
 
     wrap        wall time per operation, exclusive of nested ones. No GIL bias.
@@ -205,6 +211,12 @@ class StackSampler(threading.Thread):
             f = frames().get(self.tid)
             if f is None:
                 continue
+            # EVERY tick counts toward `samples`, warmup included, because
+            # per_sample_ms is wall/samples and the wall spans the warmup too.
+            # Only the ATTRIBUTION is gated -- see RecordingGate.
+            self.samples += 1
+            if not self.ctx["on"]:
+                continue
             phase = self.ctx["phase"]
             co = f.f_code
             # f_lineno is None for a frame caught mid-teardown. Rare, but a
@@ -218,7 +230,6 @@ class StackSampler(threading.Thread):
                         "-" if back is None
                         else classify(back.f_code.co_filename,
                                       back.f_code.co_name))] += 1
-            self.samples += 1
         self.wall = time.perf_counter() - t_start
 
     def stop(self):
@@ -226,11 +237,35 @@ class StackSampler(threading.Thread):
         self.join(timeout=5.0)
 
 
-def instrument_phase(player, ctx):
-    """Tag every sample with the game stage the move belongs to."""
+def new_ctx():
+    """Shared measurement context: which game stage, and whether to count.
+
+    THE WARMUP GATE IS NOT COSMETIC. `play_match(warmup=N)` plays N games for
+    real and then throws them away -- but only from the PLAYERS: `records`,
+    `policies`, the cumulative MCTS counters and the reuse tallies are all
+    cleared by `reset_counters()`. An accumulator living outside the players,
+    which is every instrument in this file, keeps every warmup call unless it
+    is told not to. Divide that by a move count that excludes the warmup and
+    every operation is inflated by the warmup fraction -- 2 games in 14 is
+    16.7%, and the total it is expressed as a share of is NOT inflated the same
+    way (search_ms excludes the warmup, the priced overhead subtracted from it
+    did not). Found 2026-08-06, after the first tree profile was published;
+    it moved the tree share by about four points.
+    """
+    return {"phase": "outside", "on": False}
+
+
+def instrument_player(player, ctx):
+    """Tag each move with its game stage, and open the gate once real.
+
+    The gate follows `player.recording`, which is the same flag `play_match`
+    uses to decide whether the move counts, so the instruments and the
+    denominator can never disagree about which moves are in the measurement.
+    """
     orig = player.move
 
     def move(state, move_num):
+        ctx["on"] = bool(player.recording)
         ctx["phase"] = phase_of(int(np.count_nonzero(state.board)))
         try:
             return orig(state, move_num)
@@ -240,11 +275,11 @@ def instrument_phase(player, ctx):
 
 
 def run_sample(engine, games, hz, device, seed):
-    ctx = {"phase": "outside"}
+    ctx = new_ctx()
     pa = TimedPlayer("engine:%s" % engine, device)
     pb = TimedPlayer("engine:%s" % engine, device)
     for p in (pa, pb):
-        instrument_phase(p, ctx)
+        instrument_player(p, ctx)
     print("  engine %s  fingerprint %s  %s params"
           % (engine, (pa.provenance or {}).get("fingerprint"),
              format(pa.net_info["params"], ",")))
@@ -385,10 +420,13 @@ class ExclusiveTimer:
     error from sampling.
     """
 
-    def __init__(self):
+    def __init__(self, ctx=None):
         self.total = collections.defaultdict(float)
         self.calls = collections.defaultdict(int)
         self._stack = []
+        # Warmup gate. Default open so a caller with no match around it (the
+        # tests, calibrate) measures everything. See new_ctx().
+        self.ctx = {"on": True} if ctx is None else ctx
 
     def wrap(self, name, fn):
         def inner(*a, **kw):
@@ -399,8 +437,12 @@ class ExclusiveTimer:
             finally:
                 _n, t0, child = st.pop()
                 dt = time.perf_counter() - t0
-                self.total[name] += dt - child
-                self.calls[name] += 1
+                # The child roll-up is NOT gated: a nested call still has to be
+                # subtracted from its parent's exclusive time, and the parent
+                # may well be a move the gate is open for.
+                if self.ctx["on"]:
+                    self.total[name] += dt - child
+                    self.calls[name] += 1
                 if st:
                     st[-1][2] += dt
         return inner
@@ -410,6 +452,7 @@ class ExclusiveTimer:
         def noop():
             return None
         wrapped = self.wrap("_calibration", noop)
+        was, self.ctx["on"] = self.ctx["on"], True
         t0 = time.perf_counter()
         for _ in range(n):
             wrapped()
@@ -418,6 +461,7 @@ class ExclusiveTimer:
         for _ in range(n):
             noop()
         cold = time.perf_counter() - t0
+        self.ctx["on"] = was
         self.total.pop("_calibration", None)
         self.calls.pop("_calibration", None)
         return max(0.0, (hot - cold) / n * 1e6)
@@ -442,7 +486,8 @@ WRAP_TARGETS = [
 
 
 def run_wrap(engine, games, device, seed):
-    timer = ExclusiveTimer()
+    ctx = new_ctx()
+    timer = ExclusiveTimer(ctx)
     holders = {"MCTS": MCTS, "MOD": mcts_mod, "REUSE": TreeReuseSearcher}
     saved = []
     for name, holder_key, attr in WRAP_TARGETS:
@@ -456,6 +501,8 @@ def run_wrap(engine, games, device, seed):
     try:
         pa = TimedPlayer("engine:%s" % engine, device)
         pb = TimedPlayer("engine:%s" % engine, device)
+        for p in (pa, pb):
+            instrument_player(p, ctx)
         play_match(pa, pb, games, seed, warmup=2, gc_mode="deferred")
     finally:
         for holder, attr, raw in saved:
@@ -557,28 +604,32 @@ def run_count(engine, games, device, seed):
     the deadline does not change, never for a duration.
     """
     C = Counts()
+    ctx = new_ctx()
     orig_bc = MCTS._best_child
     orig_bk = MCTS._backup
     orig_valid = mcts_mod.rule_utl_valid_moves
 
     def bc(self, node):
-        C.best_child += 1
-        C.child_scan += len(node.children)
+        if ctx["on"]:
+            C.best_child += 1
+            C.child_scan += len(node.children)
         return orig_bc(self, node)
 
     def bk(self, node, leaf_value):
-        C.backup_calls += 1
-        n, cur = 0, node
-        while cur is not None:
-            n += 1
-            cur = cur.parent
-        C.backup_steps += n
+        if ctx["on"]:
+            C.backup_calls += 1
+            n, cur = 0, node
+            while cur is not None:
+                n += 1
+                cur = cur.parent
+            C.backup_steps += n
         return orig_bk(self, node, leaf_value)
 
     def valid(board, last_move, mini_winners):
         v = orig_valid(board, last_move, mini_winners)
-        C.valid_calls += 1
-        C.children_created += len(v)
+        if ctx["on"]:
+            C.valid_calls += 1
+            C.children_created += len(v)
         return v
 
     MCTS._best_child = bc
@@ -587,6 +638,8 @@ def run_count(engine, games, device, seed):
     try:
         pa = TimedPlayer("engine:%s" % engine, device, count_nodes=True)
         pb = TimedPlayer("engine:%s" % engine, device, count_nodes=True)
+        for p in (pa, pb):
+            instrument_player(p, ctx)
         play_match(pa, pb, games, seed, warmup=2, gc_mode="deferred")
     finally:
         MCTS._best_child = orig_bc
