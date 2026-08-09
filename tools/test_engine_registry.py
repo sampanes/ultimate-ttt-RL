@@ -17,9 +17,32 @@ from tools.arena_1s import TimedPlayer
 
 DEV = "cpu"
 
+# CUDA-graph engines cannot be built on the CPU: capture fails, and TimedPlayer
+# refuses to hand back an arm that quietly fell back to the eager path. Their
+# CONFIGURATION is still checkable everywhere -- that is what a fingerprint is
+# -- so device-independent tests use the resolved spec, and the few that need a
+# built player skip when there is no GPU.
+try:
+    import torch
+    HAVE_CUDA = torch.cuda.is_available()
+except Exception:                                    # pragma: no cover
+    HAVE_CUDA = False
+
+
+def needs_cuda(name):
+    return reg.ENGINES.get(name, {}).get("graph") == "1"
+
+
+def device_for(name):
+    return "cuda" if needs_cuda(name) else DEV
+
+
+def buildable(name):
+    return HAVE_CUDA or not needs_cuda(name)
+
 
 def build(name):
-    return TimedPlayer(f"engine:{name}", DEV)
+    return TimedPlayer(f"engine:{name}", device_for(name))
 
 
 def build_spec(spec):
@@ -43,11 +66,58 @@ class TestFrozenSet(unittest.TestCase):
         # The point of the registry. If an option is absent from a frozen spec
         # it comes from a code default, and a later edit moves the engine.
         pinned = {"ckpt", "arch", "ms", "wave", "cpuct", "reuse", "solve",
-                  "maxsims", "reserve", "bexp", "name"}
+                  "maxsims", "reserve", "bexp", "name", "graph"}
         for name, spec in reg.ENGINES.items():
             with self.subTest(engine=name):
                 want = reg.RAW_PINNED if reg.is_raw(name) else pinned
                 self.assertEqual(set(spec), want)
+
+
+class TestGraphRefreeze(unittest.TestCase):
+    """2026-08-09: every fingerprint moved because `resolved_config` gained one
+    key. Nothing was re-measured, so the claim that no ENGINE moved has to be
+    checkable -- strip the new key and the old hashes must come back."""
+
+    def test_stripping_graph_wave_reproduces_every_pre_graph_fingerprint(self):
+        # Engines that existed before the re-freeze. `pocket_graph` is new and
+        # has no pre-graph identity, so it is excluded by construction rather
+        # than by an exception list that could quietly grow.
+        pre = set(reg.PRE_GRAPH_FINGERPRINTS)
+        self.assertTrue(pre <= set(reg.ENGINES))
+        new = set(reg.ENGINES) - pre
+        for name in new:
+            self.assertTrue(reg.ENGINES[name].get("graph") == "1",
+                            "%s is new since the re-freeze but is not a graph "
+                            "candidate -- it needs a pre-graph fingerprint or "
+                            "an explicit reason" % name)
+        for name in pre:
+            with self.subTest(engine=name):
+                cfg = reg.resolved_config(build(name))
+                stripped = {k: v for k, v in cfg.items() if k != "graph_wave"}
+                self.assertEqual(reg.fingerprint(stripped),
+                                 reg.PRE_GRAPH_FINGERPRINTS[name])
+
+    def test_only_declared_candidates_enable_the_graph(self):
+        """It is not promoted. Exactly one engine may have it on, and that one
+        must not be anything the ladder or the incumbent depends on."""
+        on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
+        self.assertEqual(on, {"pocket_graph"})
+        self.assertFalse(on & reg.ANCHOR_ROLES)
+        self.assertNotIn("final", on)
+        self.assertNotIn("pocket_r35", on)
+
+    def test_the_candidate_differs_from_the_incumbent_in_two_declared_keys(self):
+        a, b = reg.ENGINES["pocket_r35"], reg.ENGINES["pocket_graph"]
+        diff = {k for k in a if a[k] != b[k]} - {"name"}
+        self.assertEqual(diff, {"graph", "reserve"},
+                         "the candidate must differ from pocket_r35 in the "
+                         "graph flag and the reserve it forces, and nothing "
+                         "else")
+
+    def test_graph_is_now_a_declarable_override(self):
+        spec, diff = reg.derived_spec("pocket_r35", {"graph": "1"})
+        self.assertEqual(diff, {"graph"})
+        self.assertIn("graph=1", spec)
 
 
 class TestRawNetworkArms(unittest.TestCase):
@@ -247,7 +317,18 @@ class TestLatencyCorrectedPocket(unittest.TestCase):
         # Editing it to fix that would detach a published number from the
         # configuration that produced it.
         self.assertEqual(reg.ENGINES["pocket"]["reserve"], "20")
-        self.assertEqual(reg.FINGERPRINTS["pocket"], "036f17c9aa644aad")
+        # The literal is the fingerprint the 0.5854 was measured under. It is
+        # no longer the CURRENT one -- 2026-08-09 added `graph_wave` to
+        # `resolved_config` and moved all twelve -- so the guard now checks the
+        # configuration minus that key, which is what was actually measured.
+        # Weakening it to `== FINGERPRINTS["pocket"]` would make it tautological.
+        self.assertEqual(reg.PRE_GRAPH_FINGERPRINTS["pocket"],
+                         "036f17c9aa644aad")
+        cfg = reg.resolved_config(build("pocket"))
+        self.assertFalse(cfg["graph_wave"])
+        self.assertEqual(
+            reg.fingerprint({k: v for k, v in cfg.items()
+                             if k != "graph_wave"}), "036f17c9aa644aad")
 
     def test_it_differs_from_pocket_in_exactly_the_reserve(self):
         a, b = reg.ENGINES["pocket"], reg.ENGINES["pocket_r35"]

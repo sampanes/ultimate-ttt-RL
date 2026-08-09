@@ -153,7 +153,7 @@ class MCTS:
                  wave_size=1, solve=False,
                  time_budget_ms=None, max_sims=0, min_sims=1,
                  deadline_margin=1.15, reserve_ms=None,
-                 batched_expand=None):
+                 batched_expand=None, graph_wave=False):
         self.model    = model
         self.device   = device
         self.n_sims   = n_sims
@@ -190,6 +190,28 @@ class MCTS:
         # tools/extract_child_q report drift against artifacts already hashed.
         self.batched_expand = (bool(time_budget_ms) if batched_expand is None
                                else bool(batched_expand))
+        # CUDA-graph replay of the wave's device sequence (agents/graph_wave).
+        # OFF by default, and it must stay off until it has been promoted on
+        # equal-clock strength -- a faster wave is not a stronger engine, which
+        # this project has already learned once from the model-size result.
+        # Captured for ONE wave size; every other size keeps the eager path,
+        # which also remains the correctness oracle.
+        # The REQUEST, recorded separately from the captured object. A
+        # fingerprint is a statement about configuration, and
+        # `engine_registry --freeze` runs on CPU where capture cannot succeed
+        # -- keying identity off the object would have frozen the graph engine
+        # as graph_wave=False and made it indistinguishable from the
+        # incumbent. Falling back is also not allowed to silently redefine
+        # which engine you are running; TimedPlayer refuses outright.
+        self.graph_wave_requested = bool(graph_wave)
+        self.graph_wave = None
+        if graph_wave and self.batched_expand:
+            from agents.graph_wave import GraphedWave
+            gw = GraphedWave(model, device, k=self.wave_size)
+            # A dud is not fatal: no CUDA, a driver that refuses capture, or an
+            # uncapturable op all leave the engine running eagerly.
+            self.graph_wave = gw if gw.ok else None
+            self.graph_wave_reason = gw.reason
         self.reset_stats()
 
     def reset_stats(self):
@@ -580,25 +602,36 @@ class MCTS:
         # Batch forward pass for all unique leaves.
         leaf_values = {}    # id(node) -> float
         if to_eval:
-            # S8: fill all K leaves into one buffer (C++ fill_planes when
-            # available) instead of K per-leaf builds + torch.stack.
-            xs = wave_planes([s for _, _, s in to_eval], self.device)  # (K,7,9,9)
-
-            logits_b, values_b = self.model.forward_both(xs)
+            # Counted once, before the branch, so the two paths cannot disagree
+            # about what a wave cost. They did while these lived inside each
+            # branch, and the parity test caught it.
             self.stat_nn_batches += 1
             self.stat_nn_evals += len(to_eval)
-            # forward_both squeezes batch=1 to (81,)/scalar; restore dims.
-            if logits_b.dim() == 1:
-                logits_b = logits_b.unsqueeze(0)
-                values_b = values_b.unsqueeze(0)
-
-            if self.batched_expand:
-                leaf_values = self._expand_wave(to_eval, logits_b, values_b)
+            gw = self.graph_wave
+            if gw is not None and gw.accepts(len(to_eval)):
+                # One dispatch for the whole device sequence, and one event
+                # wait instead of four accidental stream synchronizations.
+                # Bit-identical to the eager branch below; see
+                # agents/test_graph_wave.py.
+                leaf_values = self._expand_wave_graphed(to_eval)
             else:
-                for k, (_, node, state) in enumerate(to_eval):
-                    self._expand_from_logits(node, state, logits_b[k],
-                                             add_noise=False)
-                    leaf_values[id(node)] = float(values_b[k].item())
+                # S8: fill all K leaves into one buffer (C++ fill_planes when
+                # available) instead of K per-leaf builds + torch.stack.
+                xs = wave_planes([s for _, _, s in to_eval], self.device)
+
+                logits_b, values_b = self.model.forward_both(xs)
+                # forward_both squeezes batch=1 to (81,)/scalar; restore dims.
+                if logits_b.dim() == 1:
+                    logits_b = logits_b.unsqueeze(0)
+                    values_b = values_b.unsqueeze(0)
+
+                if self.batched_expand:
+                    leaf_values = self._expand_wave(to_eval, logits_b, values_b)
+                else:
+                    for k, (_, node, state) in enumerate(to_eval):
+                        self._expand_from_logits(node, state, logits_b[k],
+                                                 add_noise=False)
+                        leaf_values[id(node)] = float(values_b[k].item())
 
         # Undo virtual loss then apply real backup for each pending sim.
         for node, state, path in pending:
@@ -728,7 +761,30 @@ class MCTS:
         probs = F.softmax(logits_b.masked_fill(~mask_t, float("-inf")), dim=1)
         probs_np = probs.cpu().numpy()                       # one transfer
         values_np = values_b.reshape(-1).cpu().numpy()       # one transfer
+        return self._expand_children(to_eval, valids, probs_np, values_np)
 
+    def _expand_wave_graphed(self, to_eval):
+        """The same wave, replayed from a CUDA graph instead of issued.
+
+        Only the DEVICE work moves: the legal moves are still computed here,
+        the children are still built by `_expand_children`, and the priors and
+        leaf values are required to be bit-identical to the eager path. What
+        goes away is 36 kernel launches at ~26 us of CPU each and the four
+        stream synchronizations that a pageable copy emits behind your back.
+        """
+        valids = [rule_utl_valid_moves(s.board, s.last_move, s.mini_winners)
+                  for _, _, s in to_eval]
+        probs_np, values_np = self.graph_wave.run(
+            [s for _, _, s in to_eval], valids)
+        return self._expand_children(to_eval, valids, probs_np, values_np)
+
+    def _expand_children(self, to_eval, valids, probs_np, values_np):
+        """Build the children. ONE implementation, shared by both paths.
+
+        Kept shared on purpose: if the graph path had its own copy of this
+        loop, a parity test between the two would be testing two copies of the
+        same code rather than the thing that actually differs.
+        """
         out = {}
         for i, (_pi, node, state) in enumerate(to_eval):
             row = probs_np[i]

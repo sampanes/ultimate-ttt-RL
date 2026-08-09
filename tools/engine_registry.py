@@ -78,9 +78,19 @@ SEEDS = {
 
 # Files whose bytes define how a search plays. An anchor built while any of
 # these differs from the frozen hash is not the anchor that was measured.
+# agents/mcts.py was re-hashed 2026-08-09 for the CUDA-graph wave path (#41).
+# The change adds an OFF-BY-DEFAULT branch and splits `_expand_wave` into the
+# device half plus a shared `_expand_children`. The eager path's behaviour is
+# unchanged, and that is checked rather than claimed: the frozen replicas in
+# tools/test_profile_expand.py and tools/test_profile_kernels.py were written
+# statement-for-statement against the PRE-change function and still require
+# bit-identical children, priors and leaf values. Anchors were not re-measured
+# because they do not play differently.
 ENGINE_SOURCES = {
     "agents/mcts.py":
-        "14c8b8a6f9166f5c1bc35f0b52b5b20529d4f8f393a77a0474a9de26bd5aafdc",
+        "a662420b0fc6217de265bf48af46414488b45eee5b68519850c5a0491501aed2",
+    "agents/graph_wave.py":
+        "913227d4a87925078d25dc188fe6a9058c8c37f81d7edd2db6e4712724ae6f77",
     "agents/agent_base.py":
         "31bf86ea68e25a5bf60f98c4fba42db9ba4193cb4b4143ac673d5f0a74f50eda",
     "agents/neural_net_agent_3.py":
@@ -106,8 +116,14 @@ MIDSIZE = "models/ab_arch/plain.pt"
 
 # The promoted engine, one place. Every rung of the ladder and every candidate
 # baseline is this dict plus a budget, so "the final engine" cannot fork.
+# graph="0" pins the CUDA-graph wave path OFF. It is stated rather than left
+# to a code default because the registry's whole job is that a changed DEFAULT
+# trips the guard, not only a changed flag. Adding it moved every fingerprint
+# below on 2026-08-09; no engine's behaviour moved, because "0" is what they
+# already did. It becomes "1" only for an engine promoted on equal-clock
+# strength.
 _FINAL = {"wave": "8", "cpuct": "1.5", "solve": "1", "reuse": "1", "bexp": "1",
-          "maxsims": "200000"}
+          "maxsims": "200000", "graph": "0"}
 
 # reserve_ms defaults to max(5, 2% of budget) inside MCTS. Pinned explicitly at
 # every rung so the ladder does not silently re-derive it if that rule changes.
@@ -187,6 +203,26 @@ ENGINES = {
     "pocket_r35": _engine(POCKET, "squeeze", 1000, "pocket_172k_r35",
                           reserve="35"),
 
+    # -- the CUDA-graph candidate (#41) --------------------------------------
+    # `pocket_r35` with the wave's device sequence replayed from a captured
+    # CUDA graph instead of issued kernel by kernel. The wave computes exactly
+    # the same numbers -- bit-identical priors and leaf values over 320
+    # distinct production waves, agents/test_graph_wave.py -- so this is not a
+    # different player at a fixed simulation count. Under a clock it is: it
+    # completes about 48% more network evaluations per move.
+    #
+    # THE RESERVE IS LARGER FOR THE SAME REASON `pocket_r35` NEEDED ONE. All of
+    # the p99 risk is caller-side tree work -- `_adopt` and `release()` of the
+    # discarded tree -- which is inside the move the requirement is written
+    # against but outside the interval the search times. More search means a
+    # bigger tree to walk, so the overhead grows with the speedup that caused
+    # it. 50 ms is provisional and is checked by tools/regress_engine; it costs
+    # 1.5% of thinking time against a 48% throughput gain.
+    #
+    # NOT PROMOTED. It is a candidate until it wins at equal wall clock.
+    "pocket_graph": _engine(POCKET, "squeeze", 1000, "pocket_172k_graph",
+                            reserve="50", graph="1"),
+
     # -- the networks alone, no search ---------------------------------------
     # Without these a model-size result is uninterpretable: if the small net
     # wins at 1,000 ms you cannot tell whether the network is better or whether
@@ -206,7 +242,34 @@ ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
 
 # Resolved-config fingerprints, emitted by --freeze. An empty dict means the
 # registry has never been frozen and verification cannot run.
+# RE-FROZEN 2026-08-09. Every value below moved because `resolved_config`
+# gained one key, `graph_wave`, pinned False -- which is what these engines
+# already did. No engine's behaviour changed and none was re-measured; the
+# previous values are kept in PRE_GRAPH_FINGERPRINTS so the claim "only the new
+# key moved" is checkable rather than asserted, and tools/test_engine_registry
+# checks it.
 FINGERPRINTS = {
+    "original": "6305c68d4f7e2c7c",
+    "final": "180cb11bc206b84a",
+    "anchor_A": "0215e5f848db39f4",
+    "anchor_B": "87d79141aac50f42",
+    "anchor_C": "3c97e4e10f6daaec",
+    "anchor_D": "cde9982e27e6ce50",
+    "pocket": "f274f655957c4852",
+    "midsize": "503126dcfb4f1eb0",
+    "pocket_r35": "e7bce88383363d0e",
+    # Freeze this one with `--freeze --device cuda`: TimedPlayer refuses to
+    # build a graph engine whose capture failed, and capture cannot succeed on
+    # the CPU default.
+    "pocket_graph": "df93af350ef9f906",
+    "gen22_raw": "4c5659d088cca421",
+    "pocket_raw": "fa04295ca54fcf24",
+    "midsize_raw": "a6af84bf609e5250",
+}
+
+# The values every published result before 2026-08-09 was measured against.
+# `resolved_config(player)` minus `graph_wave` must still hash to these.
+PRE_GRAPH_FINGERPRINTS = {
     "original": "fe26cffd58d2290d",
     "final": "cfb14702454ac6df",
     "anchor_A": "cf1ff7cb2b932e75",
@@ -293,6 +356,11 @@ def resolved_config(player):
         "c_puct": m.c_puct,
         "solve": m.solve,
         "batched_expand": m.batched_expand,
+        # Under a clock this changes how the engine plays -- not what a wave
+        # computes (that is bit-identical, gated by agents/test_graph_wave.py)
+        # but how many waves fit in the budget. The REQUESTED flag, not the
+        # captured object: --freeze runs on CPU, where capture cannot succeed.
+        "graph_wave": m.graph_wave_requested,
         "add_dirichlet": m.add_dirichlet,
         "virtual_loss": type(m)._VL,
         "min_waves": type(m)._MIN_WAVES,

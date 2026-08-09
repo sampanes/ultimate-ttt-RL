@@ -111,7 +111,7 @@ def parse_spec(spec):
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
                           "reuse", "solve", "maxsims", "name", "reserve",
-                          "bexp"}
+                          "bexp", "graph"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -186,6 +186,11 @@ class TimedPlayer:
         # be judged by STRENGTH at equal wall clock rather than by its own
         # throughput figure.
         self.bexp = (o["bexp"] == "1") if "bexp" in o else None
+        # graph=1 replays the wave's device sequence from a CUDA graph. NOT in
+        # any frozen engine's resolved spec, so the incumbent's fingerprint is
+        # untouched and `engine:<name>+graph=1` is a declared derived arm. It
+        # joins _FINAL only if it is promoted on equal-clock strength.
+        self.graph = o.get("graph", "0") == "1"
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
@@ -193,7 +198,13 @@ class TimedPlayer:
                          wave_size=self.wave, solve=self.solve,
                          time_budget_ms=self.budget_ms,
                          max_sims=self.max_sims, reserve_ms=self.reserve,
-                         batched_expand=self.bexp)
+                         batched_expand=self.bexp, graph_wave=self.graph)
+        if self.graph and self.mcts.graph_wave is None:
+            raise SystemExit(
+                "[X] graph=1 was asked for and capture FAILED: %s\n"
+                "    Refusing to run: an arm that silently fell back to the "
+                "eager path would be measured as the graph arm."
+                % getattr(self.mcts, "graph_wave_reason", "unknown"))
         self.device = device
         # No searcher in raw mode: latency_report keys the tree-reuse and
         # early-stop blocks off this, and reporting a reuse rate for a player

@@ -65,6 +65,7 @@ breaks the deadline or quietly disables reuse -- in about ten minutes.
 from __future__ import annotations
 
 import argparse
+import atexit
 import gc
 import json
 import os
@@ -72,6 +73,7 @@ import sys
 import time
 
 from tools import engine_registry as reg
+from tools import runlock as lock
 from tools.arena_1s import TimedPlayer, latency_report, play_match, print_report
 
 # Measured 2026-07-29 over 240 games on the reference box, engine `final`
@@ -185,6 +187,13 @@ def main():
         print("[!] environment differs from the frozen baseline:")
         for k, v in drift.items():
             print(f"      {k}: frozen {v['frozen']} -> now {v['now']}")
+
+    # Single-instance, for the same reason tools/profile_kernels holds one: two
+    # concurrent runs share the GPU and both latency reports are then measuring
+    # contention. That failure has already invalidated one study, and a p99 is
+    # exactly the statistic a stray process ruins.
+    lock.acquire("regress_engine")
+    atexit.register(lock.release, "regress_engine")
 
     gc.disable()
     print(f"[!] automatic cyclic GC off; collecting at game boundaries")
