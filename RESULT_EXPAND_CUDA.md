@@ -169,6 +169,61 @@ dispatch. It needs no Triton, so the standing "no `torch.compile` on Windows"
 constraint does not apply. Kernel count has NOT been measured yet; that is the
 cheap next step and it should precede any implementation.
 
+---
+
+## Ceiling comparison
+
+Milliseconds only. These are not converted to win rate anywhere, and they are
+projections, not measurements -- the whole reason the model-size experiment is
+the standing reminder is that arithmetic like this was wrong before.
+
+Counts, from `--mode count`: 35,101 `_best_child` calls per move over a mean
+6.6 children, 17,105 terminal probes, 2,515 expansions, ~396 waves.
+
+### A. Native `_best_child` + terminal probes -- about 100 ms/move
+
+| | measured | recoverable | why not more |
+|---|---|---|---|
+| `_best_child` | 108.0 | ~97 | 3.08 us/call today. A native loop over 6.6 floats is ~0.1 us plus one crossing, but ONLY if the child data is in compact native arrays -- reading `N`, `W`, `prior`, `solved` back through the Python C-API would not beat the current code. |
+| terminal probes | 51.2 | ~15 | 2.99 us/probe in situ, of which the microbench says ~2.12 us is already `clone` + `make_move` in C++. **A port keeps that.** Only the ~0.87 us of Python glue and two pybind crossings per probe are on the table. |
+| **total** | **159.2** | **~110** | ~13% more clock |
+
+The probe row is the correction to the obvious reading. The probes look like the
+second-biggest tree cost, but 71% of that cost is already native and a C++ port
+inherits it. Anyone planning around "51 ms of probes" would be planning around
+15.
+
+Against this, the compact child arrays have a write side: 26,606 nodes created
+per move and every backup updating `N` and `W`. Backup is 2.0 ms/move today and
+mirroring into a native array will not make it cheaper.
+
+### B. Device path -- about 200-230 ms/move, and a smaller change
+
+| | measured | recoverable | why not more |
+|---|---|---|---|
+| forward launch (CPU) | 297.9 | ~150 | 752 us/wave of CPU to issue one forward. A graph replay is one dispatch. Assumes 50% efficiency and a kernel count worth collapsing -- **unmeasured**. |
+| mask upload (CPU) | 111.3 | ~67 | 86 ms/move of it is host overhead, not transfer. Assumes 60% recovery from keeping the mask on device or fusing it into the softmax. |
+| softmax launch (CPU) | 23.2 | ~14 | folded into the same graph |
+| **total** | **432.4** | **~230** | ~27% more clock |
+
+**With one hard cap.** CPU-in-wave is 702.6 ms/move against 482.5 of GPU busy
+time, so the CPU is the bottleneck today. Remove 230 ms of CPU and the two are
+level, and the wave becomes GPU-bound -- further CPU savings buy nothing unless
+the graph also cuts GPU-side dispatch. It should, for the same reason it cuts
+the CPU side, but by how much is not measured. So B is ~200-230 and not more,
+and its own ceiling is the first thing the prototype will reveal.
+
+### The choice
+
+B is roughly twice A for a much smaller change, and A's ceiling has just been
+cut by a third by the probe correction. **Do the device path first**, and gate
+it on the kernel count, which is one profiler call.
+
+Both are capped by the same arithmetic: a move is ~913 ms, and neither path
+touches the ~195 ms of tree bookkeeping, the ~53 ms of `state.make_move`, or
+whatever the GPU genuinely needs. They are not additive with each other in any
+simple way, because whichever lands first moves the bottleneck.
+
 ## What this does NOT license
 
 No strength claim is projected from any of these numbers. The model-size
