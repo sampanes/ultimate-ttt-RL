@@ -88,6 +88,7 @@ def sample_positions(engine, games, device, seed):
 def probe_arm(engine, graph, device, positions, reps=1):
     """Search each fixed position for the full deadline, from a bare root."""
     p = build(engine, graph, device)
+    params = p.net_info["params"]
     rows = []
     for state, phase in positions:
         for _ in range(reps):
@@ -108,6 +109,8 @@ def probe_arm(engine, graph, device, positions, reps=1):
             })
     graphed = p.mcts.graph_wave
     return {
+        "engine": engine,
+        "params": params,
         "graph": bool(graph),
         "graph_replays": graphed.replays if graphed else 0,
         "positions": len(positions),
@@ -148,6 +151,43 @@ def match_arm(path):
 
 def pct_change(a, b):
     return 100.0 * (b - a) / a if a else float("nan")
+
+
+def report_arms(arms):
+    """N engines on ONE set of positions -- for the model-size question.
+
+    `RESULT_MODEL_SIZE` concluded that a 39x parameter cut buys only 1.24x more
+    search, and that conclusion was measured on an engine spending most of a
+    wave issuing tiny CUDA operations. Removing the dispatch changes what a
+    parameter costs, so the ratio has to be re-measured rather than carried
+    forward.
+    """
+    print()
+    print("=" * 74)
+    print("ARMS ON IDENTICAL POSITIONS")
+    print("=" * 74)
+    print("  %-26s %10s %12s %12s" % ("engine", "params", "nn/move",
+                                      "sims/move"))
+    for a in arms:
+        print("  %-26s %10s %12.1f %12.1f"
+              % (a["engine"], "{:,}".format(a["params"]),
+                 a["nn_per_move"], a["sims_per_move"]))
+    print()
+    by = {a["engine"]: a for a in arms}
+
+    def ratio(small, big, label):
+        if small in by and big in by and by[big]["nn_per_move"]:
+            r = by[small]["nn_per_move"] / by[big]["nn_per_move"]
+            print("  %-38s %.3fx" % (label, r))
+            return r
+        return None
+
+    return {
+        "eager": ratio("pocket_r35", "final",
+                       "172k / 6.77M search, graph OFF"),
+        "graphed": ratio("pocket_graph", "final+graph=1",
+                         "172k / 6.77M search, graph ON"),
+    }
 
 
 def report_probe(off, on):
@@ -289,6 +329,10 @@ def main():
     ap.add_argument("--position-games", type=int, default=3)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=AB_SEED)
+    ap.add_argument("--arms", default="",
+                    help="comma-separated engine specs to probe on one set of "
+                         "positions instead of running the two-arm A/B; for "
+                         "the model-size re-test (#43)")
     ap.add_argument("--out", default=os.path.join(OUT_DIR, "graph_ab.json"))
     args = ap.parse_args()
 
@@ -308,6 +352,26 @@ def main():
         step = max(1, len(pool) // args.positions)
         positions = pool[::step][:args.positions]
         print("[..] %d positions of %d sampled" % (len(positions), len(pool)))
+
+        if args.arms:
+            names = [s.strip() for s in args.arms.split(",") if s.strip()]
+            arms = []
+            for n in names:
+                print("[..] probe: %s" % n)
+                arms.append(probe_arm(n, "graph=1" in n, args.device,
+                                      positions))
+            ratios = report_arms(arms)
+            for a in arms:
+                a.pop("rows", None)
+            with open(args.out, "w") as fh:
+                json.dump({"arms": arms, "ratios": ratios,
+                           "positions": len(positions),
+                           "seed": args.seed,
+                           "git_head": engine_registry.git_head(),
+                           "gpu_baseline_before_run": base}, fh, indent=2,
+                          default=str)
+            print("\n[OK] wrote %s" % args.out)
+            return
 
         print("[..] probe: %s" % args.baseline)
         p_off = probe_arm(args.baseline, False, args.device, positions)

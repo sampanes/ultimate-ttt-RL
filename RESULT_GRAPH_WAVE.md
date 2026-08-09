@@ -144,6 +144,47 @@ their ratio is ~1 by construction. It checks the pre-registered prediction now.
 `tools/runlock.py` gives `profile_kernels`, `graph_ab` and `regress_engine` a
 single-instance lock. A p99 is exactly the statistic a stray process ruins.
 
+## #43 -- model size is still not a lever, and the graph did not change that
+
+The wave went from about 18% device-bound to about 61% (CUPTI device busy
+~244 us against a wave that fell from 1349 to 398 us), which is the trigger for
+re-testing `RESULT_MODEL_SIZE`: its conclusion was measured on an engine
+spending most of a wave issuing tiny CUDA operations, and that condition has
+now changed.
+
+Four arms, one set of 40 real positions, full deadline each, bare root:
+
+| engine | params | nn-evals/move | sims/move |
+|---|---|---|---|
+| `pocket_r35` | 172,389 | 2627.8 | 2632.2 |
+| `pocket_graph` | 172,389 | 3525.3 | 3531.6 |
+| `final` | 6,766,386 | 2669.0 | 2675.6 |
+| `final+graph=1` | 6,766,386 | 3577.6 | 3588.4 |
+
+    172k / 6.77M search rate, graph OFF    0.985x
+    172k / 6.77M search rate, graph ON     0.985x
+
+**Unchanged to three digits.** A 39x parameter cut buys no additional search
+either way, and the graph lifts both networks by the same amount (+34.2% and
++34.0%). That the gain is identical across two different architectures is
+itself the point: what the graph removes is dispatch, and dispatch does not
+care how many parameters the kernels are multiplying.
+
+So the answer to #43 is no. Removing ~950 us/wave of CPU dispatch does not make
+network size relevant again, and `RESULT_MODEL_SIZE`'s deployment conclusion --
+prefer the small net, it is not paying for its size -- survives the change that
+was supposed to threaten it.
+
+**This does not refute the published 1.24x.** That figure is simulations/move
+measured in real play with tree reuse, where the two engines diverge into
+different positions; this is network evaluations per move on identical
+positions from a bare root, where nearly every simulation expands a leaf
+(2627.8 nn against 2632.2 sims). Both can be true. What carries is the
+comparison this table was built for -- the same measurement on both arms,
+before and after -- and that ratio did not move. `RESULT_MODEL_SIZE` already
+notes its own isolated benches gave 1.13x and warns that 276 moves cannot rank
+throughput.
+
 ## What this does NOT license
 
 **The latency numbers in the stage 2 match are not a deployment measurement.**
