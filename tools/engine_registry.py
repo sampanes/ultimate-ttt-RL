@@ -73,6 +73,7 @@ SEEDS = {
     "confirm": 6500,    # held out: the powered final between sweep survivors
     "profile": 6600,    # instrumented runs; no score is ever read off these
     "expand": 6700,     # the CUDA sync-vs-transfer study, likewise unscored
+    "kernels": 6800,    # the kernel/launch trace; structure only, no score
 }
 
 # Files whose bytes define how a search plays. An anchor built while any of

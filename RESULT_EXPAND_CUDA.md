@@ -5,11 +5,43 @@ reuse on, batched expansion, solved propagation, deferred GC, 1,000 ms. Two
 independent instruments over 12 games each; seed namespace `expand` (6700).
 No score is read off these runs.
 
-**The 328 ms device bucket is real, it is mostly the GPU genuinely working, and
-almost none of it is bytes. It is per-CALL cost that does not care how much
-data moves or how big the network is.** The upper bound stated in
-`RESULT_TREE_PROFILE.md` is resolved: restructuring the transfers cannot
-recover it.
+**The 328 ms device bucket is real, almost none of it is bytes, and it is
+per-CALL cost that does not care how much data moves or how big the network
+is.** The upper bound stated in `RESULT_TREE_PROFILE.md` is resolved:
+restructuring the transfers cannot recover it.
+
+> ### CORRECTED 2026-08-09 by `RESULT_KERNEL_TRACE.md` -- read that first
+>
+> The headline conclusion stands and is stronger: the wave is dispatch-bound.
+> Three sub-claims below are wrong, and one guess was refuted.
+>
+> **"Mostly the GPU genuinely working" is wrong, and so is every GPU column in
+> this document.** A CUDA event pair spans from when the opening event is
+> processed to when the closing one is, so it charges the GPU for the time it
+> spends waiting to be given work. CUPTI times the kernels. Measured at k=8:
+> **243.7 us/wave of real device busy inside 1,181.3 us of stream-elapsed
+> time -- 79% of the "GPU time" is an idle device.** Real device work is
+> ~71.6 ms/move, 7.8% of a move, not 482.5 ms and 53%.
+>
+> **The transfer rows overstate by ~40x.** Actual DMA is 5.11 us/wave up and
+> 3.78 us/wave down (18,792 and 2,624 bytes), about 3.4 ms/move against the
+> 149.2 ms/move claimed here. "Do not optimize transfers" was the right call
+> for a weaker reason than the one given.
+>
+> **"Roughly twenty kernels" is 36** -- 33 in the forward, 3 in mask+softmax --
+> and there is a fifth copy nobody counted, a 2,592-byte device-to-device
+> contiguity copy that costs more device time than either real transfer.
+>
+> **The mask upload is not a bool-dtype slow path.** uint8 measures the same.
+> It is synchronization induced by a pageable H2D: `cudaMemcpyAsync` followed
+> by `cudaStreamSynchronize`, waiting on the forward launched three statements
+> earlier. Nor is the 86 ms/move of "host overhead" simply recoverable -- the
+> GPU is busy for it.
+>
+> What survives unchanged: batch-size invariance, the per-call diagnosis, the
+> reconciliation with the model-size result, and the ordering advice that put
+> the device path ahead of the native tree. Ceiling B was projected here at
+> 200-230 ms/move and measured there at 195.5.
 
 ## Where the wave goes
 
