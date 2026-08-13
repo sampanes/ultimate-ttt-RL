@@ -627,6 +627,112 @@ class TestSweepAndFuzzAreRealCoverage(unittest.TestCase):
                 self.fail(f"{c.name}: python {p} native {n}\n{c.describe()}")
 
 
+class TestSearchLevelParity(unittest.TestCase):
+    """Whole searches, at a fixed simulation count, on CPU.
+
+    THIS IS THE GATE SHADOW MODE CANNOT BE. Shadow returns the PYTHON answer on
+    every call so that a disagreement cannot fork the tree -- which means the
+    search never actually walks the trajectory the native selector chose. Seven
+    million agreeing comparisons still leave one thing unobserved: what the
+    engine does when the native answer is the one it follows.
+
+    So this runs the search for real, both ways, and requires the visit-count
+    policy to come back bit-identical. CPU and a fixed simulation count are
+    both load-bearing: CUDA reductions are not bit-reproducible run to run, and
+    under a clock the two arms complete different amounts of work by design.
+    """
+
+    N_SIMS = 240
+
+    @classmethod
+    def setUpClass(cls):
+        from tools.arena_1s import load_net
+        cls.model, _info = load_net(reg.POCKET, "squeeze", "cpu")
+
+    def _mcts(self, native):
+        return MCTS(self.model, "cpu", n_sims=self.N_SIMS, c_puct=C_PUCT,
+                    wave_size=8, solve=True, native_select=native)
+
+    @staticmethod
+    def _states():
+        """A bare opening, a mid-game position, and a send-anywhere position --
+        the last because that is where child order is not ascending."""
+        out = [GameState()]
+        for line in ((40, 4, 36, 0, 41, 13, 38),
+                     (40, 36, 0, 4, 38, 20, 22, 14, 45, 8, 76, 40, 39)):
+            s = GameState()
+            for mv in line:
+                if s.winner is not None:
+                    break
+                s.make_move(mv)
+            out.append(s)
+        return out
+
+    def test_fixed_sim_searches_return_identical_policies(self):
+        import torch
+        for i, state in enumerate(self._states()):
+            with self.subTest(position=i):
+                pi_a, root_a = None, None
+                stats = []
+                for native in (False, True):
+                    m = self._mcts(native)
+                    with torch.no_grad():
+                        pi, root = m.search(state.clone())
+                    stats.append((m.stat_sims, m.stat_nn_evals,
+                                  m.stat_expansions, m.stat_probes, root.N,
+                                  {mv: c.N for mv, c in root.children.items()},
+                                  {mv: c.solved
+                                   for mv, c in root.children.items()}))
+                    if native:
+                        # Bit-identical, not close: the policy is built from
+                        # integer visit counts, so any difference at all means
+                        # the two searches went somewhere different.
+                        self.assertTrue(np.array_equal(pi_a, pi),
+                                        "visit policy differs")
+                        self.assertEqual(stats[0], stats[1])
+                        self.assertEqual(sp.verify_subtree(root)[1], [])
+                    else:
+                        pi_a, root_a = pi, root
+                        self.assertIsNone(root.sel)
+                    TreeReuseSearcher.release(root)
+
+    def test_reused_trees_stay_identical_across_several_moves(self):
+        """Re-rooting is where the mirror has to survive an operation it does
+        not perform: `_adopt` keeps a subtree and `release` destroys the rest.
+        A search that is identical move one and drifts by move four would pass
+        every other test here."""
+        import torch
+        seqs = []
+        for native in (False, True):
+            m = self._mcts(native)
+            searcher = TreeReuseSearcher(m, enabled=True)
+            state = GameState()
+            rec = []
+            for ply in range(8):
+                if state.winner is not None:
+                    break
+                with torch.no_grad():
+                    pi, root = searcher.search(state.clone())
+                rec.append((pi.copy(), root.N, m.stat_nn_evals,
+                            tuple(sorted((mv, c.N)
+                                         for mv, c in root.children.items()))))
+                mv = int(pi.argmax())
+                state.make_move(mv)
+                # The opponent replies with the lowest legal move: fully
+                # deterministic, and it keeps the two-ply shape `_adopt` needs.
+                if state.winner is None:
+                    state.make_move(min(rule_utl_valid_moves(
+                        state.board, state.last_move, state.mini_winners)))
+            searcher.reset()
+            seqs.append(rec)
+        self.assertEqual(len(seqs[0]), len(seqs[1]))
+        self.assertGreaterEqual(len(seqs[0]), 4, "too few plies to test reuse")
+        for ply, (a, b) in enumerate(zip(*seqs)):
+            with self.subTest(ply=ply):
+                self.assertTrue(np.array_equal(a[0], b[0]))
+                self.assertEqual(a[1:], b[1:])
+
+
 class TestLoader(unittest.TestCase):
 
     def test_require_returns_the_class_when_present(self):

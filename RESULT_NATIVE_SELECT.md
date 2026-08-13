@@ -1,4 +1,4 @@
-# RESULT -- native PUCT selection: 5.5x per call, +12.2% network evaluations, and a reserve that had to grow (2026-08-12)
+# RESULT -- native PUCT selection: 5.5x per call, +12.2% network evaluations, and a strength effect too small to resolve (2026-08-13)
 
 Task #45a. #44 measured `_best_child` at 193.9 ms/move in deployment -- 22.2%
 of the move, the largest host term by 64% -- and showed it grew 44% purely
@@ -15,10 +15,16 @@ and prove exact parity before measuring anything.
 **`_best_child` costs 0.712 us/call instead of 3.947 -- 5.5x -- and the engine
 that can actually be deployed completes 12.2% more network evaluations in the
 same second.** Parity is exact: the native and Python selectors returned the
-same child on all 7,695,074 selections tested, including 4.6M inside real games
-with tree reuse.
+same child on all 7,695,074 selections tested, and whole searches at a fixed
+simulation count return bit-identical visit policies.
 
-Getting to "can actually be deployed" cost a third of the raw gain. At the
+**It is NOT promoted.** The held-out 240-game confirmation came back at 0.5146
+[0.4807, 0.5485] -- positive, and not separable from parity. That is not a
+disappointment to be explained away; it is what the anchor ladder predicts for
+a search increase this size, and no affordable match can resolve it. Five of
+the six gates pass; the sixth is unresolved rather than failed.
+
+Getting to "can actually be deployed" also cost a third of the raw gain. At the
 50 ms reserve it inherited, `pocket_sel` **fails the frozen latency
 requirement** -- p99 1027.9 ms -- and needs 95. That is the third time this one
 mechanism has forced a reserve up and the first time it has been expensive
@@ -191,47 +197,94 @@ grows with every throughput win because it is paying for a walk over a tree
 that throughput makes bigger. The next optimisation on this path buys less than
 it looks like it should until that walk is off the critical path.
 
-## Strength: 0.5708 [0.5285, 0.6131] at equal wall clock, n=120
+## Strength: the confirmation is NULL, and #44's prediction was right
 
-Paired openings on the held-out `select_ab` namespace (seed 7000), `pocket_sel`
-against `pocket_graph`, both meeting the frozen latency requirement.
+Paired openings, `pocket_sel` against `pocket_graph`, both meeting the frozen
+latency requirement, equal wall clock.
 
-    score for A  0.5708 [0.5285, 0.6131]   W23 / D91 / L6   n=120
+| | W/D/L | n | score | 95% CI | |
+|---|---|---|---|---|---|
+| effect-size, seed 7000 | 23/91/6 | 120 | 0.5708 | [0.5287, 0.6129] | excludes 0.5 |
+| **confirmation, seed 7100** | 38/171/31 | 240 | **0.5146** | **[0.4807, 0.5485]** | **includes 0.5** |
+| pooled (post-hoc) | 61/262/37 | 360 | 0.5333 | [0.5066, 0.5601] | excludes 0.5 |
 
-The interval excludes parity. Three things about it deserve stating before it
-is believed.
+**The held-out confirmation does not show a win.** The 120-game run
+overstated: it was the run that SIZED the effect, and its interval only
+marginally overlaps the confirmation's. The pooled row is reported for
+completeness and should not be read as the verdict -- pooling a sizing run
+with the confirmation it motivated is the same sample counted twice at the
+level of the decision, even though the two are statistically independent.
 
-**The point estimate is 3.5x the pre-registered expectation, and the
-pre-registration was the weaker number.** #44 projected +0.01 to +0.02, derived
-from a single prior data point -- the CUDA graph's +29% network evaluations
-buying +0.0458 -- which itself carried a +/-0.033 interval. Two noisy estimates
-disagreeing is not a contradiction, and the honest reading is that the
-search-to-strength exchange rate is not pinned down well enough by one prior
-match to have predicted this one. The brief's instruction not to preregister a
-required win rate from that projection was correct.
+**I said in the interim report that the effect was 3.5x the pre-registered
++0.01 to +0.02. That was wrong, and it was wrong because I believed the sizing
+run.** The confirmation puts it at +0.0146, inside the pre-registered band.
+#44's projection was right; the 120-game match was the outlier.
 
-**The narrow interval is real and comes from the draws.** 91 of 120 games were
-drawn, so the outcome variance is low (SD 0.235) and 120 games resolve more
-than they usually would. Restricted to decisive games it is 23-6, which is
-p ~= 0.002 against a coin.
+### The anchor ladder predicted this, from an independent measurement
 
-**In THIS match the throughput edge was only +5.1%** (3,553.6 against 3,382.3
-network evaluations a move), not the +12.2% the regression gate measured
-against `final`. Both engines here share a network, so tree-reuse inheritance
-is inflated in the way `uttt-mirror-gate-hides-reroot-cost` describes --
-5,801 and 5,097 inherited simulations a move against ~3,000 in the gate. So
-this match produced MORE strength per unit of throughput than the deployment
-figure would suggest, which is another reason to treat the exchange rate as
-unmeasured rather than to reason forward from it.
+`uttt-anchor-ladder-ordered` measured that one DOUBLING of the clock is worth
+0.59 to 0.69. That converts a throughput gain straight into an expected score:
 
-`pocket_sel` also used less wall clock per move while doing more work: p50
-917.0 ms against 957.5, mean 806.4 against 849.8, both PASS.
+| throughput gain | doublings | predicted score | |
+|---|---|---|---|
+| +5.2% (what these matches actually delivered) | 0.073 | 0.5066 to 0.5139 | |
+| +12.2% (deployment, vs `final`) | 0.166 | 0.5149 to 0.5316 | |
 
-A 240-game confirmation is running on a fresh held-out namespace (seed 7100).
-It is not a formality: this 120-game match is the run that SIZED the effect,
-and a verdict read off it would be one sample used twice. Extending the same
-seed would not help either -- openings are taken in order, so the first 120 of
-a 240-game run on seed 7000 are the games already played.
+The confirmation's 0.5146 sits inside both bands. Two independent instruments
+-- a ladder built for a different purpose in #32, and a 240-game match -- agree
+on an effect of about +0.015.
+
+Note the first row. **In these head-to-heads the throughput edge was only
++5.1% and +5.3%**, not the +12.2% the regression gate measured against
+`final`, because both arms share a network and tree-reuse inheritance is
+inflated in the way `uttt-mirror-gate-hides-reroot-cost` describes -- 5,736
+and 5,135 inherited simulations a move against ~3,000 in the gate. The match
+setting understates the deployment throughput advantage, so it also understates
+the deployment strength effect.
+
+### This effect is below what the experiment can resolve
+
+At the observed outcome spread (SD 0.259, driven by a 73% draw rate between two
+engines that are the same player at fixed simulations):
+
+| to resolve an effect of | paired games needed | wall clock |
+|---|---|---|
+| +0.0146 (observed) | 1,206 | 12.9 h |
+| +0.02 | 643 | 6.9 h |
+| +0.033 | 232 | 2.5 h |
+| +0.05 | 103 | 1.1 h |
+
+**600 more games would not have settled it either.** This is the same wall
+`uttt-panel-resolution-floor` describes, reached from the other side: the
+anchor ladder says a 12% search increase is INHERENTLY worth about +0.015, so
+no affordable match can separate it from zero. The promotion decision has to
+rest on something other than a significant win rate, or not be made.
+
+`pocket_sel` did use less wall clock per move while doing more work -- p50
+917.3 ms against 957.4, mean 802.3 against 838.1, 0 moves over budget against
+1, max 971.2 against 1180.4.
+
+## The six gates
+
+| | gate | result |
+|---|---|---|
+| 1 | selection parity | **PASS** -- 7,695,074 selections, 0 disagreements |
+| 2 | search-level deterministic parity at fixed simulations | **PASS** -- bit-identical visit policies, including 8 plies of re-rooting |
+| 3 | no proof/reuse regression | **PASS** -- adoption on its structural ceiling, early stops 0.155 -> 0.213 |
+| 4 | deployment p99 within the frozen requirement | **PASS at reserve 95** (FAILS at 50) |
+| 5 | meaningful increase in completed search | **PASS** -- +12.2% deployment, +8.05% fixed positions |
+| 6 | equal-clock strength improves | **NOT DEMONSTRATED** -- 0.5146 [0.4807, 0.5485] |
+
+Gate 2 deserves a note because it is the one shadow mode structurally cannot
+provide. Shadow returns the PYTHON answer on every call so a disagreement
+cannot fork the tree -- which means the search never walks the trajectory the
+native selector chose. Seven million agreeing comparisons still leave that
+unobserved. `TestSearchLevelParity` runs whole searches for real, both ways, at
+a fixed simulation count on CPU, and requires the visit-count policy back
+bit-identical.
+
+Gate 6 is unresolved rather than failed: the point estimate is positive in both
+matches and the confidence interval contains no meaningful regression.
 
 ## Parity, and why the oracle is built the way it is
 
@@ -360,10 +413,15 @@ implementation the match was actually run on.
 
 ## What this does NOT license
 
-**Throughput did not predict the strength, in either direction.** It has failed
-before on this code (`RESULT_MODEL_SIZE`), and here it undershot by 3.5x. The
-match is the only thing that can promote, and the 240-game confirmation is the
-only thing that can promote it on evidence that was not also used to size it.
+**Throughput bought exactly what the ladder said it would, and that is not
+enough to promote on.** +12.2% more search is worth about +0.015, the
+confirmation measured +0.0146, and separating that from zero needs 1,206 paired
+games. A "not promoted" here is a statement about resolution, not about the
+change.
+
+**Do not read the 120-game 0.5708 as evidence.** It sized the effect and
+overstated it, and the interim report built on it was wrong for exactly the
+reason held-out confirmations exist.
 
 **The host/device split moved and the fixed-position numbers are not the
 deployment ones.** On these positions the device path is 54.3% of a move for

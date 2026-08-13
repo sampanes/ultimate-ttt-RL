@@ -243,11 +243,18 @@ class TestRegistryIsUntouched(unittest.TestCase):
                 self.assertTrue("graph=0" in spec or "graph=1" in spec,
                                 "%s does not pin the graph flag" % name)
 
-    def test_only_the_candidate_turns_it_on(self):
-        from tools import engine_registry
-        on = {n for n in engine_registry.ENGINES
-              if engine_registry.ENGINES[n].get("graph") == "1"}
-        self.assertEqual(on, {"pocket_graph"})
+    def test_only_declared_candidates_turn_it_on(self):
+        """The graph is still not promoted. `pocket_sel` (#45a) has it on
+        because it is built ON the graph candidate -- native selection is the
+        single declared difference between them -- so it inherits the flag
+        rather than granting it. Nothing the ladder or the incumbent depends
+        on may have it."""
+        from tools import engine_registry as reg
+        on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
+        self.assertEqual(on, {"pocket_graph", "pocket_sel"})
+        self.assertFalse(on & reg.ANCHOR_ROLES)
+        for name in ("final", "pocket_r35", "original", "pocket", "midsize"):
+            self.assertNotIn(name, on)
 
     def test_the_raw_arms_have_no_wave_to_graph(self):
         """sims=0 is the network alone -- no tree, no wave, nothing to
