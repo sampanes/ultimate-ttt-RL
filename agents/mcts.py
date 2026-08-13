@@ -91,13 +91,22 @@ import torch
 import torch.nn.functional as F
 
 from .agent_base import Agent, board_to_tensor_from_gamestate, wave_planes
+from . import native_select as _ns
 from engine.rules import rule_utl_valid_moves
 from engine.constants import X, O, DRAW
 
 
 class MCTSNode:
+    # The last six slots are the native selection mirror (#45a) and exist only
+    # when MCTS(native_select=True) built them. `sel` is the one that is always
+    # initialised, because `_best_child` reads it on every descent to decide
+    # which selector to run; the rest are written when the mirror is created
+    # and read only through a node that has one. Initialising all six in
+    # __init__ would put five stores on the incumbent's node-creation path
+    # (~5,000 nodes a move) to no purpose.
     __slots__ = ("parent", "children", "prior", "N", "W",
-                 "move", "to_play", "is_terminal", "terminal_value", "solved")
+                 "move", "to_play", "is_terminal", "terminal_value", "solved",
+                 "sel", "kids", "selN", "selW", "selS", "cidx")
 
     def __init__(self, parent=None, prior=0.0, move=None, to_play=None):
         self.parent = parent
@@ -109,6 +118,7 @@ class MCTSNode:
         self.to_play = to_play
         self.is_terminal = False
         self.terminal_value = 0.0
+        self.sel = None
         # Exact status from THIS node's to_play perspective, or None if
         # unresolved. Deliberately NOT folded into W: a proof is not an average,
         # and mixing them would let one backup of +1 masquerade as certainty.
@@ -153,7 +163,8 @@ class MCTS:
                  wave_size=1, solve=False,
                  time_budget_ms=None, max_sims=0, min_sims=1,
                  deadline_margin=1.15, reserve_ms=None,
-                 batched_expand=None, graph_wave=False):
+                 batched_expand=None, graph_wave=False,
+                 native_select=False):
         self.model    = model
         self.device   = device
         self.n_sims   = n_sims
@@ -212,6 +223,18 @@ class MCTS:
             # uncapturable op all leave the engine running eagerly.
             self.graph_wave = gw if gw.ok else None
             self.graph_wave_reason = gw.reason
+        # Native PUCT selection over a mirrored child array (#45a). OFF by
+        # default and, unlike the graph wave, it does NOT degrade quietly:
+        # falling back would leave an engine that is named for a selector it is
+        # not running, and #41 already taught this project what that costs when
+        # a fingerprint keys off a realised object instead of a request.
+        self.native_select = bool(native_select)
+        if self.native_select:
+            _ns.require("MCTS(native_select=True)")
+        # Hot-path alias. `self.native_select` is the configuration; `_mirror`
+        # is what the descent, backup and proof loops test, hoisted to a local
+        # before each loop so the check is not repaid per iteration.
+        self._mirror = self.native_select
         self.reset_stats()
 
     def reset_stats(self):
@@ -548,6 +571,8 @@ class MCTS:
         backup, leaving tree statistics as if each sim ran independently.
         """
         pending = []    # (leaf_node, leaf_state, path_nodes_that_got_vl)
+        mirror = self._mirror
+        vl = self._VL
 
         for _ in range(wave_size):
             node  = root
@@ -566,7 +591,15 @@ class MCTS:
                 # wave=64 search score 0.000 vs the raw league net; wave=1
                 # scored 0.875).
                 node.N += 1
-                node.W += self._VL
+                node.W += vl
+                if mirror:
+                    # `node.parent` is the node we just selected from, so it is
+                    # never None here and it always has a mirror -- guarding
+                    # would only hide the day that stops being true.
+                    p = node.parent
+                    i = node.cidx
+                    p.selN[i] = node.N
+                    p.selW[i] = node.W
                 path.append(node)
                 if state.winner is not None:
                     node.is_terminal    = True
@@ -635,9 +668,18 @@ class MCTS:
 
         # Undo virtual loss then apply real backup for each pending sim.
         for node, state, path in pending:
-            for n in path:
-                n.N -= 1
-                n.W -= self._VL
+            if mirror:
+                for n in path:
+                    n.N -= 1
+                    n.W -= vl
+                    p = n.parent
+                    i = n.cidx
+                    p.selN[i] = n.N
+                    p.selW[i] = n.W
+            else:
+                for n in path:
+                    n.N -= 1
+                    n.W -= vl
 
             # solved first: expansion above may have proved this very node, and
             # an exact result outranks both the terminal cache and the net.
@@ -673,6 +715,7 @@ class MCTS:
         ~2 us per legal move on the C++ engine and ~7 us on the Python one --
         against ~600 ms for an 800-sim search, that is noise.
         """
+        sS = node.selS if self._mirror else None
         for mv, child in node.children.items():
             probe = _clone(state)
             probe.make_move(mv)
@@ -681,6 +724,8 @@ class MCTS:
                 child.is_terminal    = True
                 child.terminal_value = self._terminal_value(probe, child.to_play)
                 child.solved         = int(child.terminal_value)
+                if sS is not None:
+                    sS[child.cidx] = child.solved
         status = self._solve_from_children(node)
         if status is not None:
             self._mark_solved(node, status)
@@ -721,17 +766,25 @@ class MCTS:
         if node.solved is not None:
             return
         node.solved = int(value)
+        if self._mirror:
+            p = node.parent
+            if p is not None:
+                p.selS[node.cidx] = node.solved
         self._propagate_solved(node)
 
     def _propagate_solved(self, node):
         """Carry a fresh proof as far up the tree as it can be justified."""
+        mirror = self._mirror
         cur = node.parent
         while cur is not None and cur.solved is None:
             status = self._solve_from_children(cur)
             if status is None:
                 return
             cur.solved = status
-            cur = cur.parent
+            p = cur.parent
+            if mirror and p is not None:
+                p.selS[cur.cidx] = status
+            cur = p
 
     # ------------------------------------------------------------------
 
@@ -778,6 +831,48 @@ class MCTS:
             [s for _, _, s in to_eval], valids)
         return self._expand_children(to_eval, valids, probs_np, values_np)
 
+    def _build_children_mirrored(self, node, valid, row, next_to_play):
+        """Create `node`'s children AND the native selection mirror beside them.
+
+        The mirror's row order is `valid` order, which is what makes the whole
+        thing work: `node.children` is a dict populated in this same order, so
+        `children.values()` and the native columns are the same sequence, and
+        `max()`'s first-maximal tie-break and a forward scan with a strict `>`
+        agree. That order is NOT ascending board index -- on a send-anywhere
+        position rule_utl_valid_moves runs mini-major, and 11 of 400 random
+        reachable positions come back unsorted -- so a mirror that sorted by
+        move, or that walked an 81-cell mask, would break ties differently
+        several times a game. See tools/select_parity.py, which asserts the
+        two orders are identical rather than trusting this comment.
+
+        Priors are collected here rather than re-read from `row` because
+        `float(row[mv])` is the value Python stores, and the mirror must hold
+        that exact double -- not a second float32 round trip that happens to
+        agree today.
+        """
+        kids = []
+        priors = []
+        append_kid = kids.append
+        append_prior = priors.append
+        children = node.children
+        for j, mv in enumerate(valid):
+            pr = float(row[mv])
+            c = MCTSNode(parent=node, prior=pr, move=mv, to_play=next_to_play)
+            c.cidx = j
+            children[mv] = c
+            append_kid(c)
+            append_prior(pr)
+        sel = _ns.ChildArray(valid, priors, self.c_puct, self.solve)
+        node.kids = kids
+        node.selN = sel.N
+        node.selW = sel.W
+        node.selS = sel.S
+        # Published LAST. `_best_child` dispatches on `node.sel`, so until this
+        # line the node is simply a node without a mirror and the Python path
+        # handles it correctly. Assigning it first would open a window where a
+        # re-entrant selection could index columns that are not attached yet.
+        node.sel = sel
+
     def _expand_children(self, to_eval, valids, probs_np, values_np):
         """Build the children. ONE implementation, shared by both paths.
 
@@ -786,12 +881,19 @@ class MCTS:
         same code rather than the thing that actually differs.
         """
         out = {}
+        mirror = self._mirror
         for i, (_pi, node, state) in enumerate(to_eval):
             row = probs_np[i]
             next_to_play = O if state.player == X else X
-            for mv in valids[i]:
-                node.children[mv] = MCTSNode(parent=node, prior=float(row[mv]),
-                                             move=mv, to_play=next_to_play)
+            if mirror:
+                self._build_children_mirrored(node, valids[i], row,
+                                              next_to_play)
+            else:
+                for mv in valids[i]:
+                    node.children[mv] = MCTSNode(parent=node,
+                                                 prior=float(row[mv]),
+                                                 move=mv,
+                                                 to_play=next_to_play)
             self.stat_expansions += 1
             if self.solve:
                 self._mark_terminal_children(node, state)
@@ -812,9 +914,13 @@ class MCTS:
                 probs[mv] = (1 - self.dir_eps) * probs[mv] + self.dir_eps * noise[i]
 
         next_to_play = O if state.player == X else X
-        for mv in valid:
-            node.children[mv] = MCTSNode(parent=node, prior=float(probs[mv]),
-                                         move=mv, to_play=next_to_play)
+        if self._mirror:
+            self._build_children_mirrored(node, valid, probs, next_to_play)
+        else:
+            for mv in valid:
+                node.children[mv] = MCTSNode(parent=node,
+                                             prior=float(probs[mv]),
+                                             move=mv, to_play=next_to_play)
         self.stat_expansions += 1
         if self.solve:
             self._mark_terminal_children(node, state)
@@ -837,6 +943,15 @@ class MCTS:
         # sign per ply). The child's mover is the opponent of `node`'s mover, so to
         # score a move from `node`'s perspective we must NEGATE the child's Q.
         # Using +c.Q() here would pick the move that is best for the opponent.
+        #
+        # #45a: when the mirror exists the whole scan below happens in C++ over
+        # five contiguous columns and comes back as an index. The Python
+        # version stays as the definition of the answer -- tools/select_parity
+        # requires the two to return the SAME CHILD, not a similar score --
+        # and it is what runs when native_select is off.
+        sel = node.sel
+        if sel is not None:
+            return node.kids[sel.best(node.N)]
         kids = node.children.values()
         if self.solve:
             # A proven win ends the discussion -- there is nothing PUCT could
@@ -856,6 +971,24 @@ class MCTS:
 
     def _backup(self, node, leaf_value):
         v = leaf_value
+        if self._mirror:
+            # Write THROUGH, do not accumulate independently. Python's node is
+            # authoritative; copying its post-update value into the parent's
+            # column means the mirror cannot drift even if some other site
+            # forgets to call here -- it can only be stale, and the next backup
+            # through that edge repairs it. A native `+= v` alongside the
+            # Python one would be a second accumulator and a second answer.
+            while node is not None:
+                node.N += 1
+                node.W += v
+                p = node.parent
+                if p is not None:
+                    i = node.cidx
+                    p.selN[i] = node.N
+                    p.selW[i] = node.W
+                v = -v
+                node = p
+            return
         while node is not None:
             node.N += 1
             node.W += v
@@ -934,6 +1067,18 @@ class TreeReuseSearcher:
             kids = n.children
             n.children = {}
             n.parent = None
+            # #45a: `n.kids` is a SECOND list of strong references to exactly
+            # the children `n.children` just dropped. Leaving it would keep the
+            # parent<->child cycle intact and quietly undo the whole reason
+            # this function exists -- gc back on, worst chunk from 3.1 ms to
+            # 25.2, p99 from 980 ms to 1037. Cleared under the `sel` test so
+            # the non-mirrored engine pays nothing for a slot it never set.
+            if n.sel is not None:
+                n.sel = None
+                n.kids = None
+                n.selN = None
+                n.selW = None
+                n.selS = None
             stack.extend(kids.values())
 
     def reset(self):

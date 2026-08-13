@@ -75,6 +75,18 @@ SEEDS = {
     "expand": 6700,     # the CUDA sync-vs-transfer study, likewise unscored
     "kernels": 6800,    # the kernel/launch trace; structure only, no score
     "select": 6900,     # the post-graph tree re-profile; instrumented, no score
+    # Held out for the native-selection strength match (#45a). The parity
+    # oracle and the throughput study both ran on 6900, and although neither
+    # reads a score off it, an effect-size match that reuses the openings its
+    # own instrument was tuned on is exactly the cheap mistake this table
+    # exists to prevent.
+    "select_ab": 7000,
+    # The 120-game effect-size match came back at 0.5708 [0.5285, 0.6131] --
+    # already excluding parity, but it is the run that SIZED the effect, and
+    # reading a verdict off it would be using one sample twice. A 240-game
+    # confirmation on seed 7000 would not fix that either: the opening set is
+    # taken in order, so the first 120 of it are the games already played.
+    "select_confirm": 7100,
 }
 
 # Files whose bytes define how a search plays. An anchor built while any of
@@ -87,9 +99,19 @@ SEEDS = {
 # statement-for-statement against the PRE-change function and still require
 # bit-identical children, priors and leaf values. Anchors were not re-measured
 # because they do not play differently.
+#
+# agents/mcts.py was re-hashed AGAIN 2026-08-12 for native PUCT selection
+# (#45a). The change is off by default and the off path is byte-for-byte the
+# old code -- the mirror lives in `if self._mirror:` branches that duplicate
+# each loop rather than adding a test inside it, precisely so the incumbent arm
+# of the A/B does not get slower. The ONE unconditional cost is a `self.sel`
+# store per node and a `sel is not None` load per selection, together about
+# 0.1% of a move; it is stated here because "off by default" is a claim about
+# behaviour, not about cost. Anchors were not re-measured: with select=0 the
+# selection they run is the same `max()` over the same dict view.
 ENGINE_SOURCES = {
     "agents/mcts.py":
-        "a662420b0fc6217de265bf48af46414488b45eee5b68519850c5a0491501aed2",
+        "ab413ee38613b25b19fd667f2001e2639c4de861b1cfb1ac09f805107c662ae0",
     "agents/graph_wave.py":
         "913227d4a87925078d25dc188fe6a9058c8c37f81d7edd2db6e4712724ae6f77",
     "agents/agent_base.py":
@@ -123,8 +145,13 @@ MIDSIZE = "models/ab_arch/plain.pt"
 # below on 2026-08-09; no engine's behaviour moved, because "0" is what they
 # already did. It becomes "1" only for an engine promoted on equal-clock
 # strength.
+#
+# select="0" pins native PUCT selection OFF, for the same reason and by the
+# same rule: a changed DEFAULT must trip the guard, not only a changed flag.
+# Adding it moved every fingerprint below again on 2026-08-12; no engine's
+# behaviour moved, because "0" is what they already did.
 _FINAL = {"wave": "8", "cpuct": "1.5", "solve": "1", "reuse": "1", "bexp": "1",
-          "maxsims": "200000", "graph": "0"}
+          "maxsims": "200000", "graph": "0", "select": "0"}
 
 # reserve_ms defaults to max(5, 2% of budget) inside MCTS. Pinned explicitly at
 # every rung so the ladder does not silently re-derive it if that rule changes.
@@ -224,6 +251,44 @@ ENGINES = {
     "pocket_graph": _engine(POCKET, "squeeze", 1000, "pocket_172k_graph",
                             reserve="50", graph="1"),
 
+    # -- the native-selection candidate (#45a) --------------------------------
+    # `pocket_graph` with PUCT selection done in C++ over a mirrored child
+    # array instead of a `max()` over a dict view with a lambda key. #44
+    # measured that scan at 193.85 ms/move -- 22.2% of the move and the largest
+    # host term by 64% -- after the CUDA graph turned the engine host-bound
+    # (59.2% host / 39.3% device).
+    #
+    # THE RESERVE IS 95 ms, AND THE FIRST DRAFT OF THIS COMMENT WAS WRONG. It
+    # said 50 was enough because selection sits inside the search's own
+    # deadline, which the search has never missed -- true, and beside the
+    # point. `regress_engine` measured caller-side overhead at p99 78.99 ms
+    # against the 50 ms reserve and failed the gate at p99 1027.9. The
+    # mechanism is the same one that took `pocket` to 20, `pocket_r35` to 35
+    # and `pocket_graph` to 50, only sharper: `release()` walks the discarded
+    # tree OUTSIDE the search's deadline, and every throughput win makes that
+    # tree bigger. 42.3% more simulations a move bought 84.7% more overhead.
+    #
+    # About 18 of those 79 ms are not the bigger tree. They are the mirror
+    # itself: four extra Python objects per expanded node (a ChildArray and
+    # three numpy columns) that release has to drop. That is a real cost of
+    # this design and it is priced here rather than hidden in the reserve.
+    #
+    # 95 ms covers the measured need (overhead p99 78.99 + worst-chunk p99
+    # 9.3 = 88.3) and costs 4.7% of thinking time, which the +17.6% in network
+    # evaluations pays for several times over. It is provisional in exactly
+    # the way 50 was: tools/regress_engine is what decides it.
+    #
+    # THIS ONE IS NOT A DIFFERENT PLAYER AT FIXED SIMULATIONS. The graph wave
+    # was bit-identical in its OUTPUTS; this is stricter -- it must return the
+    # same child index on every selection, which tools/select_parity checks
+    # against the Python implementation on real searches and on fixtures. Under
+    # a clock it is a different player for the same reason the graph was: more
+    # search fits.
+    #
+    # NOT PROMOTED. It is a candidate until it wins at equal wall clock.
+    "pocket_sel": _engine(POCKET, "squeeze", 1000, "pocket_172k_sel",
+                          reserve="95", graph="1", select="1"),
+
     # -- the networks alone, no search ---------------------------------------
     # Without these a model-size result is uninterpretable: if the small net
     # wins at 1,000 ms you cannot tell whether the network is better or whether
@@ -243,13 +308,37 @@ ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
 
 # Resolved-config fingerprints, emitted by --freeze. An empty dict means the
 # registry has never been frozen and verification cannot run.
-# RE-FROZEN 2026-08-09. Every value below moved because `resolved_config`
-# gained one key, `graph_wave`, pinned False -- which is what these engines
-# already did. No engine's behaviour changed and none was re-measured; the
-# previous values are kept in PRE_GRAPH_FINGERPRINTS so the claim "only the new
-# key moved" is checkable rather than asserted, and tools/test_engine_registry
-# checks it.
+# RE-FROZEN 2026-08-12. Every value below moved AGAIN, for the same reason as
+# 2026-08-09 and by the same rule: `resolved_config` gained one key,
+# `native_select`, pinned False -- which is what these engines already did. No
+# engine's behaviour changed and none was re-measured. Both previous
+# generations are kept below so "only the new key moved" stays checkable at
+# each step rather than asserted once and then trusted; tools/
+# test_engine_registry checks both.
 FINGERPRINTS = {
+    "original": "247a5d5f5a693792",
+    "final": "ae965b10747d1ca2",
+    "anchor_A": "97da7da71258ec65",
+    "anchor_B": "0a86d2ad24188aba",
+    "anchor_C": "7fb6b7a2d4be9bb0",
+    "anchor_D": "3ab93ffd546a63cb",
+    "pocket": "bc542e5f043f6ee0",
+    "midsize": "3c51ee0174d14b56",
+    "pocket_r35": "be9f7b150592c32a",
+    # Freeze these two with `--freeze --device cuda`: TimedPlayer refuses to
+    # build a graph engine whose capture failed, and capture cannot succeed on
+    # the CPU default.
+    "pocket_graph": "e82f7ddf88acec2f",
+    "pocket_sel": "e33659b9f270d0c2",
+    "gen22_raw": "b2605d73351a74f8",
+    "pocket_raw": "04d79bccae15abf2",
+    "midsize_raw": "71535604401525af",
+}
+
+# The values every published result between 2026-08-09 and 2026-08-12 was
+# measured against. `resolved_config(player)` minus `native_select` must still
+# hash to these.
+PRE_SELECT_FINGERPRINTS = {
     "original": "6305c68d4f7e2c7c",
     "final": "180cb11bc206b84a",
     "anchor_A": "0215e5f848db39f4",
@@ -259,9 +348,6 @@ FINGERPRINTS = {
     "pocket": "f274f655957c4852",
     "midsize": "503126dcfb4f1eb0",
     "pocket_r35": "e7bce88383363d0e",
-    # Freeze this one with `--freeze --device cuda`: TimedPlayer refuses to
-    # build a graph engine whose capture failed, and capture cannot succeed on
-    # the CPU default.
     "pocket_graph": "df93af350ef9f906",
     "gen22_raw": "4c5659d088cca421",
     "pocket_raw": "fa04295ca54fcf24",
@@ -362,6 +448,9 @@ def resolved_config(player):
         # but how many waves fit in the budget. The REQUESTED flag, not the
         # captured object: --freeze runs on CPU, where capture cannot succeed.
         "graph_wave": m.graph_wave_requested,
+        # Cannot change what is selected -- parity is the promotion gate -- but
+        # it changes how much search fits in the clock, so it is configuration.
+        "native_select": m.native_select,
         "add_dirichlet": m.add_dirichlet,
         "virtual_loss": type(m)._VL,
         "min_waves": type(m)._MIN_WAVES,

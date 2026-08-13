@@ -66,7 +66,7 @@ class TestFrozenSet(unittest.TestCase):
         # The point of the registry. If an option is absent from a frozen spec
         # it comes from a code default, and a later edit moves the engine.
         pinned = {"ckpt", "arch", "ms", "wave", "cpuct", "reuse", "solve",
-                  "maxsims", "reserve", "bexp", "name", "graph"}
+                  "maxsims", "reserve", "bexp", "name", "graph", "select"}
         for name, spec in reg.ENGINES.items():
             with self.subTest(engine=name):
                 want = reg.RAW_PINNED if reg.is_raw(name) else pinned
@@ -74,34 +74,52 @@ class TestFrozenSet(unittest.TestCase):
 
 
 class TestGraphRefreeze(unittest.TestCase):
-    """2026-08-09: every fingerprint moved because `resolved_config` gained one
-    key. Nothing was re-measured, so the claim that no ENGINE moved has to be
-    checkable -- strip the new key and the old hashes must come back."""
+    """Every fingerprint has now moved twice, each time because
+    `resolved_config` gained one key: `graph_wave` on 2026-08-09 and
+    `native_select` on 2026-08-12. Nothing was re-measured either time, so the
+    claim that no ENGINE moved has to stay checkable at BOTH steps -- strip the
+    keys added since a generation and that generation's hashes must come back.
+    """
 
-    def test_stripping_graph_wave_reproduces_every_pre_graph_fingerprint(self):
-        # Engines that existed before the re-freeze. `pocket_graph` is new and
-        # has no pre-graph identity, so it is excluded by construction rather
-        # than by an exception list that could quietly grow.
-        pre = set(reg.PRE_GRAPH_FINGERPRINTS)
-        self.assertTrue(pre <= set(reg.ENGINES))
-        new = set(reg.ENGINES) - pre
-        for name in new:
-            self.assertTrue(reg.ENGINES[name].get("graph") == "1",
-                            "%s is new since the re-freeze but is not a graph "
-                            "candidate -- it needs a pre-graph fingerprint or "
-                            "an explicit reason" % name)
-        for name in pre:
-            with self.subTest(engine=name):
-                cfg = reg.resolved_config(build(name))
-                stripped = {k: v for k, v in cfg.items() if k != "graph_wave"}
-                self.assertEqual(reg.fingerprint(stripped),
-                                 reg.PRE_GRAPH_FINGERPRINTS[name])
+    # The keys `resolved_config` has gained since each frozen generation, and
+    # the hashes that generation's results were measured under.
+    GENERATIONS = (
+        ("PRE_SELECT_FINGERPRINTS", {"native_select"}),
+        ("PRE_GRAPH_FINGERPRINTS", {"native_select", "graph_wave"}),
+    )
+
+    def test_stripping_the_added_keys_reproduces_every_older_fingerprint(self):
+        for attr, added in self.GENERATIONS:
+            table = getattr(reg, attr)
+            # Engines that existed at that freeze. Newer ones have no identity
+            # in it, and they are excluded by construction rather than by an
+            # exception list that could quietly grow.
+            pre = set(table)
+            self.assertTrue(pre <= set(reg.ENGINES))
+            for name in pre:
+                with self.subTest(generation=attr, engine=name):
+                    cfg = reg.resolved_config(build(name))
+                    stripped = {k: v for k, v in cfg.items()
+                                if k not in added}
+                    self.assertEqual(reg.fingerprint(stripped), table[name])
+
+    def test_every_newer_engine_is_a_declared_candidate(self):
+        """A new engine with no older identity has to be one of the candidates
+        the new keys exist for -- otherwise the tables above stopped covering
+        the registry and nobody noticed."""
+        newest = set(reg.PRE_SELECT_FINGERPRINTS)
+        for name in set(reg.ENGINES) - newest:
+            spec = reg.ENGINES[name]
+            self.assertTrue(spec.get("graph") == "1" or spec.get("select") == "1",
+                            "%s is new since the last re-freeze but enables "
+                            "neither candidate flag -- it needs an older "
+                            "fingerprint or an explicit reason" % name)
 
     def test_only_declared_candidates_enable_the_graph(self):
-        """It is not promoted. Exactly one engine may have it on, and that one
-        must not be anything the ladder or the incumbent depends on."""
+        """It is not promoted. Only declared candidates may have it on, and
+        none of them may be anything the ladder or the incumbent depends on."""
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
-        self.assertEqual(on, {"pocket_graph"})
+        self.assertEqual(on, {"pocket_graph", "pocket_sel"})
         self.assertFalse(on & reg.ANCHOR_ROLES)
         self.assertNotIn("final", on)
         self.assertNotIn("pocket_r35", on)
@@ -319,16 +337,19 @@ class TestLatencyCorrectedPocket(unittest.TestCase):
         self.assertEqual(reg.ENGINES["pocket"]["reserve"], "20")
         # The literal is the fingerprint the 0.5854 was measured under. It is
         # no longer the CURRENT one -- 2026-08-09 added `graph_wave` to
-        # `resolved_config` and moved all twelve -- so the guard now checks the
-        # configuration minus that key, which is what was actually measured.
-        # Weakening it to `== FINGERPRINTS["pocket"]` would make it tautological.
+        # `resolved_config` and 2026-08-12 added `native_select`, moving all of
+        # them twice -- so the guard checks the configuration minus BOTH keys,
+        # which is what was actually measured. Weakening it to
+        # `== FINGERPRINTS["pocket"]` would make it tautological.
         self.assertEqual(reg.PRE_GRAPH_FINGERPRINTS["pocket"],
                          "036f17c9aa644aad")
         cfg = reg.resolved_config(build("pocket"))
         self.assertFalse(cfg["graph_wave"])
+        self.assertFalse(cfg["native_select"])
         self.assertEqual(
             reg.fingerprint({k: v for k, v in cfg.items()
-                             if k != "graph_wave"}), "036f17c9aa644aad")
+                             if k not in ("graph_wave", "native_select")}),
+            "036f17c9aa644aad")
 
     def test_it_differs_from_pocket_in_exactly_the_reserve(self):
         a, b = reg.ENGINES["pocket"], reg.ENGINES["pocket_r35"]

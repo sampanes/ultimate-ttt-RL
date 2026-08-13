@@ -111,7 +111,7 @@ def parse_spec(spec):
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
                           "reuse", "solve", "maxsims", "name", "reserve",
-                          "bexp", "graph"}
+                          "bexp", "graph", "select"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -191,6 +191,12 @@ class TimedPlayer:
         # untouched and `engine:<name>+graph=1` is a declared derived arm. It
         # joins _FINAL only if it is promoted on equal-clock strength.
         self.graph = o.get("graph", "0") == "1"
+        # select=1 runs PUCT selection in C++ over a mirrored child array
+        # (#45a). Unlike graph=1 it cannot change what is computed -- the
+        # parity oracle requires the SAME child index, not a similar score --
+        # so under a fixed simulation count the two arms are the same player.
+        # Under a clock they are not: selection is 22.2% of a move.
+        self.select = o.get("select", "0") == "1"
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
@@ -198,7 +204,8 @@ class TimedPlayer:
                          wave_size=self.wave, solve=self.solve,
                          time_budget_ms=self.budget_ms,
                          max_sims=self.max_sims, reserve_ms=self.reserve,
-                         batched_expand=self.bexp, graph_wave=self.graph)
+                         batched_expand=self.bexp, graph_wave=self.graph,
+                         native_select=self.select)
         if self.graph and self.mcts.graph_wave is None:
             raise SystemExit(
                 "[X] graph=1 was asked for and capture FAILED: %s\n"
