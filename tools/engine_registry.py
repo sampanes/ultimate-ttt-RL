@@ -346,7 +346,20 @@ ENGINES = {
     # only the moment of destruction moves. agents/test_mcts_timed.py requires
     # bit-identical visit policies across several plies of re-rooting.
     #
-    # NOT PROMOTED. It is a candidate until it wins at equal wall clock.
+    # IT HAS WON AT EQUAL WALL CLOCK. 0.5625 [0.5273, 0.5977], W54/D162/L24
+    # over 240 paired games against the DEPLOYED `pocket_r35` on the held-out
+    # `release_ab` namespace -- inside the 0.5352-0.5744 band pre-registered
+    # from throughput before the match ran. It also meets the latency
+    # requirement more comfortably than the engine it beat (p99 980.2 against
+    # 986.1, max 981.9 against 1003.4, 0 moves over budget against 1).
+    #
+    # What that match separates is the STACK against the deployed engine, not
+    # the three changes from each other: `pocket_graph` alone already scored
+    # 0.5458 against `pocket_r35`, and the increment to 0.5625 is inside the
+    # noise on the difference.
+    #
+    # STILL NOT PROMOTED, because promotion is an owner decision rather than a
+    # threshold. The evidence for it is in RESULT_DEFERRED_RETIREMENT.md.
     "pocket_defer": _engine(POCKET, "squeeze", 1000, "pocket_172k_defer",
                             reserve="20", graph="1", select="1", defer="1"),
 

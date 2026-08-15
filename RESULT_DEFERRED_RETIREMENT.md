@@ -17,7 +17,10 @@ which architecture is available. So: characterise first
 
 **Caller-side overhead p99 falls from 62.96 ms to 0.05 ms, the reserve goes back
 to 20, and the engine completes 32.2% more search per full-clock move than
-`pocket_graph`.** The gate passes 5/5 twice.
+`pocket_graph` and 73.2% more than the deployed `pocket_r35`.** The gate passes
+5/5 twice, and **the stack beats the deployed engine 0.5625 [0.5273, 0.5977]
+over 240 paired games at equal wall clock** -- inside the band predicted from
+throughput before the match was run.
 
 Nothing was made faster. The O(nodes) walk still happens; it happens at the game
 boundary, which no deadline covers.
@@ -234,11 +237,61 @@ end of that band. #45a's one calibration point landed just above the top of its
 compressed band, so the low end is the conservative sizing target rather than
 the expected outcome.
 
+## The match: 0.5625 [0.5273, 0.5977], and the prediction was right
+
+Paired openings, colours swapped, equal wall clock, both arms meeting the
+frozen latency requirement.
+
+| | W/D/L | n | score | 95% CI | |
+|---|---|---|---|---|---|
+| `pocket_defer` vs `pocket_r35` | 54/162/24 | 240 | **0.5625** | [0.5273, 0.5977] | **excludes 0.5** |
+
+Predicted before the match: 0.5352 to 0.5744. **Observed 0.5625, inside the
+band.** This is the first equal-clock strength result on this branch whose size
+was set in advance from throughput rather than read off a sizing run, and the
+prediction held.
+
+**The ladder is now calibrated three times.** In-match throughput came out at
++41.9% (nn/second times the search deadline, 4,334.4 against 3,055.0), which is
+a mirror-network compression factor of 0.572 on the gate's +73.2% -- less
+compression than #45a's 0.426, so the pre-registered band was pessimistic.
+Feeding the OBSERVED in-match gain through the ladder gives 0.5454 to 0.5959,
+and 0.5625 sits in the middle of it.
+
+**Latency: the candidate is tighter than the engine it is challenging.**
+
+| | p50 | p99 | max | over budget |
+|---|---|---|---|---|
+| `pocket_defer` | 978.9 | 980.2 | 981.9 | 0 of 5,562 |
+| `pocket_r35` | 970.5 | 986.1 | 1003.4 | 1 of 5,553 |
+
+Caller-side overhead p99 0.05 ms against 22.38.
+
+**240 games was three times more than this needed.** At the observed spread (SD
+0.2781, 67.5% draws) the effect was resolvable in 76 games. The over-sizing came
+from using #45a's compression factor, which is the right way to be wrong.
+
+### What the match does and does not separate
+
+It compares the CANDIDATE STACK against the DEPLOYED ENGINE, so what it
+establishes is that the stack is stronger at equal wall clock. It does not
+attribute the gain among the three changes.
+
+In particular, `pocket_graph` already beat `pocket_r35` at 0.5458 [0.5126,
+0.5791] (#42). The increment to 0.5625 is +0.0167 with a standard error on the
+difference of about 0.025, so **native selection and deferred retirement are
+not separately demonstrated on top of the graph** -- the point estimate moved in
+the direction and roughly the magnitude the ladder predicts for their combined
+throughput, and that is all that can be said. Isolating deferral alone would
+need thousands of games, which is why it was not attempted.
+
 ## What this does NOT license
 
-**No strength claim.** Throughput is not strength; the anchor ladder converts
-one into an expectation and only a match settles it. `pocket_defer` is a
-registry candidate and is NOT promoted.
+**Promotion is a decision, and it has not been taken here.** The evidence now
+meets the criterion the arena states -- win rate at an identical wall-clock
+budget, CI excluding parity, latency requirement met -- but flipping the
+deployed engine is an owner call and `pocket_defer` remains a registry candidate
+until it is made.
 
 **A mirror-network match will show much less than +32.2%.** Two engines sharing
 a network predict each other's replies and both inherit far more of their own
@@ -267,3 +320,5 @@ is why the composition confound had to be handled rather than avoided.
         --tag defer-candidate
     python -m tools.regress_engine --engine pocket_sel --games 10 \
         --tag sel-recheck
+    python -m tools.arena_1s --mode h2h --player-a engine:pocket_defer \
+        --player-b engine:pocket_r35 --games 240 --seed 7300 --tag defer-h2h
