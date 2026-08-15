@@ -122,6 +122,13 @@ WRAP_TARGETS = [
     ("state.make_move",           "STATE", "make_move"),
     ("tree reuse: adopt",         "REUSE", "_adopt"),
     ("tree release",              "REUSE", "release"),
+    # #46 split retirement in two. On the deployed engine `release` no longer
+    # runs on the move path at all -- `search` appends the discarded root to a
+    # queue and `drain` walks the whole queue at the game boundary. Both rows
+    # have to exist or the profile silently reports that destruction became
+    # free, when what happened is that it moved. `drain` is wrapped INCLUSIVE of
+    # the `release` it calls, and the two must not be added together.
+    ("tree retire: drain",        "REUSE", "drain"),
 ]
 
 # Everything the host spends getting a wave onto the device and back. The eager
@@ -131,8 +138,10 @@ WRAP_TARGETS = [
 DEVICE_OPS = ("device: graphed wave", "device: graph replay",
               "device: eager wave", "device: plane build + H2D", FORWARD)
 
-# Deployment-only: they exist because a tree was carried across a move.
-REUSE_OPS = ("tree reuse: adopt", "tree release")
+# Deployment-only: they exist because a tree was carried across a move. `drain`
+# is deployment-only in a second sense -- it is the only one of the three that
+# is NOT on the move path, and reading it as a per-move cost would be wrong.
+REUSE_OPS = ("tree reuse: adopt", "tree release", "tree retire: drain")
 
 # One definition, shared by `patch` and its tests. A second copy in the test
 # file is how a target silently stops being wrapped.
@@ -149,6 +158,7 @@ ORDER = [
     "backup",
     "tree reuse: adopt",
     "tree release",
+    "tree retire: drain",
     "state.make_move",
     "state clone",
     "legal moves",

@@ -95,6 +95,15 @@ SEEDS = {
     # Held out for the strength match that follows the release change, if the
     # remeasured throughput makes one worth funding. Kept empty until then.
     "release_ab": 7300,
+    # #47, the terminal-probe question. Instrumented and unscored like
+    # `profile`, `select` and `release`. The ON/OFF ablation reads MOVE
+    # DISAGREEMENT off these openings, which is a behaviour count and not a
+    # score -- but it is still a readout, so it gets its own namespace rather
+    # than spending one a future match might want.
+    "probe": 7400,
+    # Held out for the strength match that follows a probe change, if #47
+    # produces one worth funding. Kept empty until then.
+    "probe_ab": 7500,
 }
 
 # Files whose bytes define how a search plays. An anchor built while any of

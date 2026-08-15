@@ -163,8 +163,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", default="final",
-                    help="registry engine to gate (default: the promoted one)")
+    ap.add_argument("--engine", default=reg.DEPLOYED,
+                    help="registry engine to gate (default: the deployed one)")
     ap.add_argument("--opponent", default=None,
                     help="engine to play against. Defaults to a DIFFERENT "
                          "network -- never a mirror, which understates "
@@ -177,6 +177,15 @@ def main():
     ap.add_argument("--device", default=None)
     ap.add_argument("--outdir", default="results/arena_1s")
     ap.add_argument("--tag", default="regression")
+    # The deployment baseline joined STRICT_SOURCE_ROLES when it was promoted,
+    # so an edit to agents/mcts.py now stops this gate dead rather than warning.
+    # That is the intent -- the B side of an A/B must not move quietly -- but a
+    # hard failure with no override is a trap, and the drift message names this
+    # flag. Every candidate branch edits the engine before it can be gated.
+    ap.add_argument("--allow-anchor-drift", action="store_true",
+                    help="build despite engine-source drift. The result is not "
+                         "comparable to anything measured before the edit; use "
+                         "it while developing, never to publish")
     args = ap.parse_args()
 
     import torch
@@ -203,8 +212,10 @@ def main():
     # realistic positions, against an opponent it cannot predict.
     opponent = choose_opponent(args.engine, args.opponent, args.allow_mirror)
 
-    pa = TimedPlayer(f"engine:{args.engine}", device)
-    pb = TimedPlayer(f"engine:{opponent}", device)
+    pa = TimedPlayer(f"engine:{args.engine}", device,
+                     allow_anchor_drift=args.allow_anchor_drift)
+    pb = TimedPlayer(f"engine:{opponent}", device,
+                     allow_anchor_drift=args.allow_anchor_drift)
     if opponent == args.engine:
         pb.name = pa.name + "-mirror"
     print(f"gating engine:{args.engine}  fingerprint "
