@@ -206,7 +206,12 @@ deployment configuration.
 ## What follows
 
 * **`pocket_r35` is the deployment engine** -- the 172k network at 1,000 ms
-  with a 35 ms reserve. Stronger than the 6.77M incumbent at equal wall clock
+  with a 35 ms reserve. (SUPERSEDED 2026-08-15 by `pocket_defer`, which beat it
+  0.5625 [0.5273, 0.5977] at equal wall clock; see
+  `RESULT_DEFERRED_RETIREMENT.md`. Everything below is left as measured, and
+  `pocket_r35` is still buildable as the historical comparator -- the NETWORK
+  conclusion here is unaffected, since both engines run the same 172k
+  checkpoint.) Stronger than the 6.77M incumbent at equal wall clock
   (0.5854) and inside the frozen requirement against a real opponent (p99
   988.2). Its artifact is 0.70 MB against 27 MB, so the browser deployment
   inherits a model that is both 39x smaller and stronger -- the

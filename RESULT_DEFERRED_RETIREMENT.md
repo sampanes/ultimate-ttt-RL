@@ -13,6 +13,11 @@ which architecture is available. So: characterise first
 
 `agents/mcts.py`, `tools/profile_release.py`, engine `pocket_defer`.
 
+**PROMOTED 2026-08-15 at commit `0224669`: `pocket_defer` is the deployment
+baseline.** See "What this does NOT license" at the end for the exact scope of
+what the promotion claims -- it is one sentence, and it is about the stack, not
+about any single change inside it.
+
 ## The answer
 
 **Caller-side overhead p99 falls from 62.96 ms to 0.05 ms, the reserve goes back
@@ -287,11 +292,31 @@ need thousands of games, which is why it was not attempted.
 
 ## What this does NOT license
 
-**Promotion is a decision, and it has not been taken here.** The evidence now
-meets the criterion the arena states -- win rate at an identical wall-clock
-budget, CI excluding parity, latency requirement met -- but flipping the
-deployed engine is an owner call and `pocket_defer` remains a registry candidate
-until it is made.
+**PROMOTED 2026-08-15, recorded at commit `0224669`.** The owner took the
+decision after this document was written; `tools/engine_registry.DEPLOYED` is
+now `pocket_defer`, `pocket_r35` moves to `SUPERSEDED` and stays buildable as
+the historical comparator, and the promotion is logged in
+`engine_registry.PROMOTIONS` with the pre-registered band next to the result.
+
+The supported claim is exactly one sentence, and it is narrower than the set of
+changes that shipped:
+
+> `pocket_defer` as a complete 1-second agent is stronger than `pocket_r35`
+> at equal wall clock.
+
+**Promotion does not retroactively license the attribution above.** Native
+selection and deferred retirement are still not separately demonstrated, and
+nothing downstream should say they are. What the promotion says is that the
+stack ships; what the section above says is why nobody can yet name which part
+of it earned the last 0.017.
+
+The one thing being the baseline changes, besides which engine other work is
+measured against: `pocket_defer` joins `STRICT_SOURCE_ROLES`, so a source edit
+underneath it is a hard failure rather than a warning. It is the B side of
+every future A/B, and a B side that moves quietly is worse than no baseline at
+all. It deliberately does NOT join `ANCHOR_ROLES` -- an anchor may never be
+overridden, and the next question is an ablation off this very engine
+(`engine:pocket_defer+solve=0`).
 
 **A mirror-network match will show much less than +32.2%.** Two engines sharing
 a network predict each other's replies and both inherit far more of their own

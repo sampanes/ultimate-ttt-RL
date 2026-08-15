@@ -122,24 +122,38 @@ class TestGraphRefreeze(unittest.TestCase):
                             "no candidate flag -- it needs an older "
                             "fingerprint or an explicit reason" % name)
 
-    def test_only_declared_candidates_enable_the_graph(self):
-        """It is not promoted. Only declared candidates may have it on, and
-        none of them may be anything the ladder or the incumbent depends on.
-        The set grows each time a candidate is BUILT ON another one --
-        `pocket_sel` on `pocket_graph`, `pocket_defer` on `pocket_sel` -- which
-        is inheriting the flag, not granting it."""
+    def test_only_the_deployed_engine_and_its_lineage_enable_the_graph(self):
+        """It IS promoted now, as part of the deployed stack. What still has to
+        hold is that no ruler and no superseded baseline enables it: the ladder
+        and the historical comparator have to keep playing as measured. The set
+        grows each time a candidate is BUILT ON another one -- `pocket_sel` on
+        `pocket_graph`, `pocket_defer` on `pocket_sel` -- which is inheriting
+        the flag, not granting it."""
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
         self.assertEqual(on, {"pocket_graph", "pocket_sel", "pocket_defer"})
+        self.assertIn(reg.DEPLOYED, on)
         self.assertFalse(on & reg.ANCHOR_ROLES)
+        self.assertFalse(on & set(reg.SUPERSEDED))
         self.assertNotIn("final", on)
-        self.assertNotIn("pocket_r35", on)
 
-    def test_only_the_declared_candidate_defers_retirement(self):
+    def test_only_the_deployed_engine_defers_retirement(self):
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("defer") == "1"}
-        self.assertEqual(on, {"pocket_defer"})
+        self.assertEqual(on, {reg.DEPLOYED})
         self.assertFalse(on & reg.ANCHOR_ROLES)
+        self.assertFalse(on & set(reg.SUPERSEDED))
         self.assertNotIn("final", on)
         self.assertNotIn("pocket_sel", on)
+
+    def test_promotion_did_not_move_the_shared_defaults(self):
+        """The promoted engine sets graph/select/defer to "1", but `_FINAL` --
+        the base `original`, `final`, the four anchors and the superseded
+        baselines are all built from -- must still pin them OFF. Promotion is
+        recorded by DEPLOYED; moving the defaults would silently re-play the
+        whole ladder."""
+        for flag in ("graph", "select", "defer"):
+            with self.subTest(flag=flag):
+                self.assertEqual(reg._FINAL[flag], "0")
+                self.assertEqual(reg.ENGINES[reg.DEPLOYED][flag], "1")
 
     def test_the_defer_candidate_differs_in_the_flag_and_the_reserve(self):
         """Two keys again, and this time the reserve goes DOWN. Every previous
@@ -418,6 +432,96 @@ class TestLatencyCorrectedPocket(unittest.TestCase):
                 ms = int(float(reg.ENGINES[name]["ms"]))
                 self.assertEqual(reg.ENGINES[name]["reserve"],
                                  reg._RESERVE[ms])
+
+
+class TestTheDeploymentBaseline(unittest.TestCase):
+    """`DEPLOYED` is a promise about which engine ships. Untested, it is a
+    string that drifts away from the registry the first time one is added."""
+
+    def test_the_deployed_engine_exists_and_is_not_raw(self):
+        self.assertIn(reg.DEPLOYED, reg.ENGINES)
+        self.assertFalse(reg.is_raw(reg.DEPLOYED))
+
+    def test_promotion_grants_no_exemption(self):
+        # Being the baseline is not a way to stop being judged. It is still
+        # latency-gated at the frozen requirement like any other 1-second arm.
+        self.assertNotIn(reg.DEPLOYED, reg.LADDER_EXEMPT)
+        if buildable(reg.DEPLOYED):
+            p = build(reg.DEPLOYED)
+            self.assertFalse(p.latency_exempt)
+            self.assertEqual(p.mcts.time_budget_ms,
+                             reg.REQUIREMENT["budget_ms"])
+
+    def test_the_baseline_is_not_a_ruler(self):
+        # An anchor may never be overridden, so if the deployed engine were one
+        # the next ablation (`engine:pocket_defer+solve=0`) would be impossible.
+        self.assertNotIn(reg.DEPLOYED, reg.ANCHOR_ROLES)
+        spec, diff = reg.derived_spec(reg.DEPLOYED, {"solve": "0"})
+        self.assertEqual(diff, {"solve"})
+        self.assertIn("solve=0", spec)
+
+    def test_the_baseline_gets_the_strict_source_check(self):
+        # The B side of every A/B. If a source edit changes what it does, the
+        # candidate's edge is measured against something nobody agreed to.
+        self.assertIn(reg.DEPLOYED, reg.STRICT_SOURCE_ROLES)
+        self.assertTrue(reg.ANCHOR_ROLES <= reg.STRICT_SOURCE_ROLES)
+
+    def test_source_drift_under_the_baseline_is_a_hard_failure(self):
+        stub = mock.Mock()
+        stub.ckpt = reg.ENGINES[reg.DEPLOYED]["ckpt"]
+        with mock.patch.object(reg, "resolved_config",
+                               return_value={"ckpt": stub.ckpt,
+                                             "ckpt_sha256": None}), \
+             mock.patch.object(reg, "CHECKPOINTS", {}), \
+             mock.patch.object(reg, "FINGERPRINTS",
+                               {reg.DEPLOYED: "x", "pocket_graph": "x"}), \
+             mock.patch.object(reg, "fingerprint", return_value="x"), \
+             mock.patch.object(reg, "ENGINE_SOURCES",
+                               {"agents/mcts.py": "0" * 64}):
+            with self.assertRaises(SystemExit) as cm:
+                reg.verify(reg.DEPLOYED, stub)
+            self.assertIn("engine source drift", str(cm.exception))
+            # A plain candidate warns instead -- it is EXPECTED to change the
+            # search. That difference is the whole point of the new role.
+            prov = reg.verify("pocket_graph", stub)
+            self.assertEqual(prov["source_drift"], ["agents/mcts.py"])
+
+    def test_superseded_baselines_stay_buildable(self):
+        # A promotion whose predecessor stops building is a published result
+        # that stops being checkable.
+        self.assertTrue(set(reg.SUPERSEDED) <= set(reg.ENGINES))
+        self.assertNotIn(reg.DEPLOYED, reg.SUPERSEDED)
+        for name in reg.SUPERSEDED:
+            with self.subTest(engine=name):
+                self.assertIn(name, reg.FINGERPRINTS)
+
+    def test_the_promotion_log_agrees_with_the_registry(self):
+        self.assertEqual(reg.PROMOTIONS[0]["engine"], reg.DEPLOYED)
+        seen = [row["engine"] for row in reg.PROMOTIONS]
+        self.assertEqual(seen[1:], list(reg.SUPERSEDED),
+                         "every engine that was once deployed and no longer is "
+                         "has to appear in SUPERSEDED, newest first")
+        dates = [row["date"] for row in reg.PROMOTIONS]
+        self.assertEqual(dates, sorted(dates, reverse=True))
+        for row in reg.PROMOTIONS:
+            with self.subTest(engine=row["engine"]):
+                self.assertIn(row["engine"], reg.ENGINES)
+                self.assertIn(row["replaced"], reg.ENGINES)
+                lo, hi = row["ci"]
+                self.assertGreater(lo, 0.5, "a promotion whose interval does "
+                                            "not exclude parity is not one")
+                self.assertLess(lo, row["score"])
+                self.assertLess(row["score"], hi)
+                self.assertIn(row["seed"], reg.SEEDS.values())
+
+    def test_the_pre_registered_band_is_recorded_where_there_was_one(self):
+        # #46d is the first promotion on this branch whose SIZE and expected
+        # effect were set before the match. Recording the band next to the
+        # result is what makes that checkable a year from now.
+        row = reg.PROMOTIONS[0]
+        lo, hi = row["predicted"]
+        self.assertLessEqual(lo, row["score"])
+        self.assertLessEqual(row["score"], hi)
 
 
 class TestDerivedEngines(unittest.TestCase):

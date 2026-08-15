@@ -163,8 +163,13 @@ MIDSIZE = "models/ab_arch/plain.pt"
 # to a code default because the registry's whole job is that a changed DEFAULT
 # trips the guard, not only a changed flag. Adding it moved every fingerprint
 # below on 2026-08-09; no engine's behaviour moved, because "0" is what they
-# already did. It becomes "1" only for an engine promoted on equal-clock
-# strength.
+# already did.
+#
+# THESE STAY "0" EVEN THOUGH THE PROMOTED ENGINE SETS ALL THREE TO "1". `_FINAL`
+# is not "what we ship", it is the common base that `original`, `final`, the
+# four anchor rungs and the superseded baselines are all built from, and those
+# must keep playing exactly as they were measured. Promotion is recorded by
+# `DEPLOYED`, not by moving the defaults underneath the ladder.
 #
 # select="0" pins native PUCT selection OFF, for the same reason and by the
 # same rule: a changed DEFAULT must trip the guard, not only a changed flag.
@@ -252,6 +257,13 @@ ENGINES = {
     # 35 ms covers the measured p99 overhead (23.8) plus p99 chunk overrun
     # (5.4) with room, and costs 1.5% of thinking time -- worth ~0.002 by the
     # anchor ladder against an 0.0854 edge.
+    #
+    # SUPERSEDED 2026-08-15 by `pocket_defer`, and deliberately left exactly as
+    # it was measured. It stays in the registry because it is now the
+    # HISTORICAL COMPARATOR: it was the deployment engine from 2026-07-30, it is
+    # the B side of the graph, native-selection and deferred-retirement matches,
+    # and it is what `c_puct = 1.5` was tuned on. A superseded baseline that
+    # stops building is a published result that stops being checkable.
     "pocket_r35": _engine(POCKET, "squeeze", 1000, "pocket_172k_r35",
                           reserve="35"),
 
@@ -358,8 +370,12 @@ ENGINES = {
     # 0.5458 against `pocket_r35`, and the increment to 0.5625 is inside the
     # noise on the difference.
     #
-    # STILL NOT PROMOTED, because promotion is an owner decision rather than a
-    # threshold. The evidence for it is in RESULT_DEFERRED_RETIREMENT.md.
+    # PROMOTED 2026-08-15. This is `DEPLOYED` -- see the block above ANCHOR_ROLES
+    # for what the promotion does and does not claim, and
+    # RESULT_DEFERRED_RETIREMENT.md for the evidence. Being the baseline buys it
+    # one extra guard and no exemptions: source drift under it is now a hard
+    # failure (STRICT_SOURCE_ROLES), and it is still latency-gated by
+    # tools/regress_engine like every other deployment engine.
     "pocket_defer": _engine(POCKET, "squeeze", 1000, "pocket_172k_defer",
                             reserve="20", graph="1", select="1", defer="1"),
 
@@ -379,6 +395,67 @@ LADDER_EXEMPT = {"anchor_C", "anchor_D"}
 # Engines whose implementation must not move. Building one of these against
 # drifted sources is a hard failure unless explicitly overridden.
 ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
+
+# ---------------------------------------------------------------------------
+# THE DEPLOYMENT BASELINE
+# ---------------------------------------------------------------------------
+# One name, so "the deployed engine" is something the code can resolve instead
+# of a claim in a comment that goes stale the day it changes. Anything that
+# means "against what we actually ship" -- a profile, an ablation, the B side
+# of an A/B -- should read this rather than hard-code an engine name. What must
+# NOT read it is a published study: a reproduction command that says
+# `--engine pocket_r35` has to keep building `pocket_r35` forever, so those
+# stay literal on purpose.
+#
+# PROMOTED 2026-08-15, recorded at commit 0224669. The supported claim is one
+# sentence and it is narrower than the set of changes it contains:
+#
+#     `pocket_defer` as a complete 1-second agent is stronger than
+#     `pocket_r35` at equal wall clock.
+#
+# It does NOT say that native selection improves strength, and it does not say
+# that deferred retirement improves strength. Those two arrived on top of a
+# stack whose first member already beat the incumbent by itself (`pocket_graph`
+# scored 0.5458 against `pocket_r35`), and the increment to 0.5625 is inside
+# the noise on the difference. The stack is what was measured and the stack is
+# what ships; nothing here licenses attributing the win to a part of it.
+DEPLOYED = "pocket_defer"
+
+# Superseded baselines, newest first. KEPT BUILDABLE rather than archived: a
+# promotion whose predecessor stops being runnable can never be re-checked, and
+# every deployment number published before 2026-08-15 was measured either
+# against `pocket_r35` or by it.
+SUPERSEDED = ("pocket_r35",)
+
+# One row per promotion. `predicted` is the band registered BEFORE the match
+# where there was one -- an after-the-fact interval is not a prediction, and
+# leaving the field absent says so more honestly than filling it in.
+PROMOTIONS = (
+    {"engine": "pocket_defer", "replaced": "pocket_r35",
+     "date": "2026-08-15", "commit": "0224669",
+     "score": 0.5625, "ci": (0.5273, 0.5977), "games": 240, "seed": 7300,
+     "predicted": (0.5352, 0.5744),
+     "evidence": "RESULT_DEFERRED_RETIREMENT.md"},
+    {"engine": "pocket_r35", "replaced": "final",
+     "date": "2026-07-30", "commit": "01eada1",
+     "score": 0.5854, "ci": (0.5360, 0.6349), "games": 240, "seed": 6300,
+     "evidence": "RESULT_MODEL_SIZE.md"},
+)
+
+# Engines whose IMPLEMENTATION must not move underneath a measurement. Anchors
+# for the obvious reason -- a candidate may not shift its own ruler -- and the
+# deployment baseline for a reason that only became visible over the last four
+# engines: it is the B side of every A/B, so if a source edit changes what it
+# does, the candidate's edge is measured against something nobody agreed to.
+# Source drift here is a hard failure; `--allow-anchor-drift` is the override,
+# and re-freezing ENGINE_SOURCES with a written justification is the fix.
+#
+# This is deliberately NOT the same set as ANCHOR_ROLES. An anchor may never be
+# overridden at all, because it is a ruler. The deployment baseline is the
+# opposite -- ablating one declared knob off it (`engine:pocket_defer+solve=0`)
+# is how the next question gets asked -- so it keeps the strict source check
+# and does not get the override ban.
+STRICT_SOURCE_ROLES = ANCHOR_ROLES | {DEPLOYED}
 
 # Resolved-config fingerprints, emitted by --freeze. An empty dict means the
 # registry has never been frozen and verification cannot run.
@@ -591,7 +668,7 @@ def check_sources(strict):
 def verify(name, player, strict_sources=None, overrides=None):
     """Assert a built player IS the frozen engine. Returns a provenance dict."""
     if strict_sources is None:
-        strict_sources = name in ANCHOR_ROLES
+        strict_sources = name in STRICT_SOURCE_ROLES
     cfg = resolved_config(player)
 
     want_ck = CHECKPOINTS.get(cfg["ckpt"])
@@ -739,7 +816,10 @@ def main():
         got, want = fingerprint(cfg), FINGERPRINTS.get(name)
         ok = got == want
         bad += not ok
-        role = "anchor" if name in ANCHOR_ROLES else "candidate"
+        role = ("anchor" if name in ANCHOR_ROLES
+                else "DEPLOYED" if name == DEPLOYED
+                else "past" if name in SUPERSEDED
+                else "candidate")
         exempt = "  (latency-exempt)" if name in LADDER_EXEMPT else ""
         budget = (f"{cfg['time_budget_ms']:.0f} ms" if cfg["time_budget_ms"]
                   else f"{cfg['n_sims']} sims")
