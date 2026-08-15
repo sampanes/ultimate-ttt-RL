@@ -244,14 +244,14 @@ class TestRegistryIsUntouched(unittest.TestCase):
                                 "%s does not pin the graph flag" % name)
 
     def test_only_declared_candidates_turn_it_on(self):
-        """The graph is still not promoted. `pocket_sel` (#45a) has it on
-        because it is built ON the graph candidate -- native selection is the
-        single declared difference between them -- so it inherits the flag
-        rather than granting it. Nothing the ladder or the incumbent depends
-        on may have it."""
+        """The graph is still not promoted. `pocket_sel` (#45a) and
+        `pocket_defer` (#46) have it on because each is built ON the candidate
+        before it -- one declared difference per step -- so they inherit the
+        flag rather than granting it. Nothing the ladder or the incumbent
+        depends on may have it."""
         from tools import engine_registry as reg
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
-        self.assertEqual(on, {"pocket_graph", "pocket_sel"})
+        self.assertEqual(on, {"pocket_graph", "pocket_sel", "pocket_defer"})
         self.assertFalse(on & reg.ANCHOR_ROLES)
         for name in ("final", "pocket_r35", "original", "pocket", "midsize"):
             self.assertNotIn(name, on)

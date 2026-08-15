@@ -111,7 +111,7 @@ def parse_spec(spec):
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
                           "reuse", "solve", "maxsims", "name", "reserve",
-                          "bexp", "graph", "select"}
+                          "bexp", "graph", "select", "defer"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -197,6 +197,13 @@ class TimedPlayer:
         # so under a fixed simulation count the two arms are the same player.
         # Under a clock they are not: selection is 22.2% of a move.
         self.select = o.get("select", "0") == "1"
+        # defer=1 moves destruction of the discarded tree off the move path to
+        # the game boundary (#46). Like select=1 it cannot change what is
+        # computed -- the same nodes are built and the same statistics are
+        # kept, only the moment of destruction moves -- so at a fixed
+        # simulation count the two arms are the same player. Under a clock they
+        # are not: the reserve this pays for is 9.5% of the budget.
+        self.defer = o.get("defer", "0") == "1"
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
@@ -218,7 +225,8 @@ class TimedPlayer:
         # that has no tree would be noise dressed as data.
         self.searcher = (None if self.raw else
                          TreeReuseSearcher(self.mcts, enabled=self.reuse,
-                                           count_nodes=count_nodes))
+                                           count_nodes=count_nodes,
+                                           defer_release=self.defer))
         self.name = o.get("name") or self._auto_name()
         # A ladder rung above the deployment budget is evaluation-only: its job
         # is to be a hard fixed opponent, not to ship, so holding it to the
@@ -260,6 +268,7 @@ class TimedPlayer:
                 "n_sims": None if self.budget_ms else self.n_sims,
                 "wave_size": self.wave, "c_puct": self.c_puct,
                 "tree_reuse": self.reuse, "solve": self.solve,
+                "native_select": self.select, "defer_release": self.defer,
                 "max_sims": self.max_sims, **self.net_info}
 
     def new_game(self):

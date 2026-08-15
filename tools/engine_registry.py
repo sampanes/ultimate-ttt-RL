@@ -87,6 +87,14 @@ SEEDS = {
     # confirmation on seed 7000 would not fix that either: the opening set is
     # taken in order, so the first 120 of it are the games already played.
     "select_confirm": 7100,
+    # #46, the release-path work. Instrumented and unscored like `profile` and
+    # `select`, and separate from them because the memory characterisation
+    # plays real games and any opening set an instrument has been read off is
+    # spent for scoring purposes.
+    "release": 7200,
+    # Held out for the strength match that follows the release change, if the
+    # remeasured throughput makes one worth funding. Kept empty until then.
+    "release_ab": 7300,
 }
 
 # Files whose bytes define how a search plays. An anchor built while any of
@@ -109,9 +117,21 @@ SEEDS = {
 # 0.1% of a move; it is stated here because "off by default" is a claim about
 # behaviour, not about cost. Anchors were not re-measured: with select=0 the
 # selection they run is the same `max()` over the same dict view.
+#
+# agents/mcts.py was re-hashed A THIRD TIME 2026-08-15 for deferred tree
+# retirement (#46). Off by default, and the off path is the old code: the
+# choice is one `if self.defer_release:` in `TreeReuseSearcher.search`, and
+# `release()` itself -- the function every engine shares -- was NOT touched.
+# There is one unconditional cost, and it is stated rather than glossed: a
+# `stat_nodes_created += len(valid)` per expanded node, about 4,700 adds a
+# move, which is what the retirement watermark is bounded with. Counting on the
+# way OUT would have meant a per-node increment inside `release`, and that
+# would have slowed every engine including the incumbent arm of the A/B.
+# Anchors were not re-measured: with defer=0 they destroy the tree at exactly
+# the same moment, by exactly the same walk.
 ENGINE_SOURCES = {
     "agents/mcts.py":
-        "ab413ee38613b25b19fd667f2001e2639c4de861b1cfb1ac09f805107c662ae0",
+        "9c34e122820c58c3164c49574ad51c200455687002caba265ba6ae7fd0523550",
     "agents/graph_wave.py":
         "913227d4a87925078d25dc188fe6a9058c8c37f81d7edd2db6e4712724ae6f77",
     "agents/agent_base.py":
@@ -150,8 +170,12 @@ MIDSIZE = "models/ab_arch/plain.pt"
 # same rule: a changed DEFAULT must trip the guard, not only a changed flag.
 # Adding it moved every fingerprint below again on 2026-08-12; no engine's
 # behaviour moved, because "0" is what they already did.
+#
+# defer="0" pins deferred tree retirement OFF, third application of the same
+# rule. Adding it moved every fingerprint below on 2026-08-15; no engine's
+# behaviour moved, because "0" is what they already did.
 _FINAL = {"wave": "8", "cpuct": "1.5", "solve": "1", "reuse": "1", "bexp": "1",
-          "maxsims": "200000", "graph": "0", "select": "0"}
+          "maxsims": "200000", "graph": "0", "select": "0", "defer": "0"}
 
 # reserve_ms defaults to max(5, 2% of budget) inside MCTS. Pinned explicitly at
 # every rung so the ladder does not silently re-derive it if that rule changes.
@@ -289,6 +313,43 @@ ENGINES = {
     "pocket_sel": _engine(POCKET, "squeeze", 1000, "pocket_172k_sel",
                           reserve="95", graph="1", select="1"),
 
+    # -- deferred tree retirement (#46) ---------------------------------------
+    # `pocket_sel` with the discarded tree DETACHED on the move path and
+    # DESTROYED at the game boundary, instead of walked inside the move.
+    #
+    # This is the fourth engine in a row whose reserve was set by one mechanism,
+    # and the first that removes the mechanism instead of paying for it. #46a
+    # measured `release()` on `pocket_sel` at 20.4 ms a move, p99 53.3, against
+    # a caller-side overhead p99 of 53.3 -- the walk is essentially the whole of
+    # it. It is also pure per-node work (0.552 us/node, intercept -0.02 ms,
+    # R^2 0.986), so there was nothing in it to optimise; the only lever was
+    # not doing it here.
+    #
+    # THE RESERVE IS 20 ms, BACK TO WHERE `pocket` STARTED, and it is the
+    # measurement that says so rather than optimism: with release removed the
+    # caller-side overhead p99 is 0.06 ms and the worst-chunk p99 is 3.24, so
+    # the tool's own prescription indicates 3.3. Twenty is six times that, it
+    # is the family default at this budget, and tools/regress_engine is what
+    # decides it. It hands 75 ms of the 95 back to the search, which is 8.3% of
+    # the thinking time the engine has today.
+    #
+    # WHAT IT COSTS IS MEMORY, and that was measured before it was built rather
+    # than discovered afterwards: 430 bytes a node, 1,148,422 nodes retired in
+    # the worst of eight games, so 471 MB held at the end of it -- 1.4% of this
+    # box and 2.6% of what was free. `TreeReuseSearcher.DEFAULT_WATERMARK`
+    # bounds the pathological case at about 2.6x that and is the only thing
+    # that can put the walk back on a move; `stats()["forced_drains"]` is
+    # non-zero if it ever does.
+    #
+    # NOT A DIFFERENT PLAYER AT FIXED SIMULATIONS, in the same strong sense as
+    # `pocket_sel`: the same nodes are built and the same statistics kept, and
+    # only the moment of destruction moves. agents/test_mcts_timed.py requires
+    # bit-identical visit policies across several plies of re-rooting.
+    #
+    # NOT PROMOTED. It is a candidate until it wins at equal wall clock.
+    "pocket_defer": _engine(POCKET, "squeeze", 1000, "pocket_172k_defer",
+                            reserve="20", graph="1", select="1", defer="1"),
+
     # -- the networks alone, no search ---------------------------------------
     # Without these a model-size result is uninterpretable: if the small net
     # wins at 1,000 ms you cannot tell whether the network is better or whether
@@ -308,14 +369,39 @@ ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
 
 # Resolved-config fingerprints, emitted by --freeze. An empty dict means the
 # registry has never been frozen and verification cannot run.
-# RE-FROZEN 2026-08-12. Every value below moved AGAIN, for the same reason as
-# 2026-08-09 and by the same rule: `resolved_config` gained one key,
-# `native_select`, pinned False -- which is what these engines already did. No
-# engine's behaviour changed and none was re-measured. Both previous
-# generations are kept below so "only the new key moved" stays checkable at
-# each step rather than asserted once and then trusted; tools/
-# test_engine_registry checks both.
+# RE-FROZEN 2026-08-15. Every value below moved a THIRD time, for the same
+# reason as 2026-08-09 and 2026-08-12 and by the same rule: `resolved_config`
+# gained `defer_release` (pinned False) and `retire_watermark` -- which is what
+# these engines already did. No engine's behaviour changed and none was
+# re-measured. All three previous generations are kept below so "only the new
+# keys moved" stays checkable at each step rather than asserted once and then
+# trusted; tools/test_engine_registry checks all three.
 FINGERPRINTS = {
+    "original": "a6a4289adcdf8f6a",
+    "final": "1b36b08d5b812d20",
+    "anchor_A": "5532136cbaca0ad7",
+    "anchor_B": "3ecebd49460c5e14",
+    "anchor_C": "fd573abf81d0edfe",
+    "anchor_D": "154ddf537448205b",
+    "pocket": "a8efc7b3ff812218",
+    "midsize": "658e5d794de92d56",
+    "pocket_r35": "26531023f03fd818",
+    # Freeze these three with `--freeze --device cuda`: TimedPlayer refuses to
+    # build a graph engine whose capture failed, and capture cannot succeed on
+    # the CPU default.
+    "pocket_graph": "6fcf8ce4de3f08ef",
+    "pocket_sel": "4e0e8e0d422459b8",
+    "pocket_defer": "d602920d80a73777",
+    "gen22_raw": "370f7ef6bf3e6908",
+    "pocket_raw": "c320b956e52b4e19",
+    "midsize_raw": "e3dc389d122b17e1",
+}
+
+# The values every published result between 2026-08-12 and 2026-08-15 was
+# measured against -- #45a's whole throughput study and both of its strength
+# matches. `resolved_config(player)` minus `defer_release` and
+# `retire_watermark` must still hash to these.
+PRE_DEFER_FINGERPRINTS = {
     "original": "247a5d5f5a693792",
     "final": "ae965b10747d1ca2",
     "anchor_A": "97da7da71258ec65",
@@ -325,9 +411,6 @@ FINGERPRINTS = {
     "pocket": "bc542e5f043f6ee0",
     "midsize": "3c51ee0174d14b56",
     "pocket_r35": "be9f7b150592c32a",
-    # Freeze these two with `--freeze --device cuda`: TimedPlayer refuses to
-    # build a graph engine whose capture failed, and capture cannot succeed on
-    # the CPU default.
     "pocket_graph": "e82f7ddf88acec2f",
     "pocket_sel": "e33659b9f270d0c2",
     "gen22_raw": "b2605d73351a74f8",
@@ -455,6 +538,16 @@ def resolved_config(player):
         "virtual_loss": type(m)._VL,
         "min_waves": type(m)._MIN_WAVES,
         "tree_reuse": player.reuse,
+        # #46. Same category as `native_select`: it cannot change what is
+        # computed -- the same nodes are built, the same statistics kept, only
+        # the moment of destruction moves -- but it decides whether an O(nodes)
+        # walk sits inside the move, which is what the reserve is sized for.
+        # Read off the SEARCHER, because that is the object that acts on it; a
+        # raw player has no searcher and cannot defer anything.
+        "defer_release": bool(player.searcher is not None
+                              and player.searcher.defer_release),
+        "retire_watermark": (player.searcher.retire_watermark
+                             if player.searcher is not None else None),
     }
 
 

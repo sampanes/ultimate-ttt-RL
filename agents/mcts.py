@@ -242,6 +242,15 @@ class MCTS:
         searches; the caller resets when it wants a per-move figure."""
         self.stat_searches   = 0
         self.stat_expansions = 0   # nodes given children (== net evals of leaves)
+        # Children actually constructed. Cumulative and never reset by a
+        # search, because what reads it is TreeReuseSearcher's retirement
+        # watermark, which needs "how much has this game built" and not "how
+        # much did this move build". One add per expanded node (~4,700 a move),
+        # which is the cheapest place any bound on tree size can come from --
+        # counting on the way OUT would mean a per-node increment inside
+        # `release`, and that walk is shared with engines this feature is off
+        # for.
+        self.stat_nodes_created = 0
         self.stat_nn_evals   = 0   # positions pushed through the net
         self.stat_nn_batches = 0   # forward_both calls
         self.stat_probes     = 0   # clone+make_move terminal probes
@@ -895,6 +904,7 @@ class MCTS:
                                                  move=mv,
                                                  to_play=next_to_play)
             self.stat_expansions += 1
+            self.stat_nodes_created += len(valids[i])
             if self.solve:
                 self._mark_terminal_children(node, state)
             out[id(node)] = float(values_np[i])
@@ -922,6 +932,7 @@ class MCTS:
                                              prior=float(probs[mv]),
                                              move=mv, to_play=next_to_play)
         self.stat_expansions += 1
+        self.stat_nodes_created += len(valid)
         if self.solve:
             self._mark_terminal_children(node, state)
 
@@ -1024,18 +1035,53 @@ class TreeReuseSearcher:
     Detaching (`parent = None`) is load-bearing: `_backup` walks parents to the
     top, so an attached survivor would push every new simulation up into the
     discarded tree and inflate counts nobody reads.
+
+    DEFERRED RETIREMENT (`defer_release=True`, #46). Destroying the discarded
+    tree is O(nodes) and, measured on `pocket_sel`, it IS the deployment latency
+    tail: 20.4 ms a move on average, 53.3 at p99, against a caller-side overhead
+    p99 of 53.3 -- release is essentially the whole of it, and the reserve that
+    covers it had grown 20 -> 35 -> 50 -> 95 ms across four engines because the
+    walk gets longer every time throughput improves. It is also pure per-node
+    work: 0.552 us/node with an intercept of -0.02 ms and R^2 0.986, so there is
+    no fixed cost to attack and nothing per-node to shave.
+
+    So it is not made faster, it is moved. Detaching is already O(1) -- `_adopt`
+    does it -- and destruction is deferred to `reset()`, the game boundary,
+    which no deadline covers. What that costs is memory: measured at 430 bytes
+    a node and 1,148,422 nodes in the worst of eight games, so 471 MB held at
+    the end of the worst game, 1.4% of this box. `retire_watermark` bounds it
+    for the pathological case and is the ONLY thing that can put the walk back
+    on the move path.
     """
 
-    def __init__(self, mcts, enabled=True, count_nodes=False):
+    # Nodes that may be alive before the watermark forces a drain. It counts
+    # the live tree as well as the queue, which is what a MEMORY bound wants.
+    # 3,000,000 nodes is about 1.2 GB at the measured 430 bytes/node and about
+    # 2.6x the worst game observed, so it is a backstop against a pathological
+    # game and not a mechanism that runs in normal play. Set it to 0 to disable
+    # the backstop entirely.
+    DEFAULT_WATERMARK = 3_000_000
+
+    def __init__(self, mcts, enabled=True, count_nodes=False,
+                 defer_release=False, retire_watermark=None):
         self.mcts = mcts
         self.enabled = enabled
         # Node counting is two full subtree walks per move. Cheap next to a 1 s
         # search, but it is instrumentation, so it is opt-in and never on in a
         # timing run that is measuring the search itself.
         self.count_nodes = count_nodes
+        self.defer_release = defer_release
+        self.retire_watermark = (self.DEFAULT_WATERMARK
+                                 if retire_watermark is None
+                                 else retire_watermark)
+        self._retired = []
+        self._created_at_drain = 0
         self._root = None          # before reset(), which now releases it
-        self.reset()
+        # Before reset(), which drains and therefore touches the drain
+        # counters. The queue is empty here so it takes the early return, but
+        # relying on that would make the order load-bearing for no reason.
         self.reset_stats()
+        self.reset()
 
     @staticmethod
     def release(root, keep=None):
@@ -1082,12 +1128,57 @@ class TreeReuseSearcher:
             stack.extend(kids.values())
 
     def reset(self):
-        """Drop the tree. Call between games."""
+        """Drop the tree. Call between games.
+
+        This is where deferred retirement is paid for, and it is the right
+        place: a game boundary belongs to no move, so no deadline covers it.
+        The drain runs BEFORE the live root is released, because every queued
+        root's subtree contains the live one (see `drain`) and doing it in this
+        order means the live tree is walked once, by the drain, rather than
+        twice.
+        """
+        self.drain(keep=self._root)
         if self._root is not None:
             self.release(self._root)
         self._root = None
         self._board = None
         self._to_play = None
+        self._created_at_drain = self.mcts.stat_nodes_created
+
+    def alive_bound(self):
+        """Upper bound on the nodes this searcher is keeping reachable.
+
+        Children created since the last drain, which is the queue PLUS the live
+        tree plus anything already destroyed by an intervening non-deferred
+        release. Deliberately an over-estimate and deliberately free: the exact
+        number would need a per-node counter inside `release`, and that walk is
+        shared with the engines this feature is off for.
+        """
+        return self.mcts.stat_nodes_created - self._created_at_drain
+
+    def drain(self, keep=None):
+        """Destroy every retired subtree. Never called from inside a search.
+
+        ONE WALK IS ENOUGH FOR THE WHOLE QUEUE, and the reason is worth stating
+        because it is what makes the queue a list rather than a graph. Retired
+        root k's subtree CONTAINS retired root k+1: k+1 is the survivor that was
+        adopted out of k. So releasing the oldest entry with `keep` set to the
+        live root destroys everything that follows it, and the later entries
+        then walk an already-emptied structure for nothing. Adoption misses
+        start a new chain, which is why this is a list and not a single slot.
+        """
+        if not self._retired:
+            self._created_at_drain = self.mcts.stat_nodes_created
+            return 0
+        t0 = time.perf_counter()
+        n = len(self._retired)
+        while self._retired:
+            self.release(self._retired.pop(0), keep=keep)
+        self.stat_drains += 1
+        self.stat_drained_roots += n
+        self.stat_drain_seconds += time.perf_counter() - t0
+        self._created_at_drain = self.mcts.stat_nodes_created
+        return n
 
     # Why a candidate subtree was not adopted. `unexpanded` is the interesting
     # one: the survivor is a perfectly real node, the opponent just replied with
@@ -1104,6 +1195,13 @@ class TreeReuseSearcher:
         self.stat_reused_nodes = 0
         self.stat_prev_nodes = 0
         self.stat_miss_reason = {k: 0 for k in self.MISS_REASONS}
+        self.stat_drains = 0
+        self.stat_drained_roots = 0
+        self.stat_drain_seconds = 0.0
+        # Drains forced by the watermark rather than by a game boundary. A
+        # non-zero value here means the walk went back onto the move path, so
+        # it is a number a latency report has to be able to see.
+        self.stat_forced_drains = 0
 
     @staticmethod
     def _count(node):
@@ -1163,10 +1261,27 @@ class TreeReuseSearcher:
 
         # Free last move's tree BEFORE searching, sparing whatever was adopted.
         # Order matters: after _adopt (which needs the old root) and after
-        # _count (which needs it intact), but before the clock starts, so the
-        # walk is never charged to the deadline it exists to protect.
+        # _count (which needs it intact), but before the clock starts.
+        #
+        # "Before the clock starts" was never the same as "free". The caller
+        # waits for this walk, the frozen requirement is written against what
+        # the caller waits for, and #46a measured it at 100% of the caller-side
+        # overhead p99. Deferring makes this an append: `_adopt` has already
+        # detached the survivor, so the old root is the head of a subtree
+        # nothing live points up into, and it can simply be put aside until
+        # `reset()`.
         if self._root is not None:
-            self.release(self._root, keep=root)
+            if self.defer_release:
+                self._retired.append(self._root)
+            else:
+                self.release(self._root, keep=root)
+        # The backstop, and the only path that can put the walk back on the
+        # move path. It degrades to exactly the behaviour above rather than to
+        # something new: a pathological game should get slow, not novel.
+        if (self.defer_release and self.retire_watermark
+                and self.alive_bound() > self.retire_watermark):
+            self.stat_forced_drains += 1
+            self.drain(keep=root)
 
         pi, new_root = self.mcts.search(state, root=root)
         if isinstance(self.mcts.last, dict):
@@ -1190,6 +1305,16 @@ class TreeReuseSearcher:
             "node_retention": (self.stat_reused_nodes / self.stat_prev_nodes
                                if self.stat_prev_nodes else None),
             "miss_reason": dict(self.stat_miss_reason),
+            "defer_release": self.defer_release,
+            "retired_queued": len(self._retired),
+            "alive_bound": self.alive_bound(),
+            "drains": self.stat_drains,
+            "drained_roots": self.stat_drained_roots,
+            "drain_ms": self.stat_drain_seconds * 1000.0,
+            # Non-zero means the watermark fired and the walk went back onto a
+            # move. It is reported next to the reuse statistics because that is
+            # where anyone reading a latency regression will look.
+            "forced_drains": self.stat_forced_drains,
         }
 
 

@@ -543,9 +543,13 @@ class TestRegistryWiring(unittest.TestCase):
             with self.subTest(engine=name):
                 self.assertIn("select", spec)
 
-    def test_only_the_declared_candidate_enables_it(self):
+    def test_only_declared_candidates_enable_it(self):
+        """`pocket_defer` (#46) is built ON `pocket_sel` -- deferred retirement
+        is the single declared difference between them -- so it inherits the
+        flag rather than granting it. Nothing the ladder or the incumbent
+        depends on may have it."""
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("select") == "1"}
-        self.assertEqual(on, {"pocket_sel"})
+        self.assertEqual(on, {"pocket_sel", "pocket_defer"})
         self.assertFalse(on & reg.ANCHOR_ROLES)
         self.assertNotIn("final", on)
         self.assertNotIn("pocket_graph", on)
@@ -579,6 +583,7 @@ class TestRegistryWiring(unittest.TestCase):
             arch = "squeeze"
             net_info = {"params": 172389, "value_tanh": True}
             reuse = True
+            searcher = None      # #46 reads defer_release off the searcher
 
         stub = _Stub()
         stub.mcts = MCTS(None, "cpu", n_sims=1, time_budget_ms=1000)

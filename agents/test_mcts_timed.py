@@ -403,6 +403,147 @@ def test_reset_between_games_drops_the_tree():
     assert s.stat_hits == 0
 
 
+# --------------------------------------------------------------------------- #
+# 3b. Deferred retirement (#46)
+#
+# The claim is narrow and has to be proved rather than argued: moving WHEN the
+# discarded tree is destroyed cannot change WHAT is searched. So the gate is the
+# same one #45a used for native selection -- bit-identical visit policies at a
+# fixed simulation count, across several plies of re-rooting -- plus evidence
+# that the deferred trees really are still alive (otherwise the memory
+# projection is measuring nothing) and really do die at the boundary (otherwise
+# it leaks).
+# --------------------------------------------------------------------------- #
+def _live_nodes():
+    import gc as _gc
+
+    from agents.mcts import MCTSNode
+    return sum(1 for o in _gc.get_objects() if type(o) is MCTSNode)
+
+
+def _play_plies(searcher, plies, n_sims):
+    """Search, play our move, play their first legal reply. Returns policies."""
+    st = GameState()
+    out = []
+    for _ in range(plies):
+        if st.is_over():
+            break
+        pi, _root = searcher.search(st)
+        out.append(pi.copy())
+        st.make_move(int(pi.argmax()))
+        if st.is_over():
+            break
+        st.make_move(_first_legal(st))
+    return out
+
+
+def test_deferred_policies_are_bit_identical_across_rerooting():
+    """The gate. Anything less is an argument, not a test."""
+    import numpy as np
+
+    a = _fresh_searcher(n_sims=400)
+    b = _fresh_searcher(n_sims=400, defer_release=True)
+    pa = _play_plies(a, 6, 400)
+    pb = _play_plies(b, 6, 400)
+    assert len(pa) == len(pb) == 6
+    for i, (x, y) in enumerate(zip(pa, pb)):
+        np.testing.assert_array_equal(x, y, err_msg="ply %d differs" % i)
+    assert a.stat_hits == b.stat_hits, (a.stats(), b.stats())
+    assert a.stat_inherited_sims == b.stat_inherited_sims
+
+
+def test_deferring_keeps_the_old_trees_alive_until_the_boundary():
+    """If the queue did not actually hold the nodes, #46a's memory projection
+    would be describing something that was already dead."""
+    import gc as _gc
+
+    s = _fresh_searcher(n_sims=400, defer_release=True)
+    _gc.collect()
+    before = _live_nodes()
+    _play_plies(s, 4, 400)
+    held = _live_nodes()
+    # Four searches, three retirements: the first one has no previous tree.
+    assert len(s._retired) == 3, s.stats()
+    assert held - before > 500, (before, held)
+
+    _gc.disable()
+    try:
+        s.reset()
+        after = _live_nodes()
+    finally:
+        _gc.enable()
+    assert not s._retired
+    assert after - before < 0.1 * (held - before), (before, held, after)
+
+
+def test_not_deferring_still_frees_on_the_move_path():
+    """The control. If the non-deferred arm also accumulated, the test above
+    would pass for the wrong reason."""
+    s = _fresh_searcher(n_sims=400)
+    _play_plies(s, 4, 400)
+    assert s._retired == []
+    assert s.stats()["defer_release"] is False
+
+
+def test_the_watermark_forces_a_drain_and_the_search_survives_it():
+    """The backstop degrades to the old behaviour, which is the point of it."""
+    s = _fresh_searcher(n_sims=300, defer_release=True, retire_watermark=1)
+    pis = _play_plies(s, 4, 300)
+    st = s.stats()
+    assert st["forced_drains"] >= 2, st
+    assert st["retired_queued"] <= 1, st
+    # And it still played: a backstop that broke the search would be worse than
+    # the memory it saves.
+    assert all(p.sum() > 0 for p in pis)
+
+
+def test_watermark_zero_disables_the_backstop():
+    s = _fresh_searcher(n_sims=300, defer_release=True, retire_watermark=0)
+    _play_plies(s, 4, 300)
+    assert s.stats()["forced_drains"] == 0
+    assert len(s._retired) == 3
+
+
+def test_alive_bound_tracks_nodes_created_and_resets_on_drain():
+    s = _fresh_searcher(n_sims=400, defer_release=True)
+    assert s.alive_bound() == 0
+    _play_plies(s, 3, 400)
+    grown = s.alive_bound()
+    assert grown > 500, grown
+    assert grown == s.mcts.stat_nodes_created - s._created_at_drain
+    s.reset()
+    assert s.alive_bound() == 0
+
+
+def test_nodes_created_counts_every_child_built():
+    """The watermark is only a bound if the counter cannot silently miss a
+    construction site. Both expansion paths write it; this checks the total
+    against the tree that actually exists."""
+    from agents.mcts import TreeReuseSearcher as _TRS
+
+    m = MCTS(UniformZeroStub(), "cpu", n_sims=200, wave_size=1,
+             add_dirichlet_at_root=False)
+    _pi, root = m.search(GameState())
+    n, stack = 0, [root]
+    while stack:
+        node = stack.pop()
+        n += len(node.children)
+        stack.extend(node.children.values())
+    assert m.stat_nodes_created == n, (m.stat_nodes_created, n)
+    _TRS.release(root)
+
+
+def test_deferred_reset_is_idempotent_and_safe_on_a_fresh_searcher():
+    s = _fresh_searcher(n_sims=200, defer_release=True)
+    s.reset()
+    s.reset()
+    assert s._root is None and not s._retired
+    s.search(GameState())
+    s.reset()
+    s.reset()
+    assert s._root is None and not s._retired
+
+
 def test_disabled_searcher_never_adopts():
     s = _fresh_searcher(enabled=False)
     st = GameState()
