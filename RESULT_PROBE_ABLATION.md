@@ -311,6 +311,14 @@ Recall is, and recall is 1.
 
 ## What follows
 
+> **DONE, 2026-08-18 -- see `RESULT_PROBE_FILTER.md`.** The selective probe was
+> built, proved bit-identical at fixed simulations, gated, and promoted as
+> `engine:pocket_filter`. It kept 12.3% of the per-child work per unit of
+> search and bought **+20.6%** nn/second x deadline, more than the +11-13%
+> estimated below -- the probes cost more than a wrapper-based profile can see.
+> The recommendation against a native fused probe survived its own gate: the
+> residual path is 46.6 ms of a ~980 ms move.
+
 **Build the selective probe. Do not port the probe loop to C++, and do not
 delete it.**
 

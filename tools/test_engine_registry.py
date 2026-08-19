@@ -87,6 +87,16 @@ class TestGraphRefreeze(unittest.TestCase):
     # The keys `resolved_config` has gained since each frozen generation, and
     # the hashes that generation's results were measured under. Cumulative,
     # oldest last.
+    # Engines whose behaviour is pinned by a published number and which must
+    # therefore never acquire a candidate flag. NOT `SUPERSEDED`, which is a
+    # weaker thing and no longer the right test: `pocket_defer` is superseded
+    # and legitimately sets graph/select/defer, because that is what it was
+    # when it shipped. Anchors are here because they are rulers; the rest
+    # because a comparison against them is quoted somewhere.
+    FIXED_REFERENCES = (reg.ANCHOR_ROLES
+                        | {"original", "final", "pocket", "midsize",
+                           "pocket_r35"})
+
     _FILTER = {"probe_filter"}
     _DEFER = _FILTER | {"defer_release", "retire_watermark"}
     GENERATIONS = (
@@ -137,28 +147,25 @@ class TestGraphRefreeze(unittest.TestCase):
         self.assertEqual(on, {"pocket_graph", "pocket_sel", "pocket_defer",
                               "pocket_filter"})
         self.assertIn(reg.DEPLOYED, on)
-        self.assertFalse(on & reg.ANCHOR_ROLES)
-        self.assertFalse(on & set(reg.SUPERSEDED))
-        self.assertNotIn("final", on)
+        self.assertFalse(on & self.FIXED_REFERENCES)
 
-    def test_only_the_deployed_engine_and_its_successor_defer_retirement(self):
+    def test_only_the_deployed_lineage_defers_retirement(self):
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("defer") == "1"}
-        self.assertEqual(on, {reg.DEPLOYED, "pocket_filter"})
-        self.assertFalse(on & reg.ANCHOR_ROLES)
-        self.assertFalse(on & set(reg.SUPERSEDED))
-        self.assertNotIn("final", on)
+        self.assertEqual(on, {"pocket_defer", "pocket_filter"})
+        self.assertIn(reg.DEPLOYED, on)
+        self.assertFalse(on & self.FIXED_REFERENCES)
         self.assertNotIn("pocket_sel", on)
 
-    def test_only_the_filter_candidate_filters_probes(self):
-        """The newest flag, and the only engine allowed to set it is the one
-        candidate that exists for it. The deployed baseline must NOT: an
-        optimisation that turned itself on inside the B side of its own A/B
-        would make the comparison vacuous."""
+    def test_only_the_deployed_engine_filters_probes(self):
+        """The newest flag. `pocket_defer` must NOT have it even though it is
+        the engine `pocket_filter` was built from: it is the B side of the
+        #48c gate, and a base that quietly acquired the optimisation it is the
+        control for would report a dead heat."""
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("pfilter") == "1"}
+        self.assertEqual(on, {reg.DEPLOYED})
         self.assertEqual(on, {"pocket_filter"})
-        self.assertNotIn(reg.DEPLOYED, on)
-        self.assertFalse(on & reg.ANCHOR_ROLES)
-        self.assertFalse(on & set(reg.SUPERSEDED))
+        self.assertNotIn("pocket_defer", on)
+        self.assertFalse(on & self.FIXED_REFERENCES)
 
     def test_promotion_did_not_move_the_shared_defaults(self):
         """The promoted engine sets graph/select/defer to "1", but `_FINAL` --
@@ -166,26 +173,23 @@ class TestGraphRefreeze(unittest.TestCase):
         baselines are all built from -- must still pin them OFF. Promotion is
         recorded by DEPLOYED; moving the defaults would silently re-play the
         whole ladder."""
-        for flag in ("graph", "select", "defer"):
+        for flag in ("graph", "select", "defer", "pfilter"):
             with self.subTest(flag=flag):
                 self.assertEqual(reg._FINAL[flag], "0")
                 self.assertEqual(reg.ENGINES[reg.DEPLOYED][flag], "1")
-        # Not in the loop above: `pfilter` is a CANDIDATE flag, so the base and
-        # the deployed engine must both pin it off. Once it promotes the loop
-        # gains it and this line goes.
-        self.assertEqual(reg._FINAL["pfilter"], "0")
-        self.assertEqual(reg.ENGINES[reg.DEPLOYED]["pfilter"], "0")
 
-    def test_the_filter_candidate_differs_in_exactly_one_key(self):
-        """The first candidate in the series that does not move the reserve.
-        Every earlier one paid for a bigger tree to walk outside the search's
-        deadline; #46 removed that walk, so more search should cost nothing
-        here -- and if tools/regress_engine disagrees, THIS test is what fails
-        and forces the number to be written down rather than absorbed."""
-        a, b = reg.ENGINES[reg.DEPLOYED], reg.ENGINES["pocket_filter"]
+    def test_the_filter_engine_differs_from_its_base_in_exactly_one_key(self):
+        """The first engine in the series that does not move the reserve, and
+        the prediction held: every earlier one paid for a bigger tree to walk
+        outside the search's deadline, #46 removed that walk, and
+        tools/regress_engine measured caller-side overhead at p99 0.05 ms
+        against the 20 ms it kept. If that ever stops being true, THIS test is
+        what fails and forces the number to be written down."""
+        a, b = reg.ENGINES["pocket_defer"], reg.ENGINES["pocket_filter"]
         diff = {k for k in a if a[k] != b[k]} - {"name"}
         self.assertEqual(diff, {"pfilter"})
         self.assertEqual(b["reserve"], a["reserve"])
+        self.assertEqual(b["reserve"], "20")
 
     def test_the_defer_candidate_differs_in_the_flag_and_the_reserve(self):
         """Two keys again, and this time the reserve goes DOWN. Every previous
@@ -540,21 +544,48 @@ class TestTheDeploymentBaseline(unittest.TestCase):
             with self.subTest(engine=row["engine"]):
                 self.assertIn(row["engine"], reg.ENGINES)
                 self.assertIn(row["replaced"], reg.ENGINES)
-                lo, hi = row["ci"]
-                self.assertGreater(lo, 0.5, "a promotion whose interval does "
-                                            "not exclude parity is not one")
-                self.assertLess(lo, row["score"])
-                self.assertLess(row["score"], hi)
                 self.assertIn(row["seed"], reg.SEEDS.values())
+                self.assertIn(row["basis"], ("equal-clock strength match",
+                                             "identity + throughput"))
+                if row["basis"] == "equal-clock strength match":
+                    lo, hi = row["ci"]
+                    self.assertGreater(lo, 0.5,
+                                       "a promotion whose interval does not "
+                                       "exclude parity is not one")
+                    self.assertLess(lo, row["score"])
+                    self.assertLess(row["score"], hi)
+
+    def test_an_identity_promotion_records_no_score_to_misread(self):
+        """#48 promoted without playing a match, because the two engines are
+        bit-identical at a fixed simulation count and only throughput moved.
+        The row must therefore carry NO `score` and NO `ci`: an expected band
+        sitting in a field named like an observation is precisely how a
+        prediction gets quoted later as a result."""
+        rows = [r for r in reg.PROMOTIONS
+                if r["basis"] == "identity + throughput"]
+        self.assertTrue(rows, "no identity-based promotion to check")
+        for row in rows:
+            with self.subTest(engine=row["engine"]):
+                self.assertNotIn("score", row)
+                self.assertNotIn("ci", row)
+                self.assertNotIn("games", row)
+                lo, hi = row["expected"]
+                self.assertLess(lo, hi)
+                self.assertGreater(lo, 0.5)
+                self.assertGreater(row["nn_full_gain"], 0.0)
+                self.assertIn("NOT PLAYED", row["expected_note"])
 
     def test_the_pre_registered_band_is_recorded_where_there_was_one(self):
         # #46d is the first promotion on this branch whose SIZE and expected
         # effect were set before the match. Recording the band next to the
         # result is what makes that checkable a year from now.
-        row = reg.PROMOTIONS[0]
-        lo, hi = row["predicted"]
-        self.assertLessEqual(lo, row["score"])
-        self.assertLessEqual(row["score"], hi)
+        rows = [r for r in reg.PROMOTIONS if "predicted" in r]
+        self.assertTrue(rows)
+        for row in rows:
+            with self.subTest(engine=row["engine"]):
+                lo, hi = row["predicted"]
+                self.assertLessEqual(lo, row["score"])
+                self.assertLessEqual(row["score"], hi)
 
 
 class TestDerivedEngines(unittest.TestCase):

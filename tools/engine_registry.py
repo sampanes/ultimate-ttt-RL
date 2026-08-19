@@ -445,12 +445,22 @@ ENGINES = {
     # worst-chunk at p99 3.24. More search should therefore cost nothing here.
     # If the gate disagrees, the number moves and the reason gets written down.
     #
-    # NOT PROMOTED. It is a candidate until the parity, throughput and latency
-    # gates pass -- and unlike its predecessors it does not need an equal-clock
-    # strength match to promote, because a search proven identical at fixed
-    # simulations that simply runs more of itself cannot be worse. That
-    # exemption is the whole reason the predicate had to be necessary rather
-    # than merely accurate.
+    # PROMOTED 2026-08-18, and it is the first engine in this series promoted
+    # WITHOUT a strength match. That is not a shortcut, it is what proving
+    # identity buys: agents/test_probe_filter.py requires bit-identical visit
+    # policies and identical `solved` on every node at a fixed simulation
+    # count, so there is no hypothesis about play left for games to resolve.
+    # What changed is throughput, and throughput is measured, not sampled.
+    #
+    # The gates it passed: exact fixed-sim parity (22 tests, both call sites,
+    # mirror on and off); +20.6% nn/second x deadline over 120 fixed positions
+    # against `pocket_defer` on the same instrument; and 5/5 on
+    # tools/regress_engine at p99 980.1 / max 981.4 with 0 moves over budget.
+    # The reserve prediction held exactly -- caller-side overhead p99 0.05 ms
+    # against the 20 ms it was given.
+    #
+    # See RESULT_PROBE_FILTER.md, and the block above ANCHOR_ROLES for what
+    # this promotion does and does not claim.
     "pocket_filter": _engine(POCKET, "squeeze", 1000, "pocket_172k_filter",
                              reserve="20", graph="1", select="1", defer="1",
                              pfilter="1"),
@@ -483,36 +493,73 @@ ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
 # `--engine pocket_r35` has to keep building `pocket_r35` forever, so those
 # stay literal on purpose.
 #
-# PROMOTED 2026-08-15, recorded at commit 0224669. The supported claim is one
-# sentence and it is narrower than the set of changes it contains:
+# PROMOTED 2026-08-18, replacing `pocket_defer`. The supported claim is a
+# different KIND of claim from the one before it, and the difference is the
+# whole point:
 #
-#     `pocket_defer` as a complete 1-second agent is stronger than
-#     `pocket_r35` at equal wall clock.
+#     `pocket_filter` runs the same search as `pocket_defer` -- the same
+#     nodes, the same statistics, the same proofs -- and completes 20.6%
+#     more of it inside the same deadline.
 #
-# It does NOT say that native selection improves strength, and it does not say
-# that deferred retirement improves strength. Those two arrived on top of a
-# stack whose first member already beat the incumbent by itself (`pocket_graph`
-# scored 0.5458 against `pocket_r35`), and the increment to 0.5625 is inside
-# the noise on the difference. The stack is what was measured and the stack is
-# what ships; nothing here licenses attributing the win to a part of it.
-DEPLOYED = "pocket_defer"
+# It is not "stronger at equal wall clock and here is the win rate". Nobody
+# played the match, because there is no hypothesis about play to test: the two
+# engines are bit-identical at a fixed simulation count, on every node, proofs
+# included (agents/test_probe_filter.py). More of an identical search inside
+# the same clock cannot be worse, and the ladder's estimate of what it is worth
+# -- 0.5145 to 0.5306 in a mirror match, ~585 games to resolve the midpoint --
+# is recorded in PROMOTIONS rather than spent.
+#
+# THE EARLIER PROMOTION'S SCOPE STILL STANDS AND IS NOT WIDENED BY THIS ONE.
+# `pocket_defer` beat `pocket_r35` as a stack, 0.5625 [0.5273, 0.5977]; that
+# match did not separate the graph wave, native selection and deferred
+# retirement from each other, and this promotion does not revisit it.
+DEPLOYED = "pocket_filter"
 
 # Superseded baselines, newest first. KEPT BUILDABLE rather than archived: a
-# promotion whose predecessor stops being runnable can never be re-checked, and
+# promotion whose predecessor stops being runnable can never be re-checked,
 # every deployment number published before 2026-08-15 was measured either
-# against `pocket_r35` or by it.
-SUPERSEDED = ("pocket_r35",)
+# against `pocket_r35` or by it, and `pocket_defer` is the B side of the #48c
+# throughput gate that promoted its successor.
+#
+# NOTE THAT A SUPERSEDED BASELINE KEEPS ITS FLAGS. `pocket_defer` still sets
+# graph/select/defer, because that is what it was. "Superseded" is a statement
+# about which engine ships, not a reason to edit an engine that has published
+# numbers attached to it.
+SUPERSEDED = ("pocket_defer", "pocket_r35")
 
 # One row per promotion. `predicted` is the band registered BEFORE the match
 # where there was one -- an after-the-fact interval is not a prediction, and
 # leaving the field absent says so more honestly than filling it in.
+#
+# `basis` says WHAT was measured, because the rows are no longer all the same
+# kind of evidence. Two of them are equal-clock strength matches. The third is
+# a proof of identity plus a throughput measurement, and reading its `expected`
+# band as if it were a `score` would be exactly the confusion this field
+# exists to prevent: nothing was played, and the band is what the ladder says
+# the throughput is worth, not what anybody observed.
 PROMOTIONS = (
+    {"engine": "pocket_filter", "replaced": "pocket_defer",
+     # The commit that made the two searches identical. That is what this
+     # promotion rests on, so it is the one worth being able to check out --
+     # the gate numbers are a consequence of it, not the claim.
+     "date": "2026-08-18", "commit": "1330cf3",
+     "basis": "identity + throughput",
+     "nn_full_gain": 0.206, "positions": 120, "seed": 7400,
+     "expected": (0.5145, 0.5306),
+     "expected_note": "ladder-derived from +20.6% nn/second x deadline, with "
+                      "the mirror-match compression measured in #46d. NOT "
+                      "PLAYED -- ~585 games would be needed to resolve the "
+                      "midpoint, and a search proven identical at fixed "
+                      "simulations does not owe them.",
+     "evidence": "RESULT_PROBE_FILTER.md"},
     {"engine": "pocket_defer", "replaced": "pocket_r35",
+     "basis": "equal-clock strength match",
      "date": "2026-08-15", "commit": "0224669",
      "score": 0.5625, "ci": (0.5273, 0.5977), "games": 240, "seed": 7300,
      "predicted": (0.5352, 0.5744),
      "evidence": "RESULT_DEFERRED_RETIREMENT.md"},
     {"engine": "pocket_r35", "replaced": "final",
+     "basis": "equal-clock strength match",
      "date": "2026-07-30", "commit": "01eada1",
      "score": 0.5854, "ci": (0.5360, 0.6349), "games": 240, "seed": 6300,
      "evidence": "RESULT_MODEL_SIZE.md"},

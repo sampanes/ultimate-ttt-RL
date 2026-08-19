@@ -26,19 +26,27 @@ proofs at expansion, so there is no way to remove them alone today -- and
 building a knob for that is a decision this measurement is supposed to inform,
 not a prerequisite for it.
 
-FIVE ARMS, and the last one is the one most easily forgotten:
+ARMS, and the `repeat` one is the one most easily forgotten:
 
   clean      `pocket_defer`, no instrumentation. The wall time, search rate and
              latency every share is taken of.
   counting   the same engine with counters and no clock: probe roots, legal
              children probed, terminal hits, node proofs, propagation depth,
              and pybind crossings split by whether a probe caused them.
-  timed      a clock on the probe loop and the two primitives it calls, and
-             nothing else. Supplies us/probed child; its own counts are not
-             used, because an instrumented deadline-bound search does less work
-             and therefore makes fewer calls.
+  timed      a clock on the probe loop, the two primitives it calls and the #48
+             predicate, and nothing else. Supplies us/probed child; its own
+             counts are not used, because an instrumented deadline-bound search
+             does less work and therefore makes fewer calls.
   off        `pocket_defer+solve=0`, no instrumentation. The ablation.
   repeat     `pocket_defer` AGAIN, no instrumentation.
+  sel_*      the same clean/counting/timed triple against `pocket_filter`, the
+             #48 candidate. `--mode gate`.
+
+#48 ANSWERED THE QUESTION THIS TOOL ASKED, and the answer was the third option:
+neither keep the probes as they are nor delete them, but SKIP them where
+`could_end` proves they cannot find anything. That predicate now lives in
+`agents.mcts` and is imported here rather than copied, and `--mode gate` is
+what checks that the shipped version buys what `--mode filter` predicted.
 
 THE REPEAT ARM IS THE POINT. Move disagreement between ON and OFF is
 meaningless without knowing what two runs of the SAME engine disagree on. These
@@ -71,6 +79,7 @@ import time
 import numpy as np
 import torch
 
+from agents import mcts as _mcts_mod
 from agents.mcts import MCTS, TreeReuseSearcher, could_end
 from engine.game import GameState
 from tools import engine_registry
@@ -88,6 +97,22 @@ PROBE_SEED = engine_registry.SEEDS["probe"]
 # This tool exists to ask a question ABOUT the baseline, so it has to follow it.
 ON_SPEC = "engine:%s" % engine_registry.DEPLOYED
 OFF_SPEC = "engine:%s+solve=0" % engine_registry.DEPLOYED
+
+# #48c's gate arms. BOTH SIDES LITERAL, unlike the two above, and this is the
+# registry's stated rule rather than an inconsistency: a published comparison
+# has to keep building the same two engines forever. Deriving the base from
+# `DEPLOYED` would have been fine on the day it ran and self-defeating the day
+# after -- `pocket_filter` was promoted on the strength of this measurement, so
+# a `DEPLOYED`-derived base would now build the candidate against itself and
+# report a dead heat.
+#
+# THE POINT OF PUTTING THEM IN THIS FILE rather than in a new gate tool is that
+# the base arms and the selective arms are then measured by the same
+# instrument, priced by the same `calibrate()`, on the same positions. A
+# separately written gate would compare two engines through two instruments and
+# call the difference an optimisation.
+GATE_BASE_SPEC = "engine:pocket_defer"
+SEL_SPEC = "engine:pocket_filter"
 
 # The equal-clock ablation is CONFOUNDED and cannot be un-confounded in place:
 # the OFF arm gets 18.9% more search, so a move that changes might have changed
@@ -111,6 +136,11 @@ TIMED_TARGETS = (
     ("terminal probes", MCTS, "_mark_terminal_children"),
     ("state clone", GameState, "clone"),
     ("state.make_move", GameState, "make_move"),
+    # #48. The predicate is what the selective arm pays INSTEAD of the loop, so
+    # leaving it unwrapped would let its cost hide inside "terminal probes" and
+    # make the saving look bigger than it is. It is nested inside the probe, so
+    # `price()` charges the probe its whole wrapper -- see the `nested` term.
+    ("could_end", _mcts_mod, "could_end"),
 )
 
 
@@ -131,7 +161,14 @@ class ProbeCounters:
     up measuring the wrong thing.
     """
 
-    FIELDS = ("roots", "children", "hits", "roots_with_hit", "roots_proved",
+    # `roots` is roots CONSIDERED and `scanned` is roots the loop actually ran
+    # on. They are equal for any engine without the #48 filter, and keeping
+    # them as two fields rather than deriving one from the other is what lets
+    # the same instrument read both engines: `children` then means "children
+    # actually probed" on both sides, which is the quantity every per-child
+    # figure below divides by.
+    FIELDS = ("roots", "scanned", "roots_skipped", "children", "hits",
+              "roots_with_hit", "roots_proved",
               "propagations", "levels", "clone_probe", "clone_other",
               "make_probe", "make_other", "winner_probe", "winner_other")
 
@@ -167,12 +204,23 @@ def instrument(counters, ctx):
             return raw_probe(self, node, state)
         kids = node.children
         counters.roots += 1
-        counters.children += len(kids)
+        skips0 = self.stat_probe_skips
         in_probe[0] = True
         try:
             raw_probe(self, node, state)
         finally:
             in_probe[0] = False
+        if self.stat_probe_skips != skips0:
+            # #48 skipped this root, so nothing was probed. Attributing its
+            # children to `children` would credit the filtered engine with work
+            # it did not do and make every per-child figure below meaningless.
+            # The skip is read off production's OWN counter rather than
+            # re-evaluating the predicate here, which would be an instrument
+            # that agrees with itself.
+            counters.roots_skipped += 1
+            return
+        counters.scanned += 1
+        counters.children += len(kids)
         # A child is only `solved` here if this call proved it: children are
         # created by the expansion that immediately precedes this, so there is
         # no earlier proof to confuse with one of ours.
@@ -381,6 +429,8 @@ def run_arm(spec, positions, device, label, counters=None, timer=None,
                 "nn": last["neural_evaluations"],
                 "expansions": last["nodes_expanded"],
                 "probes": last["probes"],
+                "probe_roots": last["probe_roots"],
+                "probe_skips": last["probe_skips"],
                 "root_solved": last["root_solved"],
                 "root_n": last["root_n"],
             })
@@ -439,7 +489,12 @@ def price(timer_blob, moves):
     n_probe = timer_blob["calls"].get("terminal probes", 0)
     nested = (timer_blob["calls_from"].get("terminal probes>state clone", 0)
               + timer_blob["calls_from"].get(
-                  "terminal probes>state.make_move", 0))
+                  "terminal probes>state.make_move", 0)
+              # #48: one more nested wrapper, and it fires on EVERY root rather
+              # than per child. On the filtered engine it is the largest of the
+              # three by call count on skipped roots, so omitting it would
+              # under-price the instrument exactly where the saving is claimed.
+              + timer_blob["calls_from"].get("terminal probes>could_end", 0))
     incl = timer_blob["inclusive_ms"].get("terminal probes", 0.0)
     excl = timer_blob["exclusive_ms"].get("terminal probes", 0.0)
     wrapper = 1e-3 * (inside * n_probe + total * nested)
@@ -455,6 +510,9 @@ def price(timer_blob, moves):
     return {
         "calls": n_probe,
         "nested_calls": nested,
+        # Passed through so `units` can split the per-ROOT nested wrapper from
+        # the two per-CHILD ones without re-reading the timer blob.
+        "timer_calls": dict(timer_blob["calls_from"]),
         "raw_inclusive_ms": incl,
         "raw_exclusive_ms": excl,
         # Inclusive holds the nested calls, so it pays their whole price.
@@ -543,15 +601,36 @@ def units(count_arm, timed_arm, clean_arm):
     # own call count is not usable as a rate -- it lost search to the wrapper
     # and therefore probed less -- but the nested call count IS the number of
     # children it probed, exactly, since the loop clones once per child.
-    per_root = c["children"] / c["roots"] if c["roots"] else 0.0
-    timed_children = p["nested_calls"] / 2.0
+    scanned = c["scanned"] or c["roots"]
+    per_root = c["children"] / scanned if scanned else 0.0
+    # The probe loop clones once and make_moves once per PROBED child, so the
+    # count of those two nested wrappers is exactly twice the children probed.
+    # `could_end` is nested too but fires once per ROOT, so it is subtracted
+    # out rather than folded into the child count -- getting this wrong would
+    # inflate the denominator on the filtered arm and report a per-child cost
+    # that fell for a reason that is not a per-child cost.
+    per_root_nested = p["timer_calls"].get("terminal probes>could_end", 0)
+    timed_children = (p["nested_calls"] - per_root_nested) / 2.0
     incl_us = (p["inclusive_ms"] * 1000.0 / timed_children
                if timed_children else 0.0)
     excl_us = (p["exclusive_ms"] * 1000.0 / timed_children
                if timed_children else 0.0)
     cross = c["crossings"]
+    # The predicate's own cost, from the same timed arm and priced the same
+    # way. `could_end` calls nothing that is wrapped, so it pays only the
+    # `inside` half of the wrapper and its exclusive time needs no nesting
+    # correction.
+    tb = timed_arm["timer"]
+    n_pred = tb["calls"].get("could_end", 0)
+    pred_ms = tb["exclusive_ms"].get("could_end", 0.0)
+    pred_us = (pred_ms * 1000.0 / n_pred - (tb.get("inside_us") or 0.0)
+               if n_pred else 0.0)
     return {
         "probe_roots_per_move": c["roots"] / moves if moves else 0.0,
+        "probe_roots_scanned_per_move": scanned / moves if moves else 0.0,
+        "probe_roots_skipped_per_move": (c["roots_skipped"] / moves
+                                         if moves else 0.0),
+        "scan_rate": scanned / c["roots"] if c["roots"] else 0.0,
         "children_probed_per_move": c["children"] / moves if moves else 0.0,
         "children_per_root": per_root,
         "clones_per_move": (c["clone_probe"] + c["clone_other"]) / moves
@@ -597,6 +676,15 @@ def units(count_arm, timed_arm, clean_arm):
         "raw_probe_ms_per_move_before_pricing": (p["raw_inclusive_ms"]
                                                  / p["moves"]
                                                  if p["moves"] else 0.0),
+        # What the filter itself costs, priced separately and INCLUDED in the
+        # probe row above (it runs inside the probe's interval). Quoted on its
+        # own because the honest question about a filter is not "how much did
+        # the loop shrink" but "how much did the loop shrink NET of what the
+        # test cost", and on a filtered engine the predicate fires on every one
+        # of ~4,100 roots a move whether it admits or not.
+        "predicate_us_per_root": pred_us,
+        "predicate_ms_per_move": pred_us * c["roots"] / moves / 1000.0
+                                 if moves else 0.0,
     }
 
 
@@ -606,6 +694,52 @@ def units(count_arm, timed_arm, clean_arm):
 
 def pct(a, b):
     return 100.0 * (a / b - 1.0) if b else float("nan")
+
+
+def gate(payload, arms):
+    """#48c. Did the filter buy what its own measurement predicted?
+
+    THE PREDICTION IS NOT A HOPE, it is arithmetic on #47's numbers, and it is
+    written down here so the run either meets it or has to explain itself. The
+    probes were 126.9 ms of a 921.2 ms search and the filter keeps 17.52% of
+    the per-child work, so it should hand back 82.48% of 13.8% of the search
+    -- and removing a share `s` of a fixed clock buys 1/(1-s) - 1 more work,
+    which is +12.8%.
+
+    Falling well short of that does not mean the filter failed. It means the
+    cost moved somewhere the probe row was hiding it -- the predicate, the
+    `mini_winners` crossing it needs, or a term that was never probe-specific
+    at all -- and the brief is explicit that finding out where comes BEFORE
+    adding another optimisation.
+    """
+    on, sel = payload["rate"]["clean"], payload["rate"]["sel_clean"]
+    u = payload.get("units")
+    us = payload.get("units_selective")
+    out = {
+        "nn_full_gain": (sel["nn_full"] / on["nn_full"] - 1.0
+                         if on["nn_full"] else 0.0),
+        "sims_gain": (sel["sims_per_move"] / on["sims_per_move"] - 1.0
+                      if on["sims_per_move"] else 0.0),
+        "p99_ms": {"legacy": on["p99_ms"], "selective": sel["p99_ms"]},
+        "max_ms": {"legacy": on["max_ms"], "selective": sel["max_ms"]},
+    }
+    if u and us:
+        out["children_kept"] = (us["children_probed_per_move"]
+                                / u["children_probed_per_move"]
+                                if u["children_probed_per_move"] else 0.0)
+        out["probe_ms_kept"] = (us["probe_ms_per_move_inclusive"]
+                                / u["probe_ms_per_move_inclusive"]
+                                if u["probe_ms_per_move_inclusive"] else 0.0)
+        # The prediction, recomputed from THIS run's legacy arm rather than
+        # from #47's stored numbers -- a gate that checks a hard-coded
+        # expectation is checking the day it was written.
+        share = (u["probe_ms_per_move_inclusive"]
+                 / np.mean([r["search_ms"] for r in arms["clean"]["rows"]]))
+        freed = share * (1.0 - out["children_kept"])
+        out["probe_share_of_search"] = share
+        out["predicted_nn_full_gain"] = (1.0 / (1.0 - freed) - 1.0
+                                         if freed < 1.0 else float("nan"))
+    return out
 
 
 def derive(payload):
@@ -622,6 +756,12 @@ def derive(payload):
     if "counting" in arms and "timed" in arms and "clean" in arms:
         payload["units"] = units(arms["counting"], arms["timed"],
                                  arms["clean"])
+    if all(k in arms for k in ("sel_counting", "sel_timed", "sel_clean")):
+        payload["units_selective"] = units(arms["sel_counting"],
+                                           arms["sel_timed"],
+                                           arms["sel_clean"])
+    if "clean" in arms and "sel_clean" in arms:
+        payload["gate"] = gate(payload, arms)
     d = {}
     if "repeat" in arms and "clean" in arms:
         d["floor"] = disagreement(arms["clean"], arms["repeat"])
@@ -645,25 +785,28 @@ def render(payload):
           % (payload.get("n_positions", 0), payload["device"], payload["seed"],
              payload["git_head"]))
 
-    if "counting" in arms and "timed" in arms and "clean" in arms:
-        u = payload["units"]
+    UNIT_ROWS = [
+        ("probe roots considered", "probe_roots_per_move", "%12.1f"),
+        ("probe roots actually scanned", "probe_roots_scanned_per_move",
+         "%12.1f"),
+        ("  roots skipped", "probe_roots_skipped_per_move", "%12.1f"),
+        ("legal children probed", "children_probed_per_move", "%12.1f"),
+        ("  children per scanned root", "children_per_root", "%12.2f"),
+        ("clones (all)", "clones_per_move", "%12.1f"),
+        ("  of which from probes", "clones_from_probes_per_move", "%12.1f"),
+        ("make_move (all)", "make_move_per_move", "%12.1f"),
+        ("  of which from probes", "make_move_from_probes_per_move",
+         "%12.1f"),
+        ("pybind crossings from probes", "crossings_from_probes_per_move",
+         "%12.1f"),
+        ("pybind crossings elsewhere", "crossings_elsewhere_per_move",
+         "%12.1f"),
+    ]
+
+    def unit_block(u, title):
         print()
-        print("-- probe work units, per move ------------------------------")
-        rows = [
-            ("probe roots", "probe_roots_per_move", "%12.1f"),
-            ("legal children probed", "children_probed_per_move", "%12.1f"),
-            ("  children per root", "children_per_root", "%12.2f"),
-            ("clones (all)", "clones_per_move", "%12.1f"),
-            ("  of which from probes", "clones_from_probes_per_move", "%12.1f"),
-            ("make_move (all)", "make_move_per_move", "%12.1f"),
-            ("  of which from probes", "make_move_from_probes_per_move",
-             "%12.1f"),
-            ("pybind crossings from probes", "crossings_from_probes_per_move",
-             "%12.1f"),
-            ("pybind crossings elsewhere", "crossings_elsewhere_per_move",
-             "%12.1f"),
-        ]
-        for label, key, fmt in rows:
+        print("-- %s ------------------------------" % title)
+        for label, key, fmt in UNIT_ROWS:
             print(("  %-30s" + fmt) % (label, u[key]))
         print()
         print("  %-30s%12.3f us" % ("per probed child, inclusive",
@@ -672,17 +815,28 @@ def render(payload):
                                     u["us_per_probed_child_python_loop"]))
         print("  %-30s%12.2f" % ("pybind crossings per child",
                                  u["crossings_per_probed_child"]))
+        print("  %-30s%12.3f us" % ("per root, could_end()",
+                                    u["predicate_us_per_root"]))
         print()
         print("  %-30s%12.1f ms" % ("probes per move, inclusive",
                                     u["probe_ms_per_move_inclusive"]))
         print("  %-30s%12.1f ms" % ("  of which the Python loop",
                                     u["probe_ms_per_move_python_loop"]))
+        print("  %-30s%12.1f ms" % ("  of which could_end()",
+                                    u["predicate_ms_per_move"]))
         print("  %-30s%12.1f ms  (subtracted)"
               % ("  instrument",
                  u["instrument_ms_per_move_subtracted"]))
         print("  %-30s%12.1f ms  (do not quote)"
               % ("  raw, before pricing",
                  u["raw_probe_ms_per_move_before_pricing"]))
+
+    if "counting" in arms and "timed" in arms and "clean" in arms:
+        u = payload["units"]
+        unit_block(u, "probe work units, per move (LEGACY probes)")
+    if "units_selective" in payload:
+        unit_block(payload["units_selective"],
+                   "probe work units, per move (SELECTIVE, #48)")
 
         print()
         print("-- benefit density -----------------------------------------")
@@ -741,6 +895,42 @@ def render(payload):
             print("  (and a disagreement has NO SIGN -- this says how often")
             print("   the move changes, not whether the change is better)")
 
+    if "gate" in payload:
+        g = payload["gate"]
+        on, sel = payload["rate"]["clean"], payload["rate"]["sel_clean"]
+        print()
+        print("-- #48c GATE: legacy probes vs selective, equal clock --------")
+        print("  %-26s %12s %12s %10s"
+              % ("", "legacy", "selective", "vs legacy"))
+        for label, key, fmt in (
+                ("nn/second x deadline", "nn_full", "%12.1f"),
+                ("nn per second", "nn_per_second", "%12.1f"),
+                ("simulations per move", "sims_per_move", "%12.1f"),
+                ("expansions per move", "expansions_per_move", "%12.1f"),
+                ("children probed per move", "probes_per_move", "%12.1f"),
+                ("search p50 ms", "p50_ms", "%12.1f"),
+                ("search p99 ms", "p99_ms", "%12.1f"),
+                ("search max ms", "max_ms", "%12.1f"),
+                ("proven roots", "solved_roots", "%12.0f")):
+            print(("  %-26s" + fmt + fmt + "   %+7.1f%%")
+                  % (label, on[key], sel[key], pct(sel[key], on[key])))
+        if "children_kept" in g:
+            print()
+            print("  %-40s%9.4f" % ("per-child work kept",
+                                    g["children_kept"]))
+            print("  %-40s%9.4f" % ("probe ms/move kept", g["probe_ms_kept"]))
+            print("  %-40s%9.4f" % ("probes as a share of the search",
+                                    g["probe_share_of_search"]))
+            print("  %-40s%+8.1f%%" % ("PREDICTED nn_full gain",
+                                       100 * g["predicted_nn_full_gain"]))
+        print("  %-40s%+8.1f%%" % ("MEASURED nn_full gain",
+                                   100 * g["nn_full_gain"]))
+        print()
+        print("  (the two arms are the SAME SEARCH at a fixed simulation")
+        print("   count -- agents/test_probe_filter.py -- so this is not a")
+        print("   different player being faster, it is the same player")
+        print("   running more of itself. No strength match is owed.)")
+
     if "filter" in payload:
         f = payload["filter"]
         print()
@@ -770,7 +960,8 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", default="all",
-                    choices=("units", "ab", "filter", "fixedsims", "all"))
+                    choices=("units", "ab", "filter", "fixedsims", "gate",
+                             "all"))
     ap.add_argument("--positions", type=int, default=40)
     ap.add_argument("--position-games", type=int, default=3)
     ap.add_argument("--seed", type=int, default=PROBE_SEED)
@@ -815,6 +1006,7 @@ def main():
         payload = {"tag": args.tag, "mode": args.mode, "arms": [],
                    "seed": args.seed, "device": args.device,
                    "on_spec": ON_SPEC, "off_spec": OFF_SPEC,
+                   "sel_spec": SEL_SPEC, "gate_base_spec": GATE_BASE_SPEC,
                    "deployed": engine_registry.DEPLOYED,
                    "git_head": engine_registry.git_head(),
                    "environment": engine_registry.environment(),
@@ -833,9 +1025,9 @@ def main():
         print("[..] %d fixed positions" % len(positions))
 
         want = []
-        if args.mode in ("units", "all"):
+        if args.mode in ("units", "gate", "all"):
             want += ["counting", "timed"]
-        if args.mode in ("units", "ab", "all"):
+        if args.mode in ("units", "ab", "gate", "all"):
             want += ["clean"]
         if args.mode in ("ab", "all"):
             want += ["off", "repeat"]
@@ -843,14 +1035,28 @@ def main():
             want += ["filter"]
         if args.mode in ("fixedsims", "all"):
             want += ["fs_on", "fs_off"]
+        # #48c. Its own mode and NOT part of `all`, because the base arms mean
+        # something different here: `all` measures whatever is deployed, the
+        # gate measures a pinned pair. Folding it in would silently swap the
+        # base the moment a promotion landed.
+        #
+        # The selective arms come LAST and are the same three arms in the same
+        # order as the base side: an A/B whose two halves ran under different
+        # instruments, or with the GPU in a different state, is not an A/B. The
+        # clean arms are what the gate reads; the counting and timed arms are
+        # what says WHERE the difference went.
+        if args.mode == "gate":
+            want += ["sel_counting", "sel_timed", "sel_clean"]
 
+        SEL_ARMS = {"sel_counting", "sel_timed", "sel_clean"}
+        base_spec = GATE_BASE_SPEC if args.mode == "gate" else ON_SPEC
         for label in want:
             print("[..] arm %s" % label)
             kw = {}
-            spec = ON_SPEC
-            if label == "counting":
+            spec = SEL_SPEC if label in SEL_ARMS else base_spec
+            if label in ("counting", "sel_counting"):
                 kw["counters"] = ProbeCounters()
-            elif label == "timed":
+            elif label in ("timed", "sel_timed"):
                 t = AttributedTimer()
                 t.price_us = t.calibrate()
                 print("    wrapper priced at %.3f us/call (%.3f inside)"

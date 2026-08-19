@@ -65,10 +65,11 @@ def near_terminal(seed=17):
     raise AssertionError("no near-terminal position in 400 games")
 
 
-def searched(counters=None, ctx=None, sims=48, solve=True, moves=(40, 4, 36)):
+def searched(counters=None, ctx=None, sims=48, solve=True, moves=(40, 4, 36),
+             pfilter=False):
     """Run a real search with the counters installed. Returns the MCTS."""
     m = MCTS(model=Toy(), device="cpu", n_sims=sims, c_puct=1.5,
-             wave_size=8, solve=solve)
+             wave_size=8, solve=solve, probe_filter=pfilter)
     if counters is None:
         m.search(a_state(moves))
         return m
@@ -399,10 +400,45 @@ class TestWiring(unittest.TestCase):
                       "probe_ab"):
             self.assertNotEqual(pa.PROBE_SEED, reg.SEEDS[other])
 
-    def test_the_timed_arm_wraps_the_probe_and_its_two_primitives(self):
+    def test_the_timed_arm_wraps_the_probe_its_primitives_and_the_predicate(
+            self):
+        """Four, not sixteen. The whole-engine breakdown is
+        tools/profile_selection's job and every extra wrapper here costs search
+        that the probe rows are then scaled against. `could_end` earns its place
+        because on the #48 arm it is what runs INSTEAD of the loop -- unwrapped,
+        its cost would hide inside "terminal probes" and make the saving look
+        bigger than it is."""
         names = {n for n, _h, _a in pa.TIMED_TARGETS}
         self.assertEqual(names, {"terminal probes", "state clone",
-                                 "state.make_move"})
+                                 "state.make_move", "could_end"})
+
+    def test_the_gate_compares_a_pinned_pair(self):
+        """BOTH sides literal. #48c is a published comparison, so it has to
+        keep building the same two engines forever -- and this is not
+        hypothetical: `pocket_filter` was promoted on the strength of that
+        measurement, so a DEPLOYED-derived base would now build the candidate
+        against itself and report a dead heat."""
+        self.assertEqual(pa.GATE_BASE_SPEC, "engine:pocket_defer")
+        self.assertEqual(pa.SEL_SPEC, "engine:pocket_filter")
+        for name in ("pocket_defer", "pocket_filter"):
+            self.assertIn(name, reg.ENGINES)
+        base = reg.ENGINES["pocket_defer"]
+        cand = reg.ENGINES["pocket_filter"]
+        self.assertEqual({k for k in base if base[k] != cand[k]} - {"name"},
+                         {"pfilter"})
+
+    def test_a_skipped_root_contributes_no_children(self):
+        """The counter split the gate rests on. If a filtered root's children
+        were counted, the selective arm would be credited with per-child work
+        it never did and every us/child figure would be wrong in the direction
+        that flatters the change."""
+        c = pa.ProbeCounters()
+        m = searched(c, {"on": True}, solve=True, pfilter=True)
+        self.assertEqual(c.roots, c.scanned + c.roots_skipped)
+        self.assertGreater(c.roots_skipped, 0, "vacuous: nothing was skipped")
+        self.assertEqual(c.children, m.stat_probes)
+        self.assertLess(c.children, c.roots * 2,
+                        "children were counted for skipped roots")
 
 
 if __name__ == "__main__":
