@@ -138,9 +138,28 @@ SEEDS = {
 # would have slowed every engine including the incumbent arm of the A/B.
 # Anchors were not re-measured: with defer=0 they destroy the tree at exactly
 # the same moment, by exactly the same walk.
+#
+# agents/mcts.py was re-hashed A FOURTH TIME 2026-08-18 for the selective
+# terminal probe (#48). Off by default, and the off path is the old loop
+# unchanged. This one is a stronger claim than the previous three and it is
+# worth stating precisely: `could_end` is a NECESSARY condition for a child of
+# this node to be terminal, derived from `check_ultimate_win` and iterating the
+# same `WIN_PATTERNS` that rule iterates, so when it is False the loop it skips
+# could not have marked a single child -- and `_solve_from_children` over
+# children that are all unsolved and none refuted returns the same None it
+# would have returned after the loop ran. At a fixed simulation count the two
+# arms are therefore not merely close, they are the same search, which is what
+# agents/test_probe_filter.py requires bit-for-bit rather than statistically.
+#
+# The unconditional costs, stated rather than glossed: two counter increments
+# per probe root (`stat_probe_roots`, `stat_probe_skips`), about 4,100 a move
+# and paid only by solve=True engines, which is what "roots considered" against
+# "roots scanned" is read off; and two extra keys in the per-search record.
+# Anchors were not re-measured: with pfilter=0 they run the same loop over the
+# same children.
 ENGINE_SOURCES = {
     "agents/mcts.py":
-        "9c34e122820c58c3164c49574ad51c200455687002caba265ba6ae7fd0523550",
+        "13c14be81549437cf61980adc09df7b1032c884be16907a8cb2391657132a064",
     "agents/graph_wave.py":
         "913227d4a87925078d25dc188fe6a9058c8c37f81d7edd2db6e4712724ae6f77",
     "agents/agent_base.py":
@@ -188,8 +207,13 @@ MIDSIZE = "models/ab_arch/plain.pt"
 # defer="0" pins deferred tree retirement OFF, third application of the same
 # rule. Adding it moved every fingerprint below on 2026-08-15; no engine's
 # behaviour moved, because "0" is what they already did.
+#
+# pfilter="0" pins the selective terminal probe OFF, fourth application of the
+# same rule. Adding it moved every fingerprint below on 2026-08-18; no engine's
+# behaviour moved, because "0" is what they already did.
 _FINAL = {"wave": "8", "cpuct": "1.5", "solve": "1", "reuse": "1", "bexp": "1",
-          "maxsims": "200000", "graph": "0", "select": "0", "defer": "0"}
+          "maxsims": "200000", "graph": "0", "select": "0", "defer": "0",
+          "pfilter": "0"}
 
 # reserve_ms defaults to max(5, 2% of budget) inside MCTS. Pinned explicitly at
 # every rung so the ladder does not silently re-derive it if that rule changes.
@@ -388,6 +412,49 @@ ENGINES = {
     "pocket_defer": _engine(POCKET, "squeeze", 1000, "pocket_172k_defer",
                             reserve="20", graph="1", select="1", defer="1"),
 
+    # -- the selective terminal probe (#48) -----------------------------------
+    # `pocket_defer` with the one-ply terminal scan SKIPPED at nodes where no
+    # legal move can end the game. #47 measured that scan at 126.9 ms a move
+    # inclusive -- 16.7%, the largest single host item once native selection
+    # landed -- with 99.26% of the 33,699 children it probes a move turning out
+    # not to be terminal.
+    #
+    # THIS IS THE FIRST CANDIDATE IN THE SERIES THAT IS NOT A TRADE. The three
+    # before it bought throughput with something: the graph wave with a device
+    # path that must be captured and can silently fall back, native selection
+    # with a mirror that has to be kept in step, deferred retirement with
+    # memory. This one removes work that is PROVABLY incapable of producing a
+    # result. `agents.mcts.could_end` is a necessary condition read off
+    # `check_ultimate_win` and iterating the same `WIN_PATTERNS`, so a skipped
+    # loop could not have marked a child; measured over 526,097 probe roots it
+    # admits 18.88% of roots and 17.52% of the per-child work with ZERO false
+    # negatives.
+    #
+    # NOT A DIFFERENT PLAYER AT FIXED SIMULATIONS, in the strongest sense of
+    # the four: not "the same numbers" (the graph wave) and not "the same
+    # numbers and the same nodes" (select, defer), but the same numbers, the
+    # same nodes AND the same proofs. agents/test_probe_filter.py requires
+    # bit-identical visit policies and identical `solved` status on every node,
+    # including that no proof appears that the legacy probe did not make.
+    #
+    # THE RESERVE STAYS AT 20 ms, and that is a prediction rather than a
+    # measurement until tools/regress_engine says otherwise. Every reserve rise
+    # in this series came from one mechanism -- `release()` walking a bigger
+    # tree outside the search's deadline -- and #46 removed that walk from the
+    # move path entirely, leaving caller-side overhead at p99 0.06 ms and
+    # worst-chunk at p99 3.24. More search should therefore cost nothing here.
+    # If the gate disagrees, the number moves and the reason gets written down.
+    #
+    # NOT PROMOTED. It is a candidate until the parity, throughput and latency
+    # gates pass -- and unlike its predecessors it does not need an equal-clock
+    # strength match to promote, because a search proven identical at fixed
+    # simulations that simply runs more of itself cannot be worse. That
+    # exemption is the whole reason the predicate had to be necessary rather
+    # than merely accurate.
+    "pocket_filter": _engine(POCKET, "squeeze", 1000, "pocket_172k_filter",
+                             reserve="20", graph="1", select="1", defer="1",
+                             pfilter="1"),
+
     # -- the networks alone, no search ---------------------------------------
     # Without these a model-size result is uninterpretable: if the small net
     # wins at 1,000 ms you cannot tell whether the network is better or whether
@@ -468,14 +535,40 @@ STRICT_SOURCE_ROLES = ANCHOR_ROLES | {DEPLOYED}
 
 # Resolved-config fingerprints, emitted by --freeze. An empty dict means the
 # registry has never been frozen and verification cannot run.
-# RE-FROZEN 2026-08-15. Every value below moved a THIRD time, for the same
-# reason as 2026-08-09 and 2026-08-12 and by the same rule: `resolved_config`
-# gained `defer_release` (pinned False) and `retire_watermark` -- which is what
-# these engines already did. No engine's behaviour changed and none was
-# re-measured. All three previous generations are kept below so "only the new
-# keys moved" stays checkable at each step rather than asserted once and then
-# trusted; tools/test_engine_registry checks all three.
+# RE-FROZEN 2026-08-18. Every value below moved a FOURTH time, for the same
+# reason as 2026-08-09, 2026-08-12 and 2026-08-15 and by the same rule:
+# `resolved_config` gained `probe_filter` (pinned False) -- which is what these
+# engines already did. No engine's behaviour changed and none was re-measured.
+# All four previous generations are kept below so "only the new key moved"
+# stays checkable at each step rather than asserted once and then trusted;
+# tools/test_engine_registry checks all four.
 FINGERPRINTS = {
+    "original": "ca17635d61411378",
+    "final": "714050423fceaa95",
+    "anchor_A": "07f26c8af9a3ee2b",
+    "anchor_B": "ddc0b8f01df02c05",
+    "anchor_C": "0f92f2ff76a3bfe4",
+    "anchor_D": "a170932919e9ee06",
+    "pocket": "1aa16c4b919a0ba8",
+    "midsize": "a703d91e53a27b63",
+    "pocket_r35": "801c33d51094915b",
+    # Freeze these four with `--freeze --device cuda`: TimedPlayer refuses to
+    # build a graph engine whose capture failed, and capture cannot succeed on
+    # the CPU default.
+    "pocket_graph": "33e59ac92dfd1a62",
+    "pocket_sel": "9fb623932ac9e8fd",
+    "pocket_defer": "86bb93430efaf7f4",
+    "pocket_filter": "ce2d1d2d6f250afe",
+    "gen22_raw": "7bc9d9a0042a8393",
+    "pocket_raw": "59b4db712f4827cf",
+    "midsize_raw": "eea353a5992a3c7b",
+}
+
+# The values every published result between 2026-08-15 and 2026-08-18 was
+# measured against -- #46's release study, the deferred-retirement strength
+# match that promoted `pocket_defer`, and the whole of #47.
+# `resolved_config(player)` minus `probe_filter` must still hash to these.
+PRE_FILTER_FINGERPRINTS = {
     "original": "a6a4289adcdf8f6a",
     "final": "1b36b08d5b812d20",
     "anchor_A": "5532136cbaca0ad7",
@@ -485,9 +578,6 @@ FINGERPRINTS = {
     "pocket": "a8efc7b3ff812218",
     "midsize": "658e5d794de92d56",
     "pocket_r35": "26531023f03fd818",
-    # Freeze these three with `--freeze --device cuda`: TimedPlayer refuses to
-    # build a graph engine whose capture failed, and capture cannot succeed on
-    # the CPU default.
     "pocket_graph": "6fcf8ce4de3f08ef",
     "pocket_sel": "4e0e8e0d422459b8",
     "pocket_defer": "d602920d80a73777",
@@ -647,6 +737,12 @@ def resolved_config(player):
                               and player.searcher.defer_release),
         "retire_watermark": (player.searcher.retire_watermark
                              if player.searcher is not None else None),
+        # #48. Cannot change what is computed OR what is proved -- `could_end`
+        # is a necessary condition, so the loop it skips could not have marked
+        # a child -- but it decides whether 33,699 clone+make_move pairs a move
+        # happen, which under a clock is 16.7% of the search. Configuration by
+        # the same rule as `native_select` and `defer_release`.
+        "probe_filter": m.probe_filter,
     }
 
 

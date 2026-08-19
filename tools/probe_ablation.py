@@ -71,7 +71,7 @@ import time
 import numpy as np
 import torch
 
-from agents.mcts import MCTS, TreeReuseSearcher
+from agents.mcts import MCTS, TreeReuseSearcher, could_end
 from engine.game import GameState
 from tools import engine_registry
 from tools.arena_1s import TimedPlayer, phase_of, play_match
@@ -242,44 +242,12 @@ def instrument(counters, ctx):
     return restore
 
 
-_WIN_TRIPLES = ((0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7),
-                (2, 5, 8), (0, 4, 8), (2, 4, 6))
-EMPTY = 0
-
-
-def could_end(mini_winners, mover):
-    """Could ANY legal move from here end the game? A necessary condition.
-
-    Derived from the engine, not guessed. `GameState.make_move` only calls
-    `check_ultimate_win` when a move newly DECIDES a mini-board, and that
-    function returns a result in exactly two cases: a macro line of three
-    mini-boards owned by one player, or every one of the nine decided (a draw).
-    So a terminal child requires the move to decide a mini-board AND:
-
-      (a) the mover already owns two mini-boards of some macro triple whose
-          third is still undecided -- otherwise no line can complete; or
-      (b) only one mini-board is still undecided -- otherwise deciding one
-          leaves another undecided and the board cannot be full.
-
-    If neither holds, NO legal move from this position ends the game, and the
-    whole probe loop can be skipped without changing a single `solved` bit.
-    This is the condition a selective-probe design would be built on, so it is
-    measured against the real probe on real searches (`--mode filter`) with the
-    false-negative count as the gate. A necessary condition with one false
-    negative is not a necessary condition.
-    """
-    undecided = 0
-    for m in mini_winners:
-        if m == EMPTY:
-            undecided += 1
-    if undecided <= 1:
-        return True
-    for a, b, c in _WIN_TRIPLES:
-        x, y, z = mini_winners[a], mini_winners[b], mini_winners[c]
-        owned = (x == mover) + (y == mover) + (z == mover)
-        if owned == 2 and (x == EMPTY or y == EMPTY or z == EMPTY):
-            return True
-    return False
+# NOTE ON `could_end`. This tool PROPOSED the predicate in #47 and carried its
+# own copy; #48 moved it into the engine and this module now imports it (see
+# the import block at the top). The direction matters: a local copy would leave
+# the false-negative count below measuring a function production does not run,
+# which is exactly the failure this instrument exists to prevent. Re-running
+# `--mode filter` therefore now measures the shipped predicate.
 
 
 class FilterCounters:

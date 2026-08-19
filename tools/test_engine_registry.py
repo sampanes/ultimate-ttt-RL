@@ -67,7 +67,7 @@ class TestFrozenSet(unittest.TestCase):
         # it comes from a code default, and a later edit moves the engine.
         pinned = {"ckpt", "arch", "ms", "wave", "cpuct", "reuse", "solve",
                   "maxsims", "reserve", "bexp", "name", "graph", "select",
-                  "defer"}
+                  "defer", "pfilter"}
         for name, spec in reg.ENGINES.items():
             with self.subTest(engine=name):
                 want = reg.RAW_PINNED if reg.is_raw(name) else pinned
@@ -75,19 +75,22 @@ class TestFrozenSet(unittest.TestCase):
 
 
 class TestGraphRefreeze(unittest.TestCase):
-    """Every fingerprint has now moved three times, each time because
-    `resolved_config` gained keys: `graph_wave` on 2026-08-09,
-    `native_select` on 2026-08-12, and `defer_release`/`retire_watermark` on
-    2026-08-15. Nothing was re-measured on any of them, so the claim that no
-    ENGINE moved has to stay checkable at EVERY step -- strip the keys added
-    since a generation and that generation's hashes must come back.
+    """Every fingerprint has now moved four times, each time because
+    `resolved_config` gained keys: `graph_wave` on 2026-08-09, `native_select`
+    on 2026-08-12, `defer_release`/`retire_watermark` on 2026-08-15, and
+    `probe_filter` on 2026-08-18. Nothing was re-measured on any of them, so
+    the claim that no ENGINE moved has to stay checkable at EVERY step --
+    strip the keys added since a generation and that generation's hashes must
+    come back.
     """
 
     # The keys `resolved_config` has gained since each frozen generation, and
     # the hashes that generation's results were measured under. Cumulative,
     # oldest last.
-    _DEFER = {"defer_release", "retire_watermark"}
+    _FILTER = {"probe_filter"}
+    _DEFER = _FILTER | {"defer_release", "retire_watermark"}
     GENERATIONS = (
+        ("PRE_FILTER_FINGERPRINTS", set(_FILTER)),
         ("PRE_DEFER_FINGERPRINTS", set(_DEFER)),
         ("PRE_SELECT_FINGERPRINTS", _DEFER | {"native_select"}),
         ("PRE_GRAPH_FINGERPRINTS", _DEFER | {"native_select", "graph_wave"}),
@@ -112,12 +115,13 @@ class TestGraphRefreeze(unittest.TestCase):
         """A new engine with no older identity has to be one of the candidates
         the new keys exist for -- otherwise the tables above stopped covering
         the registry and nobody noticed."""
-        newest = set(reg.PRE_DEFER_FINGERPRINTS)
+        newest = set(reg.PRE_FILTER_FINGERPRINTS)
         for name in set(reg.ENGINES) - newest:
             spec = reg.ENGINES[name]
             self.assertTrue(spec.get("graph") == "1"
                             or spec.get("select") == "1"
-                            or spec.get("defer") == "1",
+                            or spec.get("defer") == "1"
+                            or spec.get("pfilter") == "1",
                             "%s is new since the last re-freeze but enables "
                             "no candidate flag -- it needs an older "
                             "fingerprint or an explicit reason" % name)
@@ -130,19 +134,31 @@ class TestGraphRefreeze(unittest.TestCase):
         `pocket_graph`, `pocket_defer` on `pocket_sel` -- which is inheriting
         the flag, not granting it."""
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("graph") == "1"}
-        self.assertEqual(on, {"pocket_graph", "pocket_sel", "pocket_defer"})
+        self.assertEqual(on, {"pocket_graph", "pocket_sel", "pocket_defer",
+                              "pocket_filter"})
         self.assertIn(reg.DEPLOYED, on)
         self.assertFalse(on & reg.ANCHOR_ROLES)
         self.assertFalse(on & set(reg.SUPERSEDED))
         self.assertNotIn("final", on)
 
-    def test_only_the_deployed_engine_defers_retirement(self):
+    def test_only_the_deployed_engine_and_its_successor_defer_retirement(self):
         on = {n for n in reg.ENGINES if reg.ENGINES[n].get("defer") == "1"}
-        self.assertEqual(on, {reg.DEPLOYED})
+        self.assertEqual(on, {reg.DEPLOYED, "pocket_filter"})
         self.assertFalse(on & reg.ANCHOR_ROLES)
         self.assertFalse(on & set(reg.SUPERSEDED))
         self.assertNotIn("final", on)
         self.assertNotIn("pocket_sel", on)
+
+    def test_only_the_filter_candidate_filters_probes(self):
+        """The newest flag, and the only engine allowed to set it is the one
+        candidate that exists for it. The deployed baseline must NOT: an
+        optimisation that turned itself on inside the B side of its own A/B
+        would make the comparison vacuous."""
+        on = {n for n in reg.ENGINES if reg.ENGINES[n].get("pfilter") == "1"}
+        self.assertEqual(on, {"pocket_filter"})
+        self.assertNotIn(reg.DEPLOYED, on)
+        self.assertFalse(on & reg.ANCHOR_ROLES)
+        self.assertFalse(on & set(reg.SUPERSEDED))
 
     def test_promotion_did_not_move_the_shared_defaults(self):
         """The promoted engine sets graph/select/defer to "1", but `_FINAL` --
@@ -154,6 +170,22 @@ class TestGraphRefreeze(unittest.TestCase):
             with self.subTest(flag=flag):
                 self.assertEqual(reg._FINAL[flag], "0")
                 self.assertEqual(reg.ENGINES[reg.DEPLOYED][flag], "1")
+        # Not in the loop above: `pfilter` is a CANDIDATE flag, so the base and
+        # the deployed engine must both pin it off. Once it promotes the loop
+        # gains it and this line goes.
+        self.assertEqual(reg._FINAL["pfilter"], "0")
+        self.assertEqual(reg.ENGINES[reg.DEPLOYED]["pfilter"], "0")
+
+    def test_the_filter_candidate_differs_in_exactly_one_key(self):
+        """The first candidate in the series that does not move the reserve.
+        Every earlier one paid for a bigger tree to walk outside the search's
+        deadline; #46 removed that walk, so more search should cost nothing
+        here -- and if tools/regress_engine disagrees, THIS test is what fails
+        and forces the number to be written down rather than absorbed."""
+        a, b = reg.ENGINES[reg.DEPLOYED], reg.ENGINES["pocket_filter"]
+        diff = {k for k in a if a[k] != b[k]} - {"name"}
+        self.assertEqual(diff, {"pfilter"})
+        self.assertEqual(b["reserve"], a["reserve"])
 
     def test_the_defer_candidate_differs_in_the_flag_and_the_reserve(self):
         """Two keys again, and this time the reserve goes DOWN. Every previous
@@ -379,19 +411,20 @@ class TestLatencyCorrectedPocket(unittest.TestCase):
         self.assertEqual(reg.ENGINES["pocket"]["reserve"], "20")
         # The literal is the fingerprint the 0.5854 was measured under. It is
         # no longer the CURRENT one -- 2026-08-09 added `graph_wave` to
-        # `resolved_config`, 2026-08-12 added `native_select`, and 2026-08-15
-        # added `defer_release` and `retire_watermark`, moving all of them
-        # three times -- so the guard checks the configuration minus EVERY key
-        # added since. Weakening it to `== FINGERPRINTS["pocket"]` would make
-        # it tautological.
+        # `resolved_config`, 2026-08-12 added `native_select`, 2026-08-15 added
+        # `defer_release` and `retire_watermark`, and 2026-08-18 added
+        # `probe_filter`, moving all of them four times -- so the guard checks
+        # the configuration minus EVERY key added since. Weakening it to
+        # `== FINGERPRINTS["pocket"]` would make it tautological.
         self.assertEqual(reg.PRE_GRAPH_FINGERPRINTS["pocket"],
                          "036f17c9aa644aad")
         added = ("graph_wave", "native_select", "defer_release",
-                 "retire_watermark")
+                 "retire_watermark", "probe_filter")
         cfg = reg.resolved_config(build("pocket"))
         self.assertFalse(cfg["graph_wave"])
         self.assertFalse(cfg["native_select"])
         self.assertFalse(cfg["defer_release"])
+        self.assertFalse(cfg["probe_filter"])
         self.assertEqual(
             reg.fingerprint({k: v for k, v in cfg.items() if k not in added}),
             "036f17c9aa644aad")

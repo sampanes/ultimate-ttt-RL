@@ -111,7 +111,7 @@ def parse_spec(spec):
         out[k.strip()] = v.strip()
     unknown = set(out) - {"ckpt", "arch", "ms", "sims", "wave", "cpuct",
                           "reuse", "solve", "maxsims", "name", "reserve",
-                          "bexp", "graph", "select", "defer"}
+                          "bexp", "graph", "select", "defer", "pfilter"}
     if unknown:
         raise SystemExit(f"[X] unknown player options: {sorted(unknown)}")
     return out
@@ -204,6 +204,16 @@ class TimedPlayer:
         # simulation count the two arms are the same player. Under a clock they
         # are not: the reserve this pays for is 9.5% of the budget.
         self.defer = o.get("defer", "0") == "1"
+        # pfilter=1 skips the one-ply terminal-probe loop at nodes where no
+        # legal move can end the game (#48). It is the STRONGEST of the four in
+        # the sense that matters here: graph=1 is bit-identical in what a wave
+        # computes, select=1 and defer=1 cannot change what is computed at all,
+        # and this one cannot change what is computed OR what is proved --
+        # `could_end` is a necessary condition, so the loop it skips could not
+        # have marked a child. Under a clock it is still a different player, for
+        # the same reason as the other three: probing is 16.7% of a move and
+        # what it hands back gets spent on more of the same search.
+        self.pfilter = o.get("pfilter", "0") == "1"
 
         self.model, self.net_info = load_net(self.ckpt, self.arch, device)
         self.mcts = MCTS(self.model, device, n_sims=self.n_sims,
@@ -212,7 +222,8 @@ class TimedPlayer:
                          time_budget_ms=self.budget_ms,
                          max_sims=self.max_sims, reserve_ms=self.reserve,
                          batched_expand=self.bexp, graph_wave=self.graph,
-                         native_select=self.select)
+                         native_select=self.select,
+                         probe_filter=self.pfilter)
         if self.graph and self.mcts.graph_wave is None:
             raise SystemExit(
                 "[X] graph=1 was asked for and capture FAILED: %s\n"
@@ -269,6 +280,7 @@ class TimedPlayer:
                 "wave_size": self.wave, "c_puct": self.c_puct,
                 "tree_reuse": self.reuse, "solve": self.solve,
                 "native_select": self.select, "defer_release": self.defer,
+                "probe_filter": self.pfilter,
                 "max_sims": self.max_sims, **self.net_info}
 
     def new_game(self):

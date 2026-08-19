@@ -93,7 +93,7 @@ import torch.nn.functional as F
 from .agent_base import Agent, board_to_tensor_from_gamestate, wave_planes
 from . import native_select as _ns
 from engine.rules import rule_utl_valid_moves
-from engine.constants import X, O, DRAW
+from engine.constants import X, O, DRAW, EMPTY, WIN_PATTERNS
 
 
 class MCTSNode:
@@ -149,6 +149,71 @@ def _clone(state):
     return deepcopy(state)
 
 
+# The macro board's eight lines, taken from the SAME constant
+# `GameState.check_ultimate_win` iterates rather than re-listed here, so the
+# predicate below cannot drift away from the rule it is derived from. Retupled
+# once at import: `WIN_PATTERNS` is a list of lists and this is a hot loop.
+_MACRO_TRIPLES = tuple(tuple(p) for p in WIN_PATTERNS)
+
+
+def could_end(mini_winners, mover):
+    """Could ANY legal move from this position end the game? (#48)
+
+    A NECESSARY condition, derived from the rule rather than guessed.
+    `make_move` calls `check_ultimate_win` only when a move newly DECIDES a
+    mini-board, and that function returns a result in exactly two cases: a macro
+    line of three mini-boards owned by one player, or all nine decided (a draw).
+    So a child of this node can be terminal only if the move decides a
+    mini-board AND:
+
+      (a) `mover` already owns two mini-boards of some macro triple whose third
+          is still undecided -- otherwise no line can complete this ply; or
+      (b) only one mini-board is still undecided -- otherwise deciding one
+          still leaves another undecided and the macro board cannot be full.
+
+    A mini-board with `mini_winners[m] == EMPTY` always has an empty cell -- it
+    is marked the moment its last cell is filled, DRAW if no line formed -- so
+    "undecided" and "still playable" are the same set and (b) needs no separate
+    fullness test. A DRAW mini-board is decided and can never complete a line,
+    which is why (a) tests ownership by `mover` and not merely non-emptiness.
+
+    WHEN THIS RETURNS FALSE, SKIPPING THE PROBE LOOP IS EXACTLY EQUIVALENT, not
+    approximately: no child can be marked terminal, so every child keeps
+    `solved is None`, and `_solve_from_children` over children that are all
+    unsolved and none refuted returns None -- the same None it would return
+    after running the loop. Nothing downstream can tell the difference.
+
+    HOW LOOSE IT IS, measured rather than assumed. Over all 391,550 live macro
+    configurations times both movers it is EXACT -- 177,566 admitted against
+    177,566 that can really end, zero slack -- so the two conditions are not an
+    over-approximation of the rule, they are the rule projected onto
+    `mini_winners`. All the remaining looseness is at the position level, where
+    "some undecided mini could become the mover's or a draw" does not imply any
+    single legal move achieves it: on random reachable positions it admits
+    1.47% and 0.13% really have a terminal child.
+
+    None of that is what licenses the skip. NECESSITY is, and it is checked
+    separately: against the real probe over 526,097 probe roots
+    (`tools/probe_ablation --mode filter`) it admits 18.88% of roots and 17.52%
+    of the per-child work with ZERO false negatives. Zero is the gate rather
+    than an agreement rate, because one false negative would mean this is not a
+    necessary condition and the engine would quietly stop finding a proof it
+    used to find. agents/test_probe_filter.py is where both halves live.
+    """
+    undecided = 0
+    for m in mini_winners:
+        if m == EMPTY:
+            undecided += 1
+    if undecided <= 1:
+        return True
+    for a, b, c in _MACRO_TRIPLES:
+        x, y, z = mini_winners[a], mini_winners[b], mini_winners[c]
+        owned = (x == mover) + (y == mover) + (z == mover)
+        if owned == 2 and (x == EMPTY or y == EMPTY or z == EMPTY):
+            return True
+    return False
+
+
 class MCTS:
     _VL = 1.0        # virtual loss magnitude (standard AlphaZero)
     _MIN_WAVES = 16  # floor on waves per search: the tree only deepens between
@@ -164,7 +229,7 @@ class MCTS:
                  time_budget_ms=None, max_sims=0, min_sims=1,
                  deadline_margin=1.15, reserve_ms=None,
                  batched_expand=None, graph_wave=False,
-                 native_select=False):
+                 native_select=False, probe_filter=False):
         self.model    = model
         self.device   = device
         self.n_sims   = n_sims
@@ -235,6 +300,15 @@ class MCTS:
         # is what the descent, backup and proof loops test, hoisted to a local
         # before each loop so the check is not repaid per iteration.
         self._mirror = self.native_select
+        # Selective terminal probing (#48). OFF by default like every candidate
+        # before it, but unlike them it is not a different player under a clock
+        # EITHER: `could_end` is a necessary condition, so the loop it skips
+        # could not have marked anything, and the search that follows is the
+        # same search with the dead work removed. What it buys is time, and
+        # time is what the clock spends on more of the same search.
+        #
+        # It only does anything when `solve` is on: probing is what it filters.
+        self.probe_filter = bool(probe_filter)
         self.reset_stats()
 
     def reset_stats(self):
@@ -254,6 +328,15 @@ class MCTS:
         self.stat_nn_evals   = 0   # positions pushed through the net
         self.stat_nn_batches = 0   # forward_both calls
         self.stat_probes     = 0   # clone+make_move terminal probes
+        # Probe ROOTS -- expanded nodes offered to the one-ply scan -- and how
+        # many of those `could_end` sent home without a single clone. Two adds
+        # a probe root, paid only by solve=True engines, and they are what the
+        # filter's whole claim is read off: "roots considered" against "roots
+        # actually scanned" is not derivable from `stat_probes`, which counts
+        # children. About 4,100 roots a move, so this is ~0.05% of a move and
+        # is stated rather than glossed.
+        self.stat_probe_roots = 0
+        self.stat_probe_skips = 0
         self.stat_solved_roots = 0
         self.stat_sims       = 0   # simulations actually run (varies under a clock)
         self.stat_early_stops = 0  # deadline searches that returned on a proof
@@ -295,6 +378,8 @@ class MCTS:
         self._search_nn_start = self.stat_nn_evals
         self._search_exp_start = self.stat_expansions
         self._search_probe_start = self.stat_probes
+        self._search_proot_start = self.stat_probe_roots
+        self._search_pskip_start = self.stat_probe_skips
         self._proof_sim = None
         self._proof_refuted_visits = None
         self._proof_off_visits = None
@@ -333,6 +418,8 @@ class MCTS:
             "expansions": self.stat_expansions - self._search_exp_start,
             "nn_evals": nn_total,
             "probes": self.stat_probes - self._search_probe_start,
+            "probe_roots": self.stat_probe_roots - self._search_proot_start,
+            "probe_skips": self.stat_probe_skips - self._search_pskip_start,
             "raw_argmax": int(pi_raw_argmax),
             "corrected_argmax": int(corrected_argmax),
             "reconciled": int(pi_raw_argmax) != int(corrected_argmax),
@@ -723,7 +810,27 @@ class MCTS:
         silently poison every target built from this search. Measured cost is
         ~2 us per legal move on the C++ engine and ~7 us on the Python one --
         against ~600 ms for an 800-sim search, that is noise.
+
+        THAT LAST SENTENCE IS NOW WRONG AND IS KEPT AS WRITTEN. Under a 1 s
+        clock the same loop is 4,113 roots and 33,699 probed children a move --
+        126.9 ms inclusive, 16.7% of a move, the largest single host line item
+        once native selection landed -- and 99.26% of those children are not
+        terminal. `probe_filter` is the answer to that measurement: `could_end`
+        is a NECESSARY condition, so when it is False this loop provably cannot
+        mark a child and the early return is exactly equivalent, not an
+        approximation traded for speed. See RESULT_PROBE_ABLATION.md.
         """
+        self.stat_probe_roots += 1
+        if self.probe_filter and not could_end(state.mini_winners,
+                                               state.player):
+            # No legal move from here can end the game, so no child can be
+            # marked, so every child keeps `solved is None` -- and
+            # `_solve_from_children` over children that are all unsolved with
+            # none refuted returns None, which is what it would have returned
+            # after the loop ran. Returning here therefore skips dead work and
+            # nothing else; it is not a heuristic cut.
+            self.stat_probe_skips += 1
+            return
         sS = node.selS if self._mirror else None
         for mv, child in node.children.items():
             probe = _clone(state)
