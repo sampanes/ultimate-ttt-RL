@@ -218,6 +218,33 @@ uninstrumented `clean` arms. But it should stop being a surprise the third time,
 and it is a reason to distrust any future "this is only N ms" argument built
 from wrapper timings alone on an allocation-heavy path.
 
+> **CORRECTED 2026-08-27 by #49 -- see RESULT_PROBE_COST.md.**
+>
+> **Every `probe ms/move` figure on this page is ~25% too high.** Measured
+> directly: run the real `_mark_terminal_children` bare, run it again under
+> exactly these wrappers, price the wrapped run with the same `price()`, and it
+> recovers **1.250x** the bare number. `calibrate()` puts a wrapper at 0.982
+> us/call; landing on the bare number needs **1.338**. The calibration times a
+> wrapper around a Python no-op, and these wrappers sit on pybind bound methods
+> reached through a Python subclass, where they cost more.
+>
+> So `154.6 -> 46.6` should be read as **`~123.7 -> ~37.2`**, and the predicate's
+> 10.0 ms as ~8.0. The **-69.9%** ratio, the **+20.6%**, the p99 and the proof
+> counts are all unaffected -- they come from uninstrumented arms or are ratios
+> in which the bias cancels.
+>
+> The correction makes the paragraph above *stronger*, not weaker. Re-deriving
+> the prediction from the corrected share gives **+12.9%** against the same
+> measured **+20.6%**: ratio **1.60**, not 1.24. The instrument overstates the
+> time and understates the value at the same time.
+>
+> #49 then tried to reproduce the "allocator and cache" mechanism named above in
+> isolation and **could not**. Pinning a real 69,639-node tree and rerunning the
+> identical loop: **+1.9%**. Growing the working set 118x, from 261 kB to 31.8
+> MB: **+4.0%**. Neither is a 2.5x gap. The lower-bound rule stands on two
+> replications and now a third; the mechanism sentence above should be treated
+> as an unproven hypothesis, not a finding.
+
 ## The deployment latency gate
 
 `tools/regress_engine --engine pocket_filter`, 10 games + 2 warmup against
@@ -315,9 +342,23 @@ be measured after this change rather than folded into it, because the filter
 removed 85% of the calls whose crossing was being priced. At 5,806 children a
 move it may be too small to matter, which is the answer that measurement is for.
 
+> **DONE 2026-08-27 -- see RESULT_PROBE_COST.md.** It was too small to matter:
+> **2.47 ms/move, archived.** The fused native probe was priced too, at **+1.48
+> ms/move**, a third independent measurement saying not to build it.
+>
+> The measurement also found that the probe was the wrong call site. The descent
+> discards the same tuple and re-reads the same winner **53,048 times a move
+> against the probe's 4,884 -- 10.9 to 1** -- which puts the identical one-method
+> change at **26.85 ms/move** there. And `could_end`, at **7.10 ms/move**, is now
+> the largest single item in the path it created, ~1,150 ns of its 1,814 ns being
+> its own interpreted body rather than crossings.
+
 ## Reproduce
 
     python -m agents.test_probe_filter
     python -m tools.probe_ablation --mode gate --positions 120 \
         --position-games 6 --tag probe48_gate
     python -m tools.regress_engine --engine pocket_filter --tag filter_gate
+
+    # #49, the residual split and the instrument correction above
+    python -m tools.probe_cost --mode all --tag probe49
