@@ -224,27 +224,108 @@ than the probe interval, it is not the size of the live heap.
 
 ---
 
+## #49d: the re-ranking
+
+`tools/profile_selection --mode all --arms pocket_filter`, 40 fixed positions
+plus 6 games against `final`. Calls/move from the counting arm, us/call from the
+timed arm, so no row is scaled by a simulation-rate ratio.
+
+| operation | fixed, ms/move | share | game, ms/move | share |
+|---|---:|---:|---:|---:|
+| device: graph replay | 412.75 | 45.5% | 263.53 | 32.3% |
+| wave loop (own Python) | 90.36 | 10.0% | 103.73 | 12.7% |
+| device: network forward | 76.83 | 8.5% | 94.91 | 11.6% |
+| **node creation** | **76.69** | **8.5%** | **70.66** | **8.7%** |
+| **state.make_move** | **72.56** | **8.0%** | **92.87** | **11.4%** |
+| device: eager wave | 52.53 | 5.8% | 52.51 | 6.4% |
+| _best_child | 32.19 | 3.5% | 38.59 | 4.7% |
+| terminal probes (own loop) | 23.46 | 2.6% | 22.84 | 2.8% |
+| device: graphed wave | 14.32 | 1.6% | 13.26 | 1.6% |
+| backup | 14.01 | 1.5% | 16.32 | 2.0% |
+| device: plane build + H2D | 13.90 | 1.5% | 15.25 | 1.9% |
+| legal moves | 13.37 | 1.5% | 13.27 | 1.6% |
+| state clone | 11.50 | 1.3% | 15.22 | 1.9% |
+| proofs (induction + propagation) | 0.62 | 0.1% | 0.98 | 0.1% |
+| **wall** | **906.67** | | **816.18** | |
+
+Answering the six terms the brief asked about, in order:
+
+1. **graph/device path -- yes, but read it correctly.** 570.3 ms/move fixed,
+   439.5 game. These are host-observed intervals *inside* device-facing calls,
+   not a GPU-compute budget: CUPTI previously put actual device busy at 7.8% of
+   a move (see `uttt-wave-is-dispatch-bound`). Most of `graph replay` is the
+   host in a launch-and-sync, and #48 proved the host is not merely waiting --
+   removing probe work bought +20.6% more search, which a GPU-bound engine
+   could not have given back.
+2. **`_best_child` -- no longer major.** 32-39 ms, 3.5-4.7%. The dedicated
+   solo-wrapped run puts it at 35.89 ms and prices the ceiling for a *free*
+   selection primitive at **+4.0% network evaluations**. That closes the
+   remaining native-selection headroom question.
+3. **remaining probe path -- confirmed out of the top tier.** 23.46 ms own loop,
+   35.83 inclusive of the clone and make_move it causes, 2.6-3.9%.
+4. **`state.make_move` during normal traversal -- YES, and it is the big one.**
+   72.56 ms fixed / 92.87 game, of which the descent is **65.05 / 85.84** and
+   the probes only 7.51 / 7.02. This is where the #49b redundancy actually
+   lives.
+5. **node creation / object churn -- YES.** 76.69 / 70.66 ms at 94.6 us per
+   `_expand_children` call, roughly **1.9 us per MCTSNode** across 40,610 nodes
+   a move, mirror construction included.
+6. **wave-loop Python -- YES.** 90.36 / 103.73 ms *exclusive* of the device
+   calls, `_best_child` and `make_move` it makes. This is virtual-loss
+   bookkeeping, path lists, dedup and pending lists, and nothing has ever
+   targeted it.
+
+### Two cross-checks worth keeping
+
+**The probe path now agrees across two independent tools.** `probe_ablation`
+says 40.73 ms inclusive; corrected for the 25% over-price that is ~32.6.
+`profile_selection`, which prices its wrappers in situ and applies a deflation,
+says **35.83** inclusive. Within 10% of each other, from different
+instruments.
+
+**And the wrapper under-price replicates on a different code path.** This
+profile measures one `_best_child` wrapper in situ at **1.579 us/call** against
+the tight-loop calibration -- a **1.6x** under-price, matching the 1.36x found
+on the probe wrappers. `profile_selection` already knew this and corrects for
+it; `probe_ablation.price()` does not, which is precisely why the probe figures
+were the inflated ones.
+
 ## What follows
 
-1. **`could_end` is now the largest single item in the path it created**, at
-   7.10 ms/move (17.4%). It costs 1,814 ns per root, of which only ~660 ns is
-   crossings (`mini_winners` 364, `player` 294) -- **~1,150 ns is its own
-   interpreted body**. A native predicate would be one crossing (~250 ns), and
-   `agents/test_probe_filter.py` already enumerates all 391,550 macro
-   configurations, so parity would be exhaustive rather than statistical.
-   There is also a free plumbing saving: `_expand_wave` materialises
-   `s.mini_winners` for `rule_utl_valid_moves` and throws it away three lines
-   before `could_end` materialises it again.
-2. **The descent crossing (26.85 ms/move)** as above.
-3. Neither is worth acting on before the full host/device re-ranking, because
-   the whole probe path is now 40.7 ms of an ~890 ms move -- **4.6%** -- and
-   deleting all of it would be at the edge of what an uninstrumented A/B can
-   resolve at all.
+The probe path is finished as an optimisation target. It is 23.5 ms of its own
+loop in a 907 ms move, and the two things still inside it are both small:
 
-**The resolution problem is the real constraint now.** The composition-robust
-throughput estimator replicates to 1.7-6.1% run to run. A 2.5 ms saving is
-+0.28%; even 29 ms is +3.3%. The decision rule's own verification step -- an
-uninstrumented fixed-position A/B -- cannot see effects this small without a
-number of repeats nobody has budgeted. Any further probe-path work has to be
-justified by identity plus a *predicted* rate, the way `pocket_filter` was, or
-not at all.
+- **`could_end`, 7.10 ms/move**, now the largest single item in the path it
+  created. 1,814 ns per root, of which only ~660 ns is crossings
+  (`mini_winners` 364, `player` 294) -- **~1,150 ns is its own interpreted
+  body**. A native predicate would be one crossing (~250 ns), and
+  `agents/test_probe_filter.py` already enumerates all 391,550 macro
+  configurations, so parity would be exhaustive rather than statistical. There
+  is also a free plumbing saving: `_expand_wave` materialises `s.mini_winners`
+  for `rule_utl_valid_moves` and throws it away three lines before `could_end`
+  materialises it again.
+- **the probe's share of the redundant crossing, 2.47 ms/move** -- archived.
+
+**The ranked candidates are elsewhere, and the re-profile says where.**
+
+| candidate | ms/move | basis |
+|---|---:|---|
+| descent `make_move` redundancy | **26.9** | bare ladder x counted calls |
+| wave-loop Python | 90.4 | profiled, nothing targeted yet |
+| node creation (~1.9 us/node) | 76.7 | profiled |
+| native `could_end` | ~9 | primitive floor x roots |
+| free `_best_child` primitive | 35.9 | ceiling, +4.0% nn-evals |
+
+The descent redundancy is the one with a measured price, a known shape, an
+exhaustive parity story, and a change small enough to state in a sentence: a
+hot-path-only `probe_make_move(mv) -> winner_code` on `GameState`, used by both
+call sites, with `make_move` untouched.
+
+**But the resolution problem is now the binding constraint.** The
+composition-robust throughput estimator replicates to 1.7-6.1% run to run. 2.5
+ms is +0.28%; 26.9 ms is +3.3%; even deleting the entire probe path would be
++4.6%. The decision rule's verification step -- an uninstrumented fixed-position
+A/B -- cannot separate most of these from noise without a repeat count nobody
+has budgeted. Anything further has to be justified the way `pocket_filter` was:
+**proven identity plus a measured rate**, never a strength match, and never a
+single A/B on an effect smaller than its own spread.
