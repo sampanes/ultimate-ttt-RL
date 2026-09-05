@@ -1,5 +1,24 @@
 # RESULT -- native PUCT selection: 5.5x per call, +12.2% network evaluations, and a strength effect too small to resolve (2026-08-13)
 
+> ## CONTEXT ADDED 2026-09-04 -- what became of this
+>
+> **Native selection SHIPPED, inside a stack, and never independently
+> demonstrated strength.** Two days after this document, `pocket_defer` bundled
+> the graph wave, native selection and deferred retirement and beat `pocket_r35`
+> at equal clock, 0.5625 [0.5273, 0.5977]. That match did **not** separate the
+> three, and this document's 0.5146 [0.4807, 0.5485] remains the only direct
+> measurement of native selection alone. It is unresolved, not confirmed.
+>
+> **The premise it was built on is now closed.** `_best_child` was 22.2% of a
+> move when this started; on `pocket_filter` it is 3.5%, and a *free* selection
+> primitive is worth only +4.0% network evaluations. No further selection work
+> is justified. See `CURRENT_STATE.md` section 4.
+>
+> The reserve story below also resolved: the 95 ms this engine needed went back
+> to **20 ms** once `release()` moved off the move path
+> (`RESULT_DEFERRED_RETIREMENT.md`). The mechanism this document identified was
+> the right one; the fix was to stop doing the work, not to pay for it.
+
 Task #45a. #44 measured `_best_child` at 193.9 ms/move in deployment -- 22.2%
 of the move, the largest host term by 64% -- and showed it grew 44% purely
 because there were more calls, not slower ones. That made selection a

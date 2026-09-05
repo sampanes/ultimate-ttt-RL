@@ -1,5 +1,26 @@
 # Champions -- the current best player at each budget
 
+> ## STILL CURRENT, with one framing correction (2026-09-04)
+>
+> Both champion rows below are accurate: the pocket champion is
+> `pocket:squeeze-gen22` (172,389 params) and the oracle champion is
+> expert_iter_v2 gen-19. **The two-champion framing is what changed.**
+>
+> Since these were certified, the product became a **1,000 ms net+search
+> agent**, and at equal wall clock the 172k pocket network **beats** the 6.77M
+> oracle network, 0.5854 [0.5360, 0.6349]. Model size is not the axis that
+> separates a client player from a strong one; search under a deadline is. The
+> pocket network is now the network in the deployed engine
+> (`engine:pocket_filter`), not merely the small one.
+>
+> Note also that the oracle lineage's teacher is at **gen 22**, not gen 19 --
+> gen-19 is the last generation certified and shipped as ONNX. The lineage has
+> not promoted since gen 22 (`CURRENT_STATE.md` section 8).
+>
+> The promotion rule below still governs the shipped browser models. The
+> deployed 1-second agent is governed separately, by equal-clock match --
+> `CURRENT_STATE.md` section 2.
+
 This is the canonical, always-current record of the best model at each footprint
 budget. It is a manifest, not a weight store: the actual weights live where they
 ship (quantized ONNX in `docs/` for the pocket, Hugging Face for the oracle), and

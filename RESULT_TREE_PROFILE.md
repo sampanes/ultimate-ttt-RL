@@ -1,5 +1,26 @@
 # RESULT -- where the 1,000 ms goes (2026-07-31, corrected 2026-08-07)
 
+> ## RANKING SUPERSEDED 2026-08-27 -- see `CURRENT_STATE.md` section 4
+>
+> **Every number in this document was measured on `pocket_r35`, an engine that
+> has since been superseded twice. Do not quote the ranking.** Four
+> optimizations landed after it (CUDA-graph wave, native selection, deferred
+> retirement, selective probes), each of which moved the composition of a move.
+> The current ranking is wave-loop Python 90.4 ms, node creation 76.7,
+> `state.make_move` 72.6, `_best_child` 32.2, terminal probes 23.5.
+>
+> Two conclusions here inverted specifically:
+>
+> - **"The network forward is the largest single cost at about 35%"** is no
+>   longer true, and the device figure it rests on was itself an artifact --
+>   see the next block, and section 5 of `CURRENT_STATE.md`.
+> - **`_best_child` at 108 ms/move** rose to 193.9 on `pocket_graph` and then
+>   fell to 32.2 once native selection landed. A *free* selection primitive is
+>   now worth only +4.0% network evaluations.
+>
+> The warmup correction below still stands and is still worth reading -- it is
+> a general instrument failure, not a detail of this profile.
+
 > **CORRECTED 2026-08-07. Every figure below changed.** The first version of
 > this profile counted the warmup games. `play_match(warmup=2)` discards them
 > from the PLAYERS -- records, policies, the cumulative MCTS counters and the

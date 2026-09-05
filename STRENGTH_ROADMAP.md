@@ -1,5 +1,28 @@
 # Toward the Smallest, Strongest Ultimate Tic-Tac-Toe Player
 
+> # SUPERSEDED 2026-09-04 by `ROADMAP.md`
+>
+> **This is no longer the direction.** It is kept as a record of what was
+> predicted in July 2026, which is worth reading against what the measurements
+> then returned -- several of its central proposals were built and found to be
+> worth nothing.
+>
+> | this document proposed | measured outcome |
+> |---|---|
+> | efficient graph search (transpositions) | **3.1% ceiling** -- rejected before building |
+> | symmetry exploitation in search | **exactly 0.0%** -- rejected |
+> | a substantially stronger offline teacher | more teacher search distills **worse** (student h2h 0.411) |
+> | exact tactical propagation | shipped, and recovers **0.97%** of the distillation penalty |
+> | a small structure-aware network | confirmed -- 172k beats 6.77M at equal clock |
+> | ~150-200 simulations as the sweet spot | obsolete; the agent now runs thousands under a clock |
+>
+> The one proposal that paid was the small network, and even that paid for a
+> different reason than the one given here: the win came from the 1x1-squeeze
+> head, not from structure awareness, and shrinking the network bought only
+> 1.24x more search.
+>
+> Current direction: `ROADMAP.md`. Current facts: `CURRENT_STATE.md`.
+
 > Status: strategy / vision document. Recorded 2026-07-18 at the owner's
 > request to capture direction. NOT yet actioned -- do not implement from this
 > without an explicit go-ahead. Builds on the gen-13 search-value measurement

@@ -1,5 +1,22 @@
 # Pending -- what still needs to happen
 
+> # SUPERSEDED 2026-09-04 by `ROADMAP.md` -- NOTHING HERE IS QUEUED
+>
+> **This file is now history, not a queue.** It was written as a
+> machine-to-machine handoff between an authoring box and a training box; the
+> runbooks below (S0/S1/S2, M3, M4, M5, M5.5, the throughput harness, the flag
+> hardening table) all either completed or were overtaken by the 1-second
+> engine program, which this file predates entirely.
+>
+> The open work is one item and it is in `ROADMAP.md`: restart continual
+> training with the repaired promotion gate, on a frozen engine.
+>
+> Kept because the runbooks record how things were actually run -- the
+> `start_goat.bat` / `stop_goat.bat` mechanics, the certification sequence, the
+> M4 postmortem -- and because the M4 wave-bug postmortem is still the best
+> worked example in this repository of a training loop that looked healthy
+> while poisoning its own targets.
+
 Machine-to-machine handoff. History is in git. This is only the open queue.
 
 ---

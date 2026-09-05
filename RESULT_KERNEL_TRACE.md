@@ -1,5 +1,17 @@
 # RESULT -- 36 kernels a wave, 26 us to launch each, and the GPU idle for 79% of its own "busy" time (2026-08-09)
 
+> ## THIS IS THE AUTHORITY ON DEVICE TIME (confirmed 2026-09-04)
+>
+> Where this document and `RESULT_EXPAND_CUDA.md` disagree about GPU time,
+> **this one is right**. CUPTI times kernels; a CUDA event pair charges the
+> device for the time it spends waiting to be given work. The authoritative
+> figure is **7.8% of a move of real device busy**, and it is quoted in
+> `CURRENT_STATE.md` section 5.
+>
+> The diagnosis has since been confirmed by behaviour rather than by
+> instrument: the selective terminal probe removed *host* work and returned
+> +20.6% more search, which a GPU-bound engine could not have done.
+
 Task #40. Measurement only: nothing in `agents/mcts.py` changed, no candidate
 was built, and no strength claim is made anywhere below.
 

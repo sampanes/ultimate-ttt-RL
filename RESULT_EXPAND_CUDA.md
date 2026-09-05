@@ -1,5 +1,14 @@
 # RESULT -- the expansion wave is dispatch-bound (2026-08-07)
 
+> ## DO NOT READ THE GPU COLUMNS IN THIS FILE
+>
+> Every GPU and transfer figure here was produced by a CUDA event pair, which
+> cannot measure device busy time -- it charges the GPU for waiting to be given
+> work. The correction is already inline below and is not optional. The
+> authority is `RESULT_KERNEL_TRACE.md`; the summary is `CURRENT_STATE.md`
+> section 5. The headline -- **the wave is dispatch-bound** -- survives and is
+> stronger than it was.
+
 `engine:pocket_r35`, the deployment engine, in its shipping configuration:
 reuse on, batched expansion, solved propagation, deferred GC, 1,000 ms. Two
 independent instruments over 12 games each; seed namespace `expand` (6700).

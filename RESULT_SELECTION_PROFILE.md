@@ -1,5 +1,23 @@
 # RESULT -- after the graph, the host is 59.2% of a move and selection is its largest term (2026-08-10)
 
+> ## SUPERSEDED 2026-08-27 -- see `CURRENT_STATE.md` section 4
+>
+> **The headline is obsolete: `_best_child` is no longer the largest host term
+> and is no longer worth attacking.** Native selection (`RESULT_NATIVE_SELECT.md`)
+> made the call 5.5x cheaper, and the selective terminal probe removed the item
+> that replaced it at the top. Re-measured on `pocket_filter`, `_best_child`
+> costs **32.2 ms/move, 3.5% of the move** -- against the 193.9 ms and 22.2%
+> below.
+>
+> The question this document opened is also closed. A dedicated run prices a
+> **free** selection primitive -- infinitely fast, zero cost -- at **+4.0%
+> network evaluations**. There is no remaining headroom here.
+>
+> Two methodological points below still stand and generalize: the growth was
+> **more calls, not slower ones** (a distinction worth checking before
+> optimizing anything), and the `device:` rows are host-observed launch/sync
+> intervals rather than a GPU budget.
+
 Task #44. `RESULT_TREE_PROFILE.md` priced `_best_child` at 108 ms/move on
 `pocket_r35`, before the CUDA graph. `pocket_graph` runs ~30% more network
 evaluations in the same second, so that number had to be re-measured on the

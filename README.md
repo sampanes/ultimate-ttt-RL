@@ -429,7 +429,9 @@ ultimate-ttt-RL/
 
 ## Roadmap
 
-Current gated execution order: **[SHIP_PLAN.md](SHIP_PLAN.md)**.
+Current direction: **[ROADMAP.md](ROADMAP.md)**. What is true right now:
+**[CURRENT_STATE.md](CURRENT_STATE.md)**. (`SHIP_PLAN.md` and `PENDING.md` are
+history, not queues.)
 
 - [x] Build base GameState class with legal move logic
 - [x] CLI playable version of the game
@@ -442,9 +444,27 @@ Current gated execution order: **[SHIP_PLAN.md](SHIP_PLAN.md)**.
 - [x] GUI to watch live games
 - [x] PUCT MCTS implementation with sign/perspective tests
 - [x] One-command, fail-closed benchmark suite for arbitrary checkpoints
-- [ ] Independently benchmark the Arena pocket and strength finalists
-- [ ] Quantized browser player with TypeScript/WASM search
-- [ ] Search-trained oracle champion and Hugging Face deployment
+- [x] Independently benchmark the Arena pocket and strength finalists
+- [x] Browser player with WASM/WebGPU search, live on GitHub Pages
+- [x] Search-trained oracle champion, distilled to a 172k pocket network
+- [x] A 1,000 ms net+search agent judged only by win rate at equal wall clock
+- [ ] **Continual training that repeatedly improves the model on a frozen engine**
+
+### The current product
+
+A ~1,000 ms-per-move agent: a 172,389-parameter network inside a PUCT search
+with cross-move tree reuse, a CUDA-graph batched wave, native selection,
+deferred tree retirement and selective terminal probes. Frozen as
+`engine:pocket_filter`.
+
+```bash
+python -m tools.engine_registry        # what the engine IS
+python -m tools.regress_engine         # whether it still behaves
+```
+
+The engine is deliberately **frozen** while models train: if search keeps
+changing underneath a training run, a stronger generation cannot be attributed
+to learning.
 
 ---
 

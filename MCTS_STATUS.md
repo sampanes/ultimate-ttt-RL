@@ -1,5 +1,37 @@
 # MCTS_STATUS -- current search implementation baseline
 
+> # SUPERSEDED 2026-09-04 -- READ `CURRENT_STATE.md` INSTEAD
+>
+> **This file is a historical snapshot of the search as it stood on
+> 2026-07-18, and almost every statement of fact in it is now wrong.** It is
+> kept because the reasoning that pointed at tree reuse and solved nodes is
+> worth reading, and because the "priority order" section below is a record of
+> what was predicted against what actually happened. It is NOT a description of
+> the engine.
+>
+> What changed since this was written:
+>
+> | this file says | actually true now |
+> |---|---|
+> | fresh root every search | **cross-move tree reuse**, adoption 0.9569 |
+> | no solved-node propagation by default | **solve is ON** in the deployed engine |
+> | fixed simulation count | **wall-clock budget**, 1,000 ms with a 20 ms reserve |
+> | `c_puct` unswept | swept; 1.5 confirmed optimal at 50 sims, still untuned under a clock |
+> | one node per path, `id()` dedup within a wave | unchanged, and **transpositions were measured and rejected** at a 3.1% ceiling |
+> | symmetry listed as a candidate | measured at **exactly 0.0%** and rejected |
+> | 6.77M gen-22 network | **172,389-parameter squeeze pocket**, which beats it at equal clock |
+>
+> The engine also gained batched wave expansion, a CUDA-graph wave, native
+> PUCT selection, deferred tree retirement and selective terminal probes. The
+> current implementation is `engine:pocket_filter`; the authority is
+> `tools/engine_registry.py`.
+>
+> The "200-simulation knee" framing below is also obsolete. The deployed agent
+> runs several thousand simulations per move under a clock, and simulations per
+> move turned out to be the wrong unit entirely -- it swings 35-57% across
+> identical openings, so throughput is quoted as network evaluations per second
+> times the deadline.
+
 Status: factual implementation snapshot as of 2026-07-18 (gen 15 live).
 This is the "what exists today" record. It is deliberately separate from
 STRENGTH_ROADMAP.md: the roadmap states intended direction; this file states

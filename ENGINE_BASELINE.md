@@ -1,5 +1,27 @@
 # ENGINE BASELINE -- frozen 2026-07-30, tag `arena-1s-baseline`
 
+> ## PARTIALLY SUPERSEDED 2026-09-04 -- the deployed engine has moved three times
+>
+> **Section 2 is out of date. `engine:final` is not the promoted engine.** The
+> deployment baseline is now `engine:pocket_filter` (172,389 params, 20 ms
+> reserve, graph + native select + deferred retirement + selective probes), via
+> `pocket_r35` (2026-07-30), `pocket_defer` (2026-08-15) and `pocket_filter`
+> (2026-08-18). Current configuration and promotion history:
+> `CURRENT_STATE.md` sections 1 and 2. The authority remains
+> `tools/engine_registry.py`.
+>
+> **The rest of this file still stands and is still the reference**: the
+> latency policy (section 1), why named configurations must be pinned rather
+> than reconstructed (section 3), the three drift layers (section 5), the
+> opening/seed scheme (section 6), the reference environment (section 7) and
+> the regression gate (section 8). The `arena-1s-baseline` tag is still the
+> recovery path for anchor drift.
+>
+> Two known-opens in section 9 have since resolved: `gregory(d4)` was replaced
+> by the anchor ladder as the primary discriminator, and the ladder's shared
+> gene pool is now an explicit open decision in `ROADMAP.md` rather than a
+> caveat. `c_puct` remains untuned under a clock.
+
 The 1,000 ms network-plus-search agent is now the production baseline, not an
 experimental option. This file is the freeze: what it is, what it was measured
 on, and what must not move underneath it.

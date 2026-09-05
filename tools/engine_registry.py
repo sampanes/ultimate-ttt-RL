@@ -515,6 +515,39 @@ ANCHOR_ROLES = {"anchor_A", "anchor_B", "anchor_C", "anchor_D"}
 # retirement from each other, and this promotion does not revisit it.
 DEPLOYED = "pocket_filter"
 
+# ---------------------------------------------------------------------------
+# THE ENGINE IS FROZEN FOR THE TRAINING PHASE (2026-09-04)
+# ---------------------------------------------------------------------------
+# The engine-optimization branch is CLOSED. `pocket_filter` is the chassis for
+# the continual-training program in ROADMAP.md and does not move while models
+# train.
+#
+# That is a scientific requirement, not tidiness. If the search implementation
+# keeps changing while networks train, a stronger generation N+1 cannot be
+# attributed: learning may have improved, or the chassis may have moved
+# underneath it, and no after-the-fact analysis separates those.
+#
+# THE STOPPING RULE, and it is a rule rather than a preference:
+#
+#     No new engine optimization unless it has EITHER a measured 5-10%+
+#     recoverable ceiling, OR a proof of semantic identity plus a measurement
+#     method capable of resolving its expected throughput gain.
+#
+# The rule exists because the binding constraint stopped being ideas and became
+# RESOLUTION. `nn/second x deadline` -- the only throughput estimator here that
+# is robust to position composition -- replicates to 1.7-6.1% run to run. The
+# best remaining candidate is the descent `make_move` redundancy at 26.9
+# ms/move, which is +3.3%. An uninstrumented A/B, which is the only
+# verification these paths admit (wrapper timings under-price object churn by
+# 20-25%), cannot separate that from noise. Running it anyway would produce a
+# number, not evidence.
+#
+# The surviving candidates are recorded in CURRENT_STATE.md section 4 WITH
+# THEIR PRICES, so that a future decision starts from measurements instead of
+# re-deriving them. None of them is queued. `pocket_filter` was the last
+# promotion of this branch.
+ENGINE_FROZEN_FOR = "continual-training (ROADMAP.md)"
+
 # Superseded baselines, newest first. KEPT BUILDABLE rather than archived: a
 # promotion whose predecessor stops being runnable can never be re-checked,
 # every deployment number published before 2026-08-15 was measured either

@@ -1,5 +1,22 @@
 # STRENGTH_NEXT -- long-horizon strength and robustness backlog
 
+> # SUPERSEDED 2026-09-04 by `ROADMAP.md`
+>
+> **The S-queue is closed.** Every speed item in it (S3 playout-cap
+> randomization, S4 multiprocess actors, S5 eval server, S7 tree reuse, S8 hot
+> path) either shipped or was overtaken by the 1-second engine work, and the
+> strength items were answered by measurements that this file predates.
+>
+> One observation in here turned out to be the most load-bearing thing in the
+> document and is now settled policy: **"the deployed agent is net+search; the
+> raw-net gates are a proxy, not the product."** That gap is exactly why the
+> repaired training cycle in `ROADMAP.md` has two loops -- a cheap raw-net gate
+> for the teacher, and a separate equal-clock gate for the complete 1-second
+> agent.
+>
+> Do not start work from this file. `ROADMAP.md` for direction,
+> `CURRENT_STATE.md` for facts.
+
 Machine-to-machine handoff, written 2026-07-13 on the training box (analysis
 only; no training code was changed there). `PENDING.md` holds triggered
 queues; this file holds the strength backlog WITH the reasoning, so the
